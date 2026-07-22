@@ -1,0 +1,181 @@
+{
+  "apiVersion": "gobeyond.render/v1alpha1",
+  "routeId": "products_slug",
+  "root": {
+    "kind": "element",
+    "tag": "main",
+    "namespace": "html",
+    "attributes": [
+      {
+        "name": "data-slug",
+        "value": { "kind": "path", "path": ["product", "slug"] },
+        "mode": "string"
+      }
+    ],
+    "children": [
+      {
+        "kind": "element",
+        "tag": "h1",
+        "namespace": "html",
+        "attributes": [],
+        "children": [
+          {
+            "kind": "text",
+            "value": { "kind": "path", "path": ["product", "name"] }
+          }
+        ]
+      },
+      {
+        "kind": "element",
+        "tag": "data",
+        "namespace": "html",
+        "attributes": [
+          {
+            "name": "className",
+            "value": { "kind": "literal", "value": "price" },
+            "mode": "string"
+          },
+          {
+            "name": "value",
+            "value": { "kind": "path", "path": ["product", "price"] },
+            "mode": "string"
+          }
+        ],
+        "children": [
+          {
+            "kind": "text",
+            "value": {
+              "kind": "helper",
+              "name": "string",
+              "arguments": [{ "kind": "path", "path": ["product", "price"] }]
+            }
+          }
+        ]
+      },
+      {
+        "kind": "conditional",
+        "test": { "kind": "path", "path": ["product", "available"] },
+        "consequent": {
+          "kind": "element",
+          "tag": "p",
+          "namespace": "html",
+          "attributes": [
+            {
+              "name": "className",
+              "value": { "kind": "literal", "value": "stock" },
+              "mode": "string"
+            }
+          ],
+          "children": [
+            {
+              "kind": "text",
+              "value": { "kind": "literal", "value": "In stock" }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "element",
+        "tag": "ul",
+        "namespace": "html",
+        "attributes": [],
+        "children": [
+          {
+            "kind": "each",
+            "items": { "kind": "path", "path": ["product", "features"] },
+            "item": "feature",
+            "index": "index",
+            "key": { "kind": "path", "path": ["feature", "id"] },
+            "body": {
+              "kind": "element",
+              "tag": "li",
+              "namespace": "html",
+              "attributes": [
+                {
+                  "name": "data-index",
+                  "value": { "kind": "path", "path": ["index"] },
+                  "mode": "string"
+                }
+              ],
+              "children": [
+                {
+                  "kind": "text",
+                  "value": { "kind": "path", "path": ["feature", "label"] }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "kind": "element",
+        "tag": "div",
+        "namespace": "html",
+        "attributes": [],
+        "children": [
+          {
+            "kind": "rawHtml",
+            "value": { "kind": "path", "path": ["product", "descriptionHTML"] }
+          }
+        ]
+      },
+      {
+        "kind": "conditional",
+        "test": { "kind": "path", "path": ["showBuy"] },
+        "consequent": {
+          "kind": "element",
+          "tag": "button",
+          "namespace": "html",
+          "attributes": [
+            {
+              "name": "disabled",
+              "value": {
+                "kind": "unary",
+                "operator": "!",
+                "operand": { "kind": "path", "path": ["product", "available"] }
+              },
+              "mode": "boolean"
+            }
+          ],
+          "children": [
+            { "kind": "text", "value": { "kind": "literal", "value": "Add " } },
+            { "kind": "text", "value": { "kind": "literal", "value": 1 } }
+          ]
+        },
+        "alternate": {
+          "kind": "element",
+          "tag": "p",
+          "namespace": "html",
+          "attributes": [],
+          "children": [
+            {
+              "kind": "text",
+              "value": { "kind": "literal", "value": "Contact us" }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "clientOnly",
+        "fallback": {
+          "kind": "element",
+          "tag": "div",
+          "namespace": "html",
+          "attributes": [
+            {
+              "name": "className",
+              "value": { "kind": "literal", "value": "map-placeholder" },
+              "mode": "string"
+            }
+          ],
+          "children": [
+            {
+              "kind": "text",
+              "value": { "kind": "literal", "value": "Map unavailable" }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

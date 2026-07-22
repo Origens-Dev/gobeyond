@@ -1,0 +1,66 @@
+{
+  "apiVersion": "gobeyond.contract/v1alpha1",
+  "routes": [
+    {
+      "routeId": "products_slug",
+      "props": {
+        "kind": "object",
+        "shape": {
+          "product": {
+            "kind": "object",
+            "shape": {
+              "slug": { "kind": "string" },
+              "name": { "kind": "string" },
+              "price": { "kind": "number" },
+              "salePrice": { "kind": "number", "nullable": true },
+              "available": { "kind": "boolean" },
+              "createdAt": { "kind": "datetime" },
+              "hero": { "kind": "bytes" },
+              "category": { "kind": "enum", "values": ["home-goods", "outdoors"] },
+              "features": {
+                "kind": "array",
+                "items": {
+                  "kind": "object",
+                  "shape": {
+                    "id": { "kind": "string" },
+                    "label": { "kind": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "descriptionHTML": { "kind": "safeHtml" },
+          "showBuy": { "kind": "boolean" },
+          "summary": { "kind": "string", "optional": true }
+        }
+      }
+    }
+  ],
+  "actions": [
+    {
+      "actionId": "add_to_cart",
+      "input": {
+        "kind": "object",
+        "shape": {
+          "productId": { "kind": "string" },
+          "quantity": { "kind": "integer" },
+          "mode": {
+            "kind": "union",
+            "variants": [
+              { "kind": "literal", "value": "buy" },
+              { "kind": "literal", "value": "reserve" }
+            ]
+          }
+        }
+      },
+      "output": {
+        "kind": "object",
+        "shape": {
+          "saved": { "kind": "boolean" },
+          "message": { "kind": "string", "optional": true, "nullable": true },
+          "status": { "kind": "enum", "values": ["accepted", "rejected"] }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-labelledby="title">
+  <title id="title">GoBeyond field notes</title>
+  <rect width="1200" height="630" fill="#e7dec5"/>
+  <g fill="#fff" stroke="#173f35" stroke-width="12">
+    <rect x="110" y="110" width="280" height="410" rx="24"/>
+    <rect x="460" y="110" width="280" height="410" rx="24"/>
+    <rect x="810" y="110" width="280" height="410" rx="24"/>
+  </g>
+  <g stroke="#2f765f" stroke-width="20" stroke-linecap="round">
+    <path d="M165 205h170M165 275h140M165 345h170"/>
+    <path d="M515 205h170M515 275h140M515 345h170"/>
+    <path d="M865 205h170M865 275h140M865 345h170"/>
+  </g>
+</svg>

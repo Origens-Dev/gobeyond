@@ -1,0 +1,52 @@
+:root {
+  color: #17211b;
+  background: #f4f1e8;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+body > #__gobeyond {
+  min-height: 100vh;
+}
+
+header,
+main,
+footer {
+  box-sizing: border-box;
+  width: min(100% - 2rem, 68rem);
+  margin-inline: auto;
+}
+
+header,
+footer {
+  padding-block: 1.25rem;
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+main {
+  min-height: 70vh;
+  padding-block: 3rem;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  color: #125f46;
+}
+
+button {
+  min-height: 2.75rem;
+  padding-inline: 1rem;
+}

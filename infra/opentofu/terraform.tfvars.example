@@ -1,0 +1,24 @@
+aws_region         = "us-west-2"
+name               = "gobeyond-demo"
+availability_zones = ["us-west-2a", "us-west-2b"]
+private_subnet_cidrs = [
+  "10.42.10.0/24",
+  "10.42.11.0/24",
+]
+public_subnet_cidrs = [
+  "10.42.110.0/24",
+  "10.42.111.0/24",
+]
+
+# Pin an image digest in real deployments. The final image must contain only
+# the Go executable and server-side generated artifacts, never Node or npm.
+server_image  = "123456789012.dkr.ecr.us-west-2.amazonaws.com/gobeyond@sha256:replace-me"
+public_origin = "https://www.example.com"
+
+# This is normally emitted from dist/deploy/route-trie.json during release
+# preparation. Every path here maps to an S3 object at <path>/index.html.
+static_route_paths    = ["/", "/about", "/robots.txt", "/sitemap.xml"]
+static_route_prefixes = ["/marketing/"]
+public_asset_paths    = ["/images/trail-pack.svg", "/social/home.svg", "/social/article.svg"]
+
+# Optional: aliases = ["www.example.com"] and an ACM certificate in us-east-1.

@@ -1,0 +1,13 @@
+{
+  "projectRoot": "../../../..",
+  "routes": [
+    {
+      "routeId": "articles_slug",
+      "entryFile": "examples/seo-site/app/articles/[slug]/page.tsx"
+    },
+    {
+      "routeId": "products_slug",
+      "entryFile": "examples/seo-site/app/products/[slug]/page.tsx"
+    }
+  ]
+}

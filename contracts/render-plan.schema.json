@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gobeyond.dev/schemas/render-plan-v1alpha1.json",
+  "title": "GoBeyond portable rendering plan",
+  "type": "object",
+  "required": ["apiVersion", "routeId", "root"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "gobeyond.render/v1alpha1" },
+    "routeId": { "type": "string", "minLength": 1 },
+    "root": { "$ref": "#/$defs/node" }
+  },
+  "$defs": {
+    "node": {
+      "oneOf": [
+        { "$ref": "#/$defs/element" },
+        { "$ref": "#/$defs/text" },
+        { "$ref": "#/$defs/fragment" },
+        { "$ref": "#/$defs/conditional" },
+        { "$ref": "#/$defs/each" },
+        { "$ref": "#/$defs/clientOnly" },
+        { "$ref": "#/$defs/rawHTML" }
+      ]
+    },
+    "element": {
+      "type": "object",
+      "required": ["kind", "tag"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "element" },
+        "tag": { "type": "string", "minLength": 1 },
+        "namespace": { "enum": ["html", "svg"] },
+        "attributes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attribute" },
+          "default": []
+        },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" },
+          "default": []
+        }
+      }
+    },
+    "attribute": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "value": { "$ref": "#/$defs/expression" },
+        "mode": {
+          "enum": ["string", "boolean", "url", "style"],
+          "default": "string"
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "text" },
+        "value": { "$ref": "#/$defs/expression" }
+      }
+    },
+    "fragment": {
+      "type": "object",
+      "required": ["kind", "children"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "fragment" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/node" } }
+      }
+    },
+    "conditional": {
+      "type": "object",
+      "required": ["kind", "test", "consequent"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "conditional" },
+        "test": { "$ref": "#/$defs/expression" },
+        "consequent": { "$ref": "#/$defs/node" },
+        "alternate": { "$ref": "#/$defs/node" }
+      }
+    },
+    "each": {
+      "type": "object",
+      "required": ["kind", "items", "item", "key", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "each" },
+        "items": { "$ref": "#/$defs/expression" },
+        "item": { "type": "string", "minLength": 1 },
+        "index": { "type": "string" },
+        "key": { "$ref": "#/$defs/expression" },
+        "body": { "$ref": "#/$defs/node" }
+      }
+    },
+    "clientOnly": {
+      "type": "object",
+      "required": ["kind", "fallback"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "clientOnly" },
+        "fallback": { "$ref": "#/$defs/node" }
+      }
+    },
+    "rawHTML": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "rawHtml" },
+        "value": { "$ref": "#/$defs/expression" }
+      }
+    },
+    "expression": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "literal" },
+            "value": {}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "path" },
+            "path": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": ["string", "integer"] }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "operator", "left", "right"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "binary" },
+            "operator": { "enum": ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "??"] },
+            "left": { "$ref": "#/$defs/expression" },
+            "right": { "$ref": "#/$defs/expression" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "operator", "operand"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "unary" },
+            "operator": { "enum": ["!", "-"] },
+            "operand": { "$ref": "#/$defs/expression" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "name", "arguments"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "helper" },
+			"name": { "enum": ["string", "lower", "upper", "join", "url", "style"] },
+            "arguments": { "type": "array", "items": { "$ref": "#/$defs/expression" } }
+          }
+        }
+      ]
+    }
+  }
+}

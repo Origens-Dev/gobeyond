@@ -1,0 +1,37 @@
+import cf from 'cloudfront';
+
+const staticOriginId = ${jsonencode(static_origin_id)};
+const dynamicOriginId = ${jsonencode(dynamic_origin_id)};
+const staticPaths = ${static_paths};
+const staticPrefixes = ${static_prefixes};
+
+function isStaticPath(uri) {
+  if (staticPaths.indexOf(uri) !== -1) return true;
+  for (let index = 0; index < staticPrefixes.length; index += 1) {
+    if (uri.startsWith(staticPrefixes[index])) return true;
+  }
+  return false;
+}
+
+function staticObjectURI(uri) {
+  // Browser assets and framework data retain their exact content-hashed names.
+  if (uri.startsWith('/_gobeyond/')) return uri;
+  if (uri === '/') return '/index.html';
+  if (uri.endsWith('/')) return uri + 'index.html';
+
+  // Generated documents are uploaded as <route>/index.html. Explicit extension
+  // paths such as /robots.txt and /sitemap.xml are uploaded unchanged.
+  const finalSegment = uri.slice(uri.lastIndexOf('/') + 1);
+  return finalSegment.indexOf('.') === -1 ? uri + '/index.html' : uri;
+}
+
+function handler(event) {
+  const request = event.request;
+  if (isStaticPath(request.uri)) {
+    cf.selectRequestOriginById(staticOriginId);
+    request.uri = staticObjectURI(request.uri);
+  } else {
+    cf.selectRequestOriginById(dynamicOriginId);
+  }
+  return request;
+}

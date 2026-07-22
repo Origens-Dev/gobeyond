@@ -1,0 +1,45 @@
+{
+  "apiVersion": "gobeyond.contract/v1alpha1",
+  "routes": [
+    {
+      "routeId": "products_slug",
+      "props": {
+        "kind": "object",
+        "shape": {
+          "slug": { "kind": "string" },
+          "name": { "kind": "string" },
+          "description": { "kind": "string" },
+          "canonical": { "kind": "string" },
+          "image": { "kind": "string" },
+          "imageAlt": { "kind": "string" },
+          "price": { "kind": "number" },
+          "priceLabel": { "kind": "string" },
+          "currency": { "kind": "string" },
+          "availability": {
+            "kind": "enum",
+            "values": ["InStock", "OutOfStock"]
+          }
+        }
+      }
+    }
+  ],
+  "actions": [
+    {
+      "actionId": "products_slug:addToCart",
+      "input": {
+        "kind": "object",
+        "shape": {
+          "productSlug": { "kind": "string" },
+          "quantity": { "kind": "integer" }
+        }
+      },
+      "output": {
+        "kind": "object",
+        "shape": {
+          "saved": { "kind": "boolean" },
+          "cartItemCount": { "kind": "integer" }
+        }
+      }
+    }
+  ]
+}
