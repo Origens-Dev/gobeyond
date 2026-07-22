@@ -67,11 +67,11 @@ func TestViteHonorsProjectPostCSSAndDoesNotExposeUnprefixedSecret(t *testing.T) 
 		t.Skip("workspace Vite is unavailable")
 	}
 	writeEnvFixture(t, root, ".env.production", "CONTENTFUL_DELIVERY_ACCESS_TOKEN=contentful-delivery-secret\nVITE_CONTENTFUL_SPACE_ID=space_123\n")
-	writeEnvFixture(t, root, "entry.js", "import './site.css'\nexport const publicSpace = import.meta.env.VITE_CONTENTFUL_SPACE_ID\nexport const secret = import.meta.env.CONTENTFUL_DELIVERY_ACCESS_TOKEN\n")
+	writeEnvFixture(t, root, "entry.js", "import './site.css'\nglobalThis.__PUBLIC_SPACE__ = import.meta.env.VITE_CONTENTFUL_SPACE_ID\nglobalThis.__SECRET__ = import.meta.env.CONTENTFUL_DELIVERY_ACCESS_TOKEN\n")
 	writeEnvFixture(t, root, "site.css", ":root { --tooling-test: source; }\n")
 	writeEnvFixture(t, root, "postcss-plugin.mjs", "export default { postcssPlugin: 'gobeyond-test-plugin', Declaration(declaration) { if (declaration.prop === '--tooling-test') declaration.value = 'processed' } }\n")
 	writeEnvFixture(t, root, "postcss.config.mjs", "import plugin from './postcss-plugin.mjs'\nexport default { plugins: [plugin] }\n")
-	writeEnvFixture(t, root, "vite.config.ts", "export default { publicDir: false, build: { emptyOutDir: false, rollupOptions: { input: process.env.GOBEYOND_CLIENT_ENTRY, output: { entryFileNames: 'app.js', assetFileNames: 'assets/[name]-[hash][extname]' } } } }\n")
+	writeEnvFixture(t, root, "vite.config.ts", "export default { publicDir: false, build: { outDir: process.env.GOBEYOND_STATIC_OUT, emptyOutDir: false, rollupOptions: { input: process.env.GOBEYOND_CLIENT_ENTRY, output: { entryFileNames: 'app.js', assetFileNames: 'assets/[name]-[hash][extname]' } } } }\n")
 
 	environment, err := projectEnvironment(root, "production")
 	if err != nil {
