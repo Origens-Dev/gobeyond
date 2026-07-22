@@ -63,6 +63,22 @@ func TestParsePreservesJSONNumbers(t *testing.T) {
 	}
 }
 
+func TestClientOnlyFallbackMayBeOmittedOrNull(t *testing.T) {
+	for _, root := range []string{
+		`{"kind":"clientOnly"}`,
+		`{"kind":"clientOnly","fallback":null}`,
+	} {
+		plan, err := Parse([]byte(`{"apiVersion":"gobeyond.render/v1alpha1","routeId":"client","root":` + root + `}`))
+		if err != nil {
+			t.Fatalf("parse %s: %v", root, err)
+		}
+		client, ok := plan.Root.(*ClientOnly)
+		if !ok || client.Fallback != nil {
+			t.Fatalf("unexpected client-only node: %#v", plan.Root)
+		}
+	}
+}
+
 func TestStrictDecodeRejectsUnknownProperties(t *testing.T) {
 	cases := []string{
 		`{"apiVersion":"gobeyond.render/v1alpha1","routeId":"x","extra":true,"root":{"kind":"fragment","children":[]}}`,

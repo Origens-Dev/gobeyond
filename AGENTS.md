@@ -12,7 +12,12 @@ begins at request-time data, actions, middleware, and API boundaries.
   `internal/` packages, never in a second route tree.
 - Do not move React component composition into Go handlers.
 - Initial Go-rendered markup must stay inside the documented portable profile.
-- Unsupported initial-render JavaScript is a compile error, never a silent CSR fallback.
+- Always attempt portable compilation, including inside `use client` modules.
+- Unsupported render code may downgrade only at its nearest `use client`
+  boundary, and every downgrade must be emitted in the client-boundary
+  manifest. Unsupported code without that boundary remains a compile error.
+- Parse, type, module, contract, and internal compiler errors are always fatal;
+  they must never be converted to client rendering.
 - All TypeScript-to-Go values cross a schema-generated contract.
 - Static props and generated route data are public; never put secrets in them.
 - Never add Node, npm, or source TypeScript execution to the production server.

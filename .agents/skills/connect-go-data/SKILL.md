@@ -27,6 +27,9 @@ authorization, a request-specific status, or SEO metadata.
    public origin, never the request Host header.
 7. Treat cookies or authorization as private/no-store. Public body content may
    not vary by authentication cookie.
+8. Keep indexable loader data in portable initial markup. A reported
+   `use client` downgrade or explicit `ClientOnly` region may have an optional
+   fallback, but it cannot be the only copy of critical route content.
 
 ```go
 func Page(ctx *gb.PageContext) (gb.PageResult[Props], error) {

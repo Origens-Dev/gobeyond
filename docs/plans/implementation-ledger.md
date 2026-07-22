@@ -82,8 +82,9 @@ OpenTofu validation is separate and requires the `tofu` binary:
 
 - No Suspense, streaming, ISR, runtime image optimization, parallel routes, or
   intercepted routes.
-- No general third-party server-render metadata; browser-only packages require
-  `ClientOnly` and a useful fallback.
+- No general third-party server-render metadata; unsupported package rendering
+  requires a reported package-authored or project-owned `use client` boundary.
+  Explicit `ClientOnly` fallbacks are optional.
 - No seamless routing of old browser sessions to old Go deployments; stale
   clients use guarded reload and actions are never replayed.
 - Conformance currently freezes a useful MVP corpus rather than claiming

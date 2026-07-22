@@ -65,7 +65,7 @@ func (*Each) isNode() {}
 
 type ClientOnly struct {
 	Kind     string `json:"kind"`
-	Fallback Node   `json:"fallback"`
+	Fallback Node   `json:"fallback,omitempty"`
 }
 
 func (*ClientOnly) isNode() {}

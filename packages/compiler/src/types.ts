@@ -45,7 +45,7 @@ export type EachNode = {
   key: PlanExpression
   body: PlanNode
 }
-export type ClientOnlyNode = { kind: 'clientOnly'; fallback: PlanNode }
+export type ClientOnlyNode = { kind: 'clientOnly'; fallback?: PlanNode | null }
 export type RawHTMLNode = { kind: 'rawHtml'; value: PlanExpression }
 
 export type PlanExpression =
@@ -97,8 +97,42 @@ export type CompileOptions = {
 }
 
 export type CompileResult =
-  | { ok: true; plan: RenderPlan; diagnostics: [] }
+  | {
+      ok: true
+      plan: RenderPlan
+      clientBoundaries: ClientBoundaryRecord[]
+      diagnostics: []
+    }
   | { ok: false; diagnostics: Diagnostic[] }
+
+export const CLIENT_BOUNDARY_API_VERSION =
+  'gobeyond.client-boundaries/v1alpha1' as const
+
+/**
+ * One compiler-approved downgrade at either a JSX call site or a route's root
+ * component. `source`, `boundary`, `start`, and `end` are stable Vite inputs;
+ * diagnostics and other compiler failures never appear in this list.
+ */
+export type ClientBoundaryRecord = {
+  id: string
+  routeId: string
+  /** Project-relative module containing the transformed call site/component. */
+  source: string
+  component: string
+  /** Project-relative module containing the nearest "use client" directive. */
+  boundary: string
+  reason: string
+  target: 'callSite' | 'component'
+  start: number
+  end: number
+  line: number
+  column: number
+}
+
+export type ClientBoundaryManifest = {
+  apiVersion: typeof CLIENT_BOUNDARY_API_VERSION
+  boundaries: ClientBoundaryRecord[]
+}
 
 export type SourceRoot = {
   /** Import prefix such as "@/" or "#components/". */
@@ -157,6 +191,8 @@ export type ProjectPlans = {
   contracts: ValueContracts
   /** Deterministic source-module composition for the browser route registry. */
   routeModules: ProjectRouteModules[]
+  /** Exact compiler-approved client-only transforms for the browser build. */
+  clientBoundaries: ClientBoundaryManifest
   staticBuild: StaticBuildArtifact
 }
 

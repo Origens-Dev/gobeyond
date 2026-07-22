@@ -106,6 +106,21 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
+  packages/vite:
+    devDependencies:
+      '@gobeyond/compiler':
+        specifier: workspace:*
+        version: link:../compiler
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vite:
+        specifier: 8.1.5
+        version: 8.1.5(@types/node@24.10.1)
+
 packages:
 
   '@asamuzakjp/css-color@5.1.11':

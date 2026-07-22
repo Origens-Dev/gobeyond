@@ -120,7 +120,9 @@ func validateNode(node Node, path string, depth int) error {
 		if n == nil || n.Kind != "clientOnly" {
 			return invalid(path+".kind", "clientOnly kind must be clientOnly")
 		}
-		return validateNode(n.Fallback, path+".fallback", depth+1)
+		if n.Fallback != nil {
+			return validateNode(n.Fallback, path+".fallback", depth+1)
+		}
 	case *RawHTML:
 		if n == nil || n.Kind != "rawHtml" {
 			return invalid(path+".kind", "rawHtml kind must be rawHtml")

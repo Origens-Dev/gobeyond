@@ -99,11 +99,16 @@
     },
     "clientOnly": {
       "type": "object",
-      "required": ["kind", "fallback"],
+      "required": ["kind"],
       "additionalProperties": false,
       "properties": {
         "kind": { "const": "clientOnly" },
-        "fallback": { "$ref": "#/$defs/node" }
+        "fallback": {
+          "oneOf": [
+            { "$ref": "#/$defs/node" },
+            { "type": "null" }
+          ]
+        }
       }
     },
     "rawHTML": {

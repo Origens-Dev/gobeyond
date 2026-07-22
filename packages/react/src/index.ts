@@ -1,4 +1,8 @@
-export { ClientOnly, type ClientOnlyProps } from "./client-only.js";
+export {
+  ClientOnly,
+  deferClientRender,
+  type ClientOnlyProps,
+} from "./client-only.js";
 export { SafeHTML, type SafeHTMLProps } from "./safe-html.js";
 export { join, lower, string, upper, url } from "./helpers.js";
 export type {

@@ -23,6 +23,7 @@ import {
   discoverRouteLayouts,
 } from './static-build.js'
 import {
+  CLIENT_BOUNDARY_API_VERSION,
   COMPILER_PROJECT_API_VERSION,
   STATIC_BUILD_API_VERSION,
   VALUE_CONTRACT_API_VERSION,
@@ -50,13 +51,14 @@ const sourceExtensions = ['.tsx', '.ts', '.jsx', '.js', '.mts', '.cts'] as const
 const replaceableExtensions = new Set(['.js', '.jsx', '.mjs', '.cjs'])
 
 class SourceGraph {
-  readonly context: CompilationContext = { componentStack: [] }
+  readonly context: CompilationContext
   readonly compilers = new Map<string, SourceCompiler>()
   readonly loading = new Map<string, Promise<SourceCompiler | undefined>>()
   readonly graphDiagnostics: Diagnostic[] = []
   readonly projectRoot: string
   readonly sourceRoots: ResolvedSourceRoot[]
   readonly appDirectory: string | undefined
+  readonly packageRoots = new Set<string>()
 
   constructor(
     projectRoot: string,
@@ -69,6 +71,13 @@ class SourceGraph {
       prefix: root.prefix,
       directory: resolve(this.projectRoot, root.directory),
     }))
+    this.context = {
+      componentStack: [],
+      diagnostics: [],
+      clientBoundaries: [],
+      routeId: '',
+      sourceName: (fileName) => toProjectPath(this.projectRoot, fileName),
+    }
     for (const root of this.sourceRoots) {
       if (root.prefix.length === 0) {
         this.graphDiagnostics.push(this.globalDiagnostic(
@@ -81,6 +90,7 @@ class SourceGraph {
   }
 
   async compileRoute(route: ProjectRoute): Promise<CompileResult> {
+    const boundaryStart = this.context.clientBoundaries.length
     const entryFile = resolve(this.projectRoot, route.entryFile)
     if (!this.isAllowedSourcePath(entryFile)) {
       return {
@@ -104,7 +114,12 @@ class SourceGraph {
     }
     const diagnostics = this.allDiagnostics()
     if (!plan || diagnostics.length > 0) return { ok: false, diagnostics }
-    return { ok: true, plan, diagnostics: [] }
+    return {
+      ok: true,
+      plan,
+      clientBoundaries: this.context.clientBoundaries.slice(boundaryStart),
+      diagnostics: [],
+    }
   }
 
   async routeLayouts(entryFile: string): Promise<string[]> {
@@ -118,7 +133,7 @@ class SourceGraph {
   allDiagnostics(): Diagnostic[] {
     return [
       ...this.graphDiagnostics,
-      ...[...this.compilers.values()].flatMap((compiler) => compiler.diagnostics),
+      ...this.context.diagnostics,
     ].sort(compareDiagnostics)
   }
 
@@ -212,6 +227,70 @@ class SourceGraph {
         compiler.registerImport(binding.localName, reference)
       }
     }
+    for (const statement of compiler.sourceFile.statements) {
+      if (
+        !ts.isExportDeclaration(statement) ||
+        statement.isTypeOnly ||
+        !statement.exportClause ||
+        !ts.isNamedExports(statement.exportClause) ||
+        statement.moduleSpecifier
+      ) continue
+      for (const element of statement.exportClause.elements) {
+        if (element.isTypeOnly) continue
+        const localName = element.propertyName?.text ?? element.name.text
+        const reference = compiler.imports.get(localName)
+        if (reference) compiler.registerReexport(element.name.text, reference)
+      }
+    }
+    for (const statement of compiler.sourceFile.statements) {
+      if (
+        !ts.isExportDeclaration(statement) ||
+        statement.isTypeOnly ||
+        !statement.moduleSpecifier ||
+        !ts.isStringLiteral(statement.moduleSpecifier)
+      ) continue
+      const specifier = statement.moduleSpecifier.text
+      const resolution = await this.resolveImport(fileName, specifier)
+      if (resolution.kind === 'asset') continue
+      if (resolution.kind === 'package') {
+        if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+          for (const element of statement.exportClause.elements) {
+            if (element.isTypeOnly) continue
+            compiler.registerReexport(element.name.text, {
+              kind: 'package',
+              specifier,
+            })
+          }
+        }
+        continue
+      }
+      if (resolution.kind === 'unresolved') {
+        compiler.reportImport(
+          statement.moduleSpecifier,
+          'GB1105',
+          `Cannot resolve re-export ${JSON.stringify(specifier)}: ${resolution.reason}`,
+          'Fix the package export, relative path, or source-root alias.',
+        )
+        continue
+      }
+      const targetCompiler = await this.load(resolution.fileName)
+      if (!targetCompiler) continue
+      if (!statement.exportClause) {
+        compiler.registerStarExport(targetCompiler)
+        continue
+      }
+      if (ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          if (element.isTypeOnly) continue
+          compiler.registerReexport(element.name.text, {
+            kind: 'local',
+            compiler: targetCompiler,
+            exportName: element.propertyName?.text ?? element.name.text,
+            specifier,
+          })
+        }
+      }
+    }
     return compiler
   }
 
@@ -224,10 +303,22 @@ class SourceGraph {
     } else if (isAbsolute(specifier)) {
       unresolvedBase = resolve(specifier)
     } else {
+      if (
+        specifier === 'react' ||
+        specifier.startsWith('react/') ||
+        specifier === '@gobeyond/react' ||
+        specifier.startsWith('@gobeyond/react/')
+      ) return { kind: 'package', specifier }
       const sourceRoot = this.sourceRoots
         .filter((root) => specifier.startsWith(root.prefix))
         .sort((left, right) => right.prefix.length - left.prefix.length)[0]
-      if (!sourceRoot) return { kind: 'package', specifier }
+      if (!sourceRoot) {
+        const packageResolution = await this.resolvePackageImport(
+          fromFile,
+          specifier,
+        )
+        return packageResolution ?? { kind: 'package', specifier }
+      }
       unresolvedBase = resolve(
         sourceRoot.directory,
         specifier.slice(sourceRoot.prefix.length),
@@ -254,8 +345,68 @@ class SourceGraph {
   }
 
   private isAllowedSourcePath(fileName: string): boolean {
-    return [this.projectRoot, ...this.sourceRoots.map((root) => root.directory)]
+    return [
+      this.projectRoot,
+      ...this.sourceRoots.map((root) => root.directory),
+      ...this.packageRoots,
+    ]
       .some((root) => isWithin(root, fileName))
+  }
+
+  private async resolvePackageImport(
+    fromFile: string,
+    specifier: string,
+  ): Promise<Resolution | undefined> {
+    const parsed = packageSpecifier(specifier)
+    if (!parsed) return undefined
+    let directory = dirname(fromFile)
+    while (true) {
+      const packageRoot = resolve(directory, 'node_modules', parsed.name)
+      const packageJSONFile = resolve(packageRoot, 'package.json')
+      const packageJSONSource = await readOptionalFile(packageJSONFile)
+      if (packageJSONSource !== undefined) {
+        let packageJSON: PackageJSON
+        try {
+          packageJSON = JSON.parse(packageJSONSource) as PackageJSON
+        } catch (error) {
+          return {
+            kind: 'unresolved',
+            specifier,
+            reason: `invalid ${packageJSONFile}: ${errorMessage(error)}`,
+          }
+        }
+        const target = packageEntry(packageJSON, parsed.subpath)
+        if (!target) {
+          return {
+            kind: 'unresolved',
+            specifier,
+            reason: `${packageJSONFile} does not export ${JSON.stringify(parsed.subpath || '.')}`,
+          }
+        }
+        const unresolvedTarget = resolve(packageRoot, target)
+        if (!isWithin(packageRoot, unresolvedTarget)) {
+          return {
+            kind: 'unresolved',
+            specifier,
+            reason: 'package export target escapes its package root',
+          }
+        }
+        for (const candidate of sourceCandidates(unresolvedTarget)) {
+          if (await isFile(candidate)) {
+            this.packageRoots.add(packageRoot)
+            return { kind: 'source', fileName: candidate }
+          }
+        }
+        // Workspace packages may intentionally point exports at build output
+        // that has not been emitted yet. Keep the import opaque here; if it is
+        // rendered as a component, GB1053 remains a fatal module diagnostic.
+        return { kind: 'package', specifier }
+      }
+      const parent = dirname(directory)
+      if (parent === directory) break
+      directory = parent
+    }
+    return undefined
   }
 
   private globalDiagnostic(code: string, message: string, fileName: string): Diagnostic {
@@ -269,6 +420,85 @@ class SourceGraph {
       column: 1,
     }
   }
+}
+
+type PackageJSON = {
+  exports?: unknown
+  module?: string
+  main?: string
+}
+
+function packageSpecifier(
+  specifier: string,
+): { name: string; subpath: string } | undefined {
+  if (specifier.startsWith('#')) return undefined
+  const parts = specifier.split('/')
+  const name = specifier.startsWith('@')
+    ? parts.slice(0, 2).join('/')
+    : parts[0]
+  if (!name) return undefined
+  const consumed = name.split('/').length
+  return { name, subpath: parts.slice(consumed).join('/') }
+}
+
+function packageEntry(packageJSON: PackageJSON, subpath: string): string | undefined {
+  const exportKey = subpath ? `./${subpath}` : '.'
+  if (packageJSON.exports !== undefined) {
+    const selected = selectPackageExport(packageJSON.exports, exportKey)
+    return typeof selected === 'string' ? selected : undefined
+  }
+  if (subpath) return `./${subpath}`
+  return packageJSON.module ?? packageJSON.main ?? './index.js'
+}
+
+function selectPackageExport(value: unknown, exportKey: string): string | undefined {
+  if (typeof value === 'string') return exportKey === '.' ? value : undefined
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      const selected = selectPackageExport(candidate, exportKey)
+      if (selected) return selected
+    }
+    return undefined
+  }
+  if (!value || typeof value !== 'object') return undefined
+  const object = value as Record<string, unknown>
+  const subpathKeys = Object.keys(object).filter((key) => key.startsWith('.'))
+  if (subpathKeys.length > 0) {
+    if (object[exportKey] !== undefined) {
+      return selectPackageConditions(object[exportKey])
+    }
+    for (const key of subpathKeys.sort()) {
+      const star = key.indexOf('*')
+      if (star === -1) continue
+      const prefix = key.slice(0, star)
+      const suffix = key.slice(star + 1)
+      if (!exportKey.startsWith(prefix) || !exportKey.endsWith(suffix)) continue
+      const wildcard = exportKey.slice(prefix.length, exportKey.length - suffix.length)
+      const selected = selectPackageConditions(object[key])
+      if (selected) return selected.replaceAll('*', wildcard)
+    }
+    return undefined
+  }
+  return selectPackageConditions(object)
+}
+
+function selectPackageConditions(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      const selected = selectPackageConditions(candidate)
+      if (selected) return selected
+    }
+    return undefined
+  }
+  if (!value || typeof value !== 'object') return undefined
+  const object = value as Record<string, unknown>
+  for (const condition of ['import', 'browser', 'module', 'default', 'require']) {
+    if (object[condition] === undefined) continue
+    const selected = selectPackageConditions(object[condition])
+    if (selected) return selected
+  }
+  return undefined
 }
 
 export async function compileFile(options: CompileFileOptions): Promise<CompileResult> {
@@ -301,6 +531,7 @@ export async function compileProject(
   const routeContracts: RouteValueContract[] = []
   const actionContracts: ActionValueContract[] = []
   const routeModules = []
+  const clientBoundaries = []
   const staticRoutes = []
   const projectDiagnostics: Diagnostic[] = []
 
@@ -319,7 +550,10 @@ export async function compileProject(
     }
     routeIds.add(route.routeId)
     const result = await graph.compileRoute(route)
-    if (result.ok) plans.push(result.plan)
+    if (result.ok) {
+      plans.push(result.plan)
+      clientBoundaries.push(...result.clientBoundaries)
+    }
 
     const absoluteEntry = resolve(options.projectRoot, route.entryFile)
     const layouts = await graph.routeLayouts(absoluteEntry)
@@ -408,6 +642,10 @@ export async function compileProject(
         actions: actionContracts,
       },
       routeModules,
+      clientBoundaries: {
+        apiVersion: CLIENT_BOUNDARY_API_VERSION,
+        boundaries: clientBoundaries.sort(compareClientBoundaries),
+      },
       staticBuild: {
         apiVersion: STATIC_BUILD_API_VERSION,
         routes: staticRoutes,
@@ -415,6 +653,16 @@ export async function compileProject(
     },
     diagnostics: [],
   }
+}
+
+function compareClientBoundaries(
+  left: { routeId: string; source: string; start: number; id: string },
+  right: { routeId: string; source: string; start: number; id: string },
+): number {
+  return left.routeId.localeCompare(right.routeId) ||
+    left.source.localeCompare(right.source) ||
+    left.start - right.start ||
+    left.id.localeCompare(right.id)
 }
 
 function toProjectPath(projectRoot: string, fileName: string): string {

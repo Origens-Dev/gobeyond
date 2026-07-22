@@ -17,11 +17,15 @@ Use this skill when React, generated code, Go, or hydration disagree.
    only generated diffs, and commit them with the schema change.
 3. Compare `page.schema.ts`, the generated Go props type, and the loader
    signature. The schema is the boundary source of truth.
-4. For a render-plan error, move unsupported initial computations to Go props,
-   use a portable helper, or use `ClientOnly` with a meaningful fallback.
+4. For a render-plan error, move unsupported initial computations to Go props
+   or use a portable helper. If browser rendering is intentional, mark the
+   nearest component module `use client` and verify the compiler emitted one
+   exact client-boundary record; explicit `ClientOnly` remains available with
+   an optional fallback.
 5. For hydration, compare no-JS Go HTML with the first React render. Check
    values, condition order, keys, whitespace, IDs, URLs, and client-only
-   fallbacks. Effects must not change initial markup.
+   fallbacks. An empty client boundary must render empty in Go and on React's
+   first pass, then mount after an effect.
 6. For a build mismatch, do not replay an action. Allow the guarded reload and
    investigate build IDs and deployment ordering.
 
@@ -32,5 +36,6 @@ pnpm test
 pnpm build && pnpm preview
 ```
 
-Do not silence a hydration warning or fall back to CSR for indexable content.
+Do not silence a hydration warning or move indexable content behind a client
+boundary. Parse, type, module, contract, and internal errors must remain fatal.
 See `docs/guides/debug-contracts.md`.

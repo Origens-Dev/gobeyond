@@ -98,6 +98,9 @@ func (r *Renderer) node(out *renderBuffer, node renderplan.Node, ctx renderConte
 	case *renderplan.Each:
 		return r.each(out, n, ctx, path)
 	case *renderplan.ClientOnly:
+		if n.Fallback == nil {
+			return nil
+		}
 		return r.node(out, n.Fallback, ctx, path+".fallback")
 	case *renderplan.RawHTML:
 		value, err := evaluate(n.Value, ctx.env, path+".value")

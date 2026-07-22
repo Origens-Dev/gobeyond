@@ -1,4 +1,5 @@
 import ts from 'typescript'
+import { createHash } from 'node:crypto'
 
 import { createDiagnostic, PortableCompileError } from './diagnostics.js'
 import {
@@ -6,6 +7,7 @@ import {
   type Attribute,
   type CompileOptions,
   type CompileResult,
+  type ClientBoundaryRecord,
   type Diagnostic,
   type PlanExpression,
   type PlanNode,
@@ -14,6 +16,11 @@ import {
 
 type ExpressionEnvironment = Map<string, PlanExpression>
 type NodeEnvironment = Map<string, PlanNode>
+type CompiledProperty = {
+  name: string
+  value?: PlanExpression
+  node?: PlanNode
+}
 type Component =
   | ts.FunctionDeclaration
   | ts.ArrowFunction
@@ -31,6 +38,20 @@ export type ComponentImport =
 
 export type CompilationContext = {
   componentStack: Array<{ key: string; display: string }>
+  diagnostics: Diagnostic[]
+  clientBoundaries: ClientBoundaryRecord[]
+  routeId: string
+  sourceName: (fileName: string) => string
+}
+
+function standaloneContext(): CompilationContext {
+  return {
+    componentStack: [],
+    diagnostics: [],
+    clientBoundaries: [],
+    routeId: '',
+    sourceName: (fileName) => fileName.replaceAll('\\', '/'),
+  }
 }
 
 const helperNames = new Set(['string', 'lower', 'upper', 'join', 'url'])
@@ -83,22 +104,36 @@ const urlAttributes = new Set([
   'src',
   'xlinkHref',
 ])
+const actionableTypeDiagnosticCodes = new Set([
+  2322, // assignment incompatibility
+  2339, // missing property
+  2345, // argument incompatibility
+  2739, // missing required properties
+  2741, // missing required property
+  2769, // no overload matches
+])
 
 export class SourceCompiler {
   readonly sourceFile: ts.SourceFile
   readonly checker: ts.TypeChecker
-  readonly diagnostics: Diagnostic[] = []
+  readonly diagnostics: Diagnostic[]
+  readonly isClientModule: boolean
   readonly components = new Map<string, Component>()
   readonly exportedComponents = new Set<string>()
+  readonly knownExports = new Set<string>()
   readonly imports = new Map<string, ComponentImport>()
+  readonly reexports = new Map<string, ComponentImport>()
+  readonly starExports: SourceCompiler[] = []
   readonly nodeScopes: NodeEnvironment[] = []
   readonly namespaceScopes: Array<'html' | 'svg'> = ['html']
+  readonly forwardedRefComponents = new Set<Component>()
 
   constructor(
     readonly sourceText: string,
     readonly fileName: string,
-    readonly context: CompilationContext = { componentStack: [] },
+    readonly context: CompilationContext = standaloneContext(),
   ) {
+    this.diagnostics = context.diagnostics
     this.sourceFile = ts.createSourceFile(
       fileName,
       sourceText,
@@ -106,7 +141,8 @@ export class SourceCompiler {
       true,
       ts.ScriptKind.TSX,
     )
-    this.checker = this.createTypeChecker()
+    const typeProgram = this.createTypeChecker()
+    this.checker = typeProgram.checker
     const parseDiagnostics = (
       this.sourceFile as ts.SourceFile & {
         parseDiagnostics?: readonly ts.DiagnosticWithLocation[]
@@ -127,10 +163,33 @@ export class SourceCompiler {
         column: location.character + 1,
       })
     }
+    for (const diagnostic of typeProgram.diagnostics) {
+      if (
+        diagnostic.start === undefined ||
+        !actionableTypeDiagnosticCodes.has(diagnostic.code)
+      ) continue
+      const location = this.sourceFile.getLineAndCharacterOfPosition(
+        diagnostic.start,
+      )
+      this.diagnostics.push({
+        code: `TS${diagnostic.code}`,
+        message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'),
+        suggestion: 'Fix the TypeScript type error before compiling the render plan.',
+        fileName: this.sourceFile.fileName,
+        start: diagnostic.start,
+        length: diagnostic.length,
+        line: location.line + 1,
+        column: location.character + 1,
+      })
+    }
+    this.isClientModule = hasClientDirective(this.sourceFile)
     this.collectComponents()
   }
 
-  private createTypeChecker(): ts.TypeChecker {
+  private createTypeChecker(): {
+    checker: ts.TypeChecker
+    diagnostics: readonly ts.DiagnosticWithLocation[]
+  } {
     const options: ts.CompilerOptions = {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.NodeNext,
@@ -161,11 +220,30 @@ export class SourceCompiler {
     host.fileExists = (name) => name === this.fileName || fileExists(name)
     host.readFile = (name) =>
       name === this.fileName ? this.sourceText : readFile(name)
-    return ts.createProgram([this.fileName], options, host).getTypeChecker()
+    const program = ts.createProgram([this.fileName], options, host)
+    return {
+      checker: program.getTypeChecker(),
+      diagnostics: /\.(?:tsx?|mts|cts)$/i.test(this.fileName)
+        ? program
+            .getSemanticDiagnostics(this.sourceFile)
+            .filter((diagnostic): diagnostic is ts.DiagnosticWithLocation =>
+              diagnostic.file === this.sourceFile && diagnostic.start !== undefined,
+            )
+        : [],
+    }
   }
 
   registerImport(localName: string, reference: ComponentImport): void {
     this.imports.set(localName, reference)
+  }
+
+  registerReexport(exportName: string, reference: ComponentImport): void {
+    this.reexports.set(exportName, reference)
+    if (reference.kind === 'local') this.knownExports.add(exportName)
+  }
+
+  registerStarExport(compiler: SourceCompiler): void {
+    this.starExports.push(compiler)
   }
 
   reportImport(
@@ -179,19 +257,97 @@ export class SourceCompiler {
 
   resolveExport(
     exportName: string,
-  ): { name: string; component: Component } | undefined {
+    visited: Set<string> = new Set(),
+  ): {
+    name: string
+    component: Component
+    compiler: SourceCompiler
+    clientBoundary?: SourceCompiler
+  } | undefined {
+    const visitKey = `${this.fileName}#${exportName}`
+    if (visited.has(visitKey)) return undefined
+    visited.add(visitKey)
     if (exportName === 'default') {
       const component = this.findDefaultComponent()
-      return component
-        ? { name: this.componentDisplayName(component), component }
-        : undefined
+      if (component) {
+        return {
+          name: this.componentDisplayName(component),
+          component,
+          compiler: this,
+          ...(this.isClientModule ? { clientBoundary: this } : {}),
+        }
+      }
+    } else if (this.exportedComponents.has(exportName)) {
+      const component = this.components.get(exportName)
+      if (component) {
+        return {
+          name: exportName,
+          component,
+          compiler: this,
+          ...(this.isClientModule ? { clientBoundary: this } : {}),
+        }
+      }
     }
-    if (!this.exportedComponents.has(exportName)) return undefined
-    const component = this.components.get(exportName)
-    return component ? { name: exportName, component } : undefined
+    const reexport = this.reexports.get(exportName)
+    if (reexport?.kind === 'local') {
+      const result = reexport.compiler.resolveExport(reexport.exportName, visited)
+      return result && this.isClientModule
+        ? { ...result, clientBoundary: this }
+        : result
+    }
+    if (exportName !== 'default') {
+      for (const compiler of this.starExports) {
+        const component = compiler.resolveExport(exportName, visited)
+        if (component) {
+          return this.isClientModule
+            ? { ...component, clientBoundary: this }
+            : component
+        }
+      }
+    }
+    return undefined
+  }
+
+  hasExport(exportName: string, visited: Set<string> = new Set()): boolean {
+    const visitKey = `${this.fileName}#${exportName}`
+    if (visited.has(visitKey)) return false
+    visited.add(visitKey)
+    if (this.knownExports.has(exportName)) return true
+    if (exportName !== 'default') {
+      return this.starExports.some((compiler) =>
+        compiler.hasExport(exportName, visited),
+      )
+    }
+    return false
+  }
+
+  clientBoundaryForExport(
+    exportName: string,
+    visited: Set<string> = new Set(),
+  ): SourceCompiler | undefined {
+    const visitKey = `${this.fileName}#${exportName}`
+    if (visited.has(visitKey)) return undefined
+    visited.add(visitKey)
+    if (this.isClientModule && this.hasExport(exportName)) return this
+    const reexport = this.reexports.get(exportName)
+    if (reexport?.kind === 'local') {
+      return reexport.compiler.clientBoundaryForExport(
+        reexport.exportName,
+        visited,
+      )
+    }
+    if (exportName !== 'default') {
+      for (const compiler of this.starExports) {
+        if (!compiler.hasExport(exportName)) continue
+        const boundary = compiler.clientBoundaryForExport(exportName, visited)
+        if (boundary) return boundary
+      }
+    }
+    return undefined
   }
 
   compile(routeId: string, componentName?: string): RenderPlan | undefined {
+    this.context.routeId = routeId
     if (routeId.trim() === '') {
       this.report(
         this.sourceFile,
@@ -217,7 +373,15 @@ export class SourceCompiler {
     }
 
     const name = componentName ?? this.componentDisplayName(component)
-    const root = this.compileComponent(name, component, new Map(), true)
+    const root = this.isClientModule
+      ? this.compileAtClientBoundary(
+          name,
+          component,
+          this,
+          'component',
+          () => this.compileComponent(name, component, new Map(), true),
+        )
+      : this.compileComponent(name, component, new Map(), true)
     if (root) this.validateHydrationTree(root, component)
     if (!root || this.diagnostics.length > 0) return undefined
     return { apiVersion: RENDER_PLAN_API_VERSION, routeId, root }
@@ -229,6 +393,7 @@ export class SourceCompiler {
     child: PlanNode,
     componentName?: string,
   ): RenderPlan | undefined {
+    this.context.routeId = routeId
     if (routeId.trim() === '') {
       this.report(
         this.sourceFile,
@@ -251,13 +416,23 @@ export class SourceCompiler {
       return undefined
     }
     const name = componentName ?? this.componentDisplayName(component)
-    const root = this.compileComponent(
-      name,
-      component,
-      new Map(),
-      true,
-      new Map([['children', child]]),
-    )
+    const compile = () =>
+      this.compileComponent(
+        name,
+        component,
+        new Map(),
+        true,
+        new Map([['children', child]]),
+      )
+    const root = this.isClientModule
+      ? this.compileAtClientBoundary(
+          name,
+          component,
+          this,
+          'component',
+          compile,
+        )
+      : compile()
     if (root) this.validateHydrationTree(root, component)
     if (!root || this.diagnostics.length > 0) return undefined
     return { apiVersion: RENDER_PLAN_API_VERSION, routeId, root }
@@ -269,20 +444,60 @@ export class SourceCompiler {
         this.components.set(statement.name.text, statement)
         if (this.hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
           this.exportedComponents.add(statement.name.text)
+          this.knownExports.add(
+            this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
+              ? 'default'
+              : statement.name.text,
+          )
         }
+        continue
+      }
+      if (ts.isClassDeclaration(statement)) {
+        if (this.hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+          this.knownExports.add(
+            this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
+              ? 'default'
+              : statement.name?.text ?? 'default',
+          )
+        }
+        continue
+      }
+      if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+        this.knownExports.add('default')
         continue
       }
       if (!ts.isVariableStatement(statement)) continue
       const exported = this.hasModifier(statement, ts.SyntaxKind.ExportKeyword)
       for (const declaration of statement.declarationList.declarations) {
-        if (
-          ts.isIdentifier(declaration.name) &&
-          declaration.initializer &&
-          (ts.isArrowFunction(declaration.initializer) ||
-            ts.isFunctionExpression(declaration.initializer))
-        ) {
-          this.components.set(declaration.name.text, declaration.initializer)
-          if (exported) this.exportedComponents.add(declaration.name.text)
+        if (ts.isIdentifier(declaration.name) && declaration.initializer) {
+          const component = this.componentFromExpression(declaration.initializer)
+          if (!component) continue
+          this.components.set(declaration.name.text, component)
+          if (exported) {
+            this.exportedComponents.add(declaration.name.text)
+            this.knownExports.add(declaration.name.text)
+          }
+        } else if (exported && ts.isIdentifier(declaration.name)) {
+          this.knownExports.add(declaration.name.text)
+        }
+      }
+    }
+    for (const statement of this.sourceFile.statements) {
+      if (
+        !ts.isExportDeclaration(statement) ||
+        statement.moduleSpecifier ||
+        !statement.exportClause ||
+        !ts.isNamedExports(statement.exportClause)
+      ) continue
+      for (const element of statement.exportClause.elements) {
+        const localName = element.propertyName?.text ?? element.name.text
+        if (this.components.has(localName)) {
+          this.exportedComponents.add(element.name.text)
+          this.knownExports.add(element.name.text)
+          if (localName !== element.name.text) {
+            const component = this.components.get(localName)
+            if (component) this.components.set(element.name.text, component)
+          }
         }
       }
     }
@@ -298,13 +513,39 @@ export class SourceCompiler {
       }
       if (
         ts.isExportAssignment(statement) &&
-        !statement.isExportEquals &&
-        ts.isIdentifier(statement.expression)
+        !statement.isExportEquals
       ) {
-        return this.components.get(statement.expression.text)
+        if (ts.isIdentifier(statement.expression)) {
+          return this.components.get(statement.expression.text)
+        }
+        return this.componentFromExpression(statement.expression)
       }
     }
-    return undefined
+    return this.components.get('default')
+  }
+
+  private componentFromExpression(expression: ts.Expression): Component | undefined {
+    expression = this.unwrapExpression(expression)
+    if (ts.isIdentifier(expression)) return this.components.get(expression.text)
+    if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+      return expression
+    }
+    if (!ts.isCallExpression(expression)) return undefined
+    const callName = expression.expression.getText(this.sourceFile)
+    if (callName === 'Object.assign') {
+      const target = expression.arguments[0]
+      return target ? this.componentFromExpression(target) : undefined
+    }
+    if (!['forwardRef', 'React.forwardRef', 'memo', 'React.memo'].includes(callName)) {
+      return undefined
+    }
+    const target = expression.arguments[0]
+    if (!target) return undefined
+    const component = this.componentFromExpression(target)
+    if (component && callName.endsWith('forwardRef')) {
+      this.forwardedRefComponents.add(component)
+    }
+    return component
   }
 
   private hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
@@ -373,12 +614,21 @@ export class SourceCompiler {
           rootComponent,
         )
       }
-      if (component.parameters.length > 1) {
+      if (
+        component.parameters.length > 1 &&
+        !this.forwardedRefComponents.has(component)
+      ) {
         this.report(
           component.parameters[1]!,
           'GB1011',
           'Portable function components accept a single props parameter.',
         )
+      }
+      if (this.forwardedRefComponents.has(component)) {
+        const ref = component.parameters[1]
+        if (ref && ts.isIdentifier(ref.name)) {
+          environment.set(ref.name.text, { kind: 'literal', value: null })
+        }
       }
 
       const componentBody = component.body
@@ -470,7 +720,31 @@ export class SourceCompiler {
     }
     for (const element of binding.elements) {
       if (element.dotDotDotToken) {
-        this.report(element, 'GB1016', 'Rest props are not portable.')
+        if (!ts.isIdentifier(element.name) || rootComponent) {
+          this.report(
+            element,
+            'GB1016',
+            'Rest props require a nested component with statically supplied props.',
+          )
+          continue
+        }
+        const consumed = new Set(
+          binding.elements
+            .filter((candidate) => !candidate.dotDotDotToken)
+            .map((candidate) =>
+              candidate.propertyName
+                ? this.propertyNameText(candidate.propertyName)
+                : ts.isIdentifier(candidate.name)
+                  ? candidate.name.text
+                  : undefined,
+            )
+            .filter((name): name is string => name !== undefined),
+        )
+        for (const [propName, value] of suppliedProps) {
+          if (!consumed.has(propName)) {
+            environment.set(`${element.name.text}.${propName}`, value)
+          }
+        }
         continue
       }
       if (!ts.isIdentifier(element.name)) {
@@ -627,6 +901,23 @@ export class SourceCompiler {
         children: this.compileJsxChildren(expression.children, environment),
       }
     }
+    if (ts.isCallExpression(expression)) {
+      const element = this.compileReactElementCall(expression, environment)
+      if (element.handled) return element.node
+    }
+    if (ts.isArrayLiteralExpression(expression)) {
+      return {
+        kind: 'fragment',
+        children: expression.elements.flatMap((element) => {
+          if (ts.isSpreadElement(element)) {
+            this.report(element, 'GB1080', 'Spread children are not portable.')
+            return []
+          }
+          const node = this.compileNodeExpression(element, environment)
+          return node ? [node] : []
+        }),
+      }
+    }
     if (ts.isConditionalExpression(expression)) {
       const test = this.compileExpression(expression.condition, environment)
       const consequent = this.compileNodeExpression(
@@ -692,6 +983,7 @@ export class SourceCompiler {
       element.openingElement.attributes,
       element.children,
       environment,
+      element,
     )
   }
 
@@ -713,6 +1005,7 @@ export class SourceCompiler {
       element.attributes,
       [],
       environment,
+      element,
     )
   }
 
@@ -908,18 +1201,21 @@ export class SourceCompiler {
     environment: ExpressionEnvironment,
   ): PlanNode | undefined {
     const fallback = this.findAttribute(attributes, 'fallback')
-    if (!fallback?.initializer || !ts.isJsxExpression(fallback.initializer)) {
-      this.report(
-        fallback ?? attributes,
-        'GB1040',
-        'ClientOnly requires a JSX fallback attribute.',
-        'Provide deterministic, SEO-safe markup: <ClientOnly fallback={<Placeholder />}>…</ClientOnly>.',
-      )
+    if (!fallback) {
+      void children
+      return { kind: 'clientOnly' }
+    }
+    if (!fallback.initializer || !ts.isJsxExpression(fallback.initializer)) {
+      this.report(fallback, 'GB1040', 'ClientOnly fallback must be JSX.')
       return undefined
     }
     if (!fallback.initializer.expression) {
-      this.report(fallback, 'GB1041', 'ClientOnly fallback cannot be empty.')
-      return undefined
+      void children
+      return { kind: 'clientOnly' }
+    }
+    if (this.isReactEmptyExpression(fallback.initializer.expression)) {
+      void children
+      return { kind: 'clientOnly', fallback: null }
     }
     const fallbackNode = this.compileNodeExpression(
       fallback.initializer.expression,
@@ -995,6 +1291,7 @@ export class SourceCompiler {
     attributes: ts.JsxAttributes,
     children: readonly ts.JsxChild[],
     environment: ExpressionEnvironment,
+    sourceNode: ts.Node,
   ): PlanNode | undefined {
     if (name.includes('.')) {
       this.report(
@@ -1030,6 +1327,20 @@ export class SourceCompiler {
       ],
     ])
 
+    return this.compileComponentReference(
+      name,
+      supplied,
+      suppliedNodes,
+      sourceNode,
+    )
+  }
+
+  private compileComponentReference(
+    name: string,
+    supplied: ExpressionEnvironment,
+    suppliedNodes: NodeEnvironment,
+    sourceNode: ts.Node,
+  ): PlanNode | undefined {
     const localComponent = this.components.get(name)
     if (localComponent) {
       return this.compileComponent(
@@ -1044,7 +1355,7 @@ export class SourceCompiler {
     const imported = this.imports.get(name)
     if (!imported) {
       this.report(
-        attributes.parent,
+        sourceNode,
         'GB1051',
         `Component ${name} is not a project-local function component.`,
         'Declare or import it from a configured project source root, or wrap browser-only markup in ClientOnly.',
@@ -1053,7 +1364,7 @@ export class SourceCompiler {
     }
     if (imported.kind === 'package') {
       this.report(
-        attributes.parent,
+        sourceNode,
         'GB1053',
         `Package component ${name} from ${JSON.stringify(imported.specifier)} cannot participate in Go-rendered markup.`,
         'Wrap the package component in ClientOnly with a deterministic fallback.',
@@ -1062,7 +1373,7 @@ export class SourceCompiler {
     }
     if (imported.kind === 'unresolved') {
       this.report(
-        attributes.parent,
+        sourceNode,
         'GB1054',
         `Cannot resolve component ${name} from ${JSON.stringify(imported.specifier)}: ${imported.reason}`,
         'Fix the import path or add an explicit source-root alias.',
@@ -1071,28 +1382,321 @@ export class SourceCompiler {
     }
     const target = imported.compiler.resolveExport(imported.exportName)
     if (!target) {
+      const knownExport = imported.compiler.hasExport(imported.exportName)
+      const reportUnsupportedShape = (): PlanNode | undefined => {
+        this.report(
+          sourceNode,
+          knownExport ? 'GB1056' : 'GB1055',
+          knownExport
+            ? `${JSON.stringify(imported.specifier)} exports ${JSON.stringify(imported.exportName)}, but its component shape is not portable.`
+            : `${JSON.stringify(imported.specifier)} does not export component ${JSON.stringify(imported.exportName)}.`,
+          knownExport
+            ? 'Keep it below a use client boundary or wrap it in ClientOnly.'
+            : 'Fix the export name or package entry point.',
+        )
+        return undefined
+      }
+      const clientBoundary = knownExport
+        ? imported.compiler.clientBoundaryForExport(imported.exportName)
+        : undefined
+      return clientBoundary
+        ? this.compileAtClientBoundary(
+            name,
+            sourceNode,
+            clientBoundary,
+            'callSite',
+            reportUnsupportedShape,
+          )
+        : reportUnsupportedShape()
+    }
+    const targetCompiler = target.compiler
+    const inheritedNamespace =
+      this.namespaceScopes[this.namespaceScopes.length - 1] ?? 'html'
+    const compile = () => {
+      targetCompiler.namespaceScopes.push(inheritedNamespace)
+      try {
+        return targetCompiler.compileComponent(
+          target.name,
+          target.component,
+          supplied,
+          false,
+          suppliedNodes,
+        )
+      } finally {
+        targetCompiler.namespaceScopes.pop()
+      }
+    }
+    const clientBoundary = target.clientBoundary
+    return clientBoundary
+      ? this.compileAtClientBoundary(
+          name,
+          sourceNode,
+          clientBoundary,
+          'callSite',
+          compile,
+        )
+      : compile()
+  }
+
+  private compileReactElementCall(
+    call: ts.CallExpression,
+    environment: ExpressionEnvironment,
+  ): { handled: boolean; node?: PlanNode } {
+    const callName = call.expression.getText(this.sourceFile)
+    if (
+      ![
+        'createElement',
+        'React.createElement',
+        'jsx',
+        'jsxs',
+        '_jsx',
+        '_jsxs',
+        'jsxDEV',
+        '_jsxDEV',
+      ].includes(callName)
+    ) {
+      return { handled: false }
+    }
+    const tagExpression = call.arguments[0]
+    if (!tagExpression) {
+      this.report(call, 'GB1091', `${callName} requires an element type.`)
+      return { handled: true }
+    }
+    const propsExpression = call.arguments[1]
+    const properties = propsExpression
+      ? this.compileObjectProperties(propsExpression, environment)
+      : []
+    if (!properties) return { handled: true }
+
+    const childNodes: PlanNode[] = []
+    const propertyChildren = properties.find((property) => property.name === 'children')
+    if (propertyChildren?.node) childNodes.push(propertyChildren.node)
+    if (propertyChildren?.value) {
+      childNodes.push({ kind: 'text', value: propertyChildren.value })
+    }
+    if (callName.endsWith('createElement')) {
+      for (const childExpression of call.arguments.slice(2)) {
+        const child = this.compileNodeExpression(childExpression, environment)
+        if (child) childNodes.push(child)
+      }
+    }
+    const filteredProperties = properties.filter(
+      (property) => property.name !== 'children' && property.name !== 'key',
+    )
+
+    if (ts.isStringLiteral(tagExpression)) {
+      const tag = tagExpression.text
+      const attributes: Attribute[] = []
+      for (const property of filteredProperties) {
+        if (property.name === 'ref' || /^on[A-Z]/.test(property.name)) continue
+        if (property.name === 'dangerouslySetInnerHTML') {
+          this.report(
+            propsExpression ?? call,
+            'GB1031',
+            'dangerouslySetInnerHTML is not portable.',
+            'Use SafeHTML with a schema-validated value.',
+          )
+          continue
+        }
+        if (!property.value) {
+          this.report(
+            propsExpression ?? call,
+            'GB1092',
+            `Element property ${property.name} must be a portable scalar.`,
+          )
+          continue
+        }
+        const mode = booleanAttributes.has(property.name)
+          ? 'boolean'
+          : urlAttributes.has(property.name)
+            ? 'url'
+            : property.name === 'style'
+              ? 'style'
+              : 'string'
+        attributes.push({ name: property.name, value: property.value, mode })
+      }
+      const inheritedNamespace = this.namespaceScopes.at(-1) ?? 'html'
+      const namespace = tag === 'svg' ? 'svg' : inheritedNamespace
+      return {
+        handled: true,
+        node: {
+          kind: 'element',
+          tag,
+          namespace,
+          attributes,
+          children: childNodes.flatMap((node) =>
+            node.kind === 'fragment' ? node.children : [node],
+          ),
+        },
+      }
+    }
+
+    if (!ts.isIdentifier(tagExpression)) {
       this.report(
-        attributes.parent,
-        'GB1055',
-        `${JSON.stringify(imported.specifier)} does not export portable function component ${JSON.stringify(imported.exportName)}.`,
-        'Export a project-owned function component or wrap the component in ClientOnly.',
+        tagExpression,
+        'GB1050',
+        `Element type ${tagExpression.getText(this.sourceFile)} is not portable.`,
+      )
+      return { handled: true }
+    }
+    const supplied = new Map<string, PlanExpression>()
+    const suppliedNodes = new Map<string, PlanNode>()
+    for (const property of filteredProperties) {
+      if (property.value) supplied.set(property.name, property.value)
+      if (property.node) suppliedNodes.set(property.name, property.node)
+    }
+    if (childNodes.length > 0) {
+      suppliedNodes.set(
+        'children',
+        childNodes.length === 1
+          ? childNodes[0]!
+          : { kind: 'fragment', children: childNodes },
+      )
+    }
+    const node = this.compileComponentReference(
+      tagExpression.text,
+      supplied,
+      suppliedNodes,
+      call,
+    )
+    return node ? { handled: true, node } : { handled: true }
+  }
+
+  private compileObjectProperties(
+    expression: ts.Expression,
+    environment: ExpressionEnvironment,
+  ): CompiledProperty[] | undefined {
+    expression = this.unwrapExpression(expression)
+    if (
+      expression.kind === ts.SyntaxKind.NullKeyword ||
+      (ts.isIdentifier(expression) && expression.text === 'undefined')
+    ) return []
+    if (
+      ts.isCallExpression(expression) &&
+      expression.expression.getText(this.sourceFile) === 'Object.assign'
+    ) {
+      const result: CompiledProperty[] = []
+      for (const argument of expression.arguments) {
+        const entries = this.compileObjectProperties(argument, environment)
+        if (!entries) return undefined
+        mergeProperties(result, entries)
+      }
+      return result
+    }
+    if (ts.isIdentifier(expression) || ts.isPropertyAccessExpression(expression)) {
+      const prefix = expression.getText(this.sourceFile) + '.'
+      const result: CompiledProperty[] = []
+      for (const [name, value] of environment) {
+        if (name.startsWith(prefix) && !name.slice(prefix.length).includes('.')) {
+          result.push({ name: name.slice(prefix.length), value })
+        }
+      }
+      if (result.length > 0) return result
+      this.report(
+        expression,
+        'GB1093',
+        `Object spread ${expression.getText(this.sourceFile)} is not statically known.`,
       )
       return undefined
     }
-    const inheritedNamespace =
-      this.namespaceScopes[this.namespaceScopes.length - 1] ?? 'html'
-    imported.compiler.namespaceScopes.push(inheritedNamespace)
-    try {
-      return imported.compiler.compileComponent(
-        target.name,
-        target.component,
-        supplied,
-        false,
-        suppliedNodes,
+    if (!ts.isObjectLiteralExpression(expression)) {
+      this.report(
+        expression,
+        'GB1093',
+        'Compiled JSX props must be an object literal or safe Object.assign call.',
       )
-    } finally {
-      imported.compiler.namespaceScopes.pop()
+      return undefined
     }
+    const result: CompiledProperty[] = []
+    for (const property of expression.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        const entries = this.compileObjectProperties(property.expression, environment)
+        if (!entries) return undefined
+        mergeProperties(result, entries)
+        continue
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        const value = this.compileExpression(property.name, environment)
+        if (!value) return undefined
+        mergeProperties(result, [{ name: property.name.text, value }])
+        continue
+      }
+      if (!ts.isPropertyAssignment(property)) {
+        this.report(property, 'GB1094', 'Compiled JSX props must be data properties.')
+        return undefined
+      }
+      const name = this.propertyNameText(property.name)
+      if (name === undefined) return undefined
+      if (name === 'children') {
+        const node = this.compileNodeExpression(property.initializer, environment)
+        if (node) mergeProperties(result, [{ name, node }])
+        else if (this.isReactEmptyExpression(property.initializer)) {
+          mergeProperties(result, [{ name }])
+        }
+        continue
+      }
+      if (name === 'ref' || /^on[A-Z]/.test(name)) {
+        mergeProperties(result, [{ name }])
+        continue
+      }
+      const value = this.compileExpression(property.initializer, environment)
+      if (!value) return undefined
+      mergeProperties(result, [{ name, value }])
+    }
+    return result
+  }
+
+  private compileAtClientBoundary(
+    component: string,
+    sourceNode: ts.Node,
+    boundaryCompiler: SourceCompiler,
+    target: ClientBoundaryRecord['target'],
+    compile: () => PlanNode | undefined,
+  ): PlanNode | undefined {
+    const diagnosticStart = this.context.diagnostics.length
+    const boundaryStart = this.context.clientBoundaries.length
+    const result = compile()
+    const diagnostics = this.context.diagnostics.slice(diagnosticStart)
+    if (result && diagnostics.length === 0) return result
+    if (
+      diagnostics.length === 0 ||
+      diagnostics.some((diagnostic) => !isDowngradeableDiagnostic(diagnostic))
+    ) {
+      return result
+    }
+
+    this.context.diagnostics.splice(diagnosticStart)
+    this.context.clientBoundaries.splice(boundaryStart)
+    const source = this.context.sourceName(this.fileName)
+    const boundary = this.context.sourceName(boundaryCompiler.fileName)
+    const start = sourceNode.getStart(this.sourceFile)
+    const end = sourceNode.getEnd()
+    const location = this.sourceFile.getLineAndCharacterOfPosition(start)
+    const identity = [
+      this.context.routeId,
+      source,
+      start,
+      end,
+      component,
+      boundary,
+      target,
+    ].join('\0')
+    this.context.clientBoundaries.push({
+      id: `gbc_${createHash('sha256').update(identity).digest('hex').slice(0, 20)}`,
+      routeId: this.context.routeId,
+      source,
+      component,
+      boundary,
+      reason: diagnostics
+        .map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`)
+        .join(' | '),
+      target,
+      start,
+      end,
+      line: location.line + 1,
+      column: location.character + 1,
+    })
+    return { kind: 'clientOnly' }
   }
 
   private tryCompileEach(
@@ -1375,8 +1979,16 @@ export class SourceCompiler {
         left &&
         right &&
         (operator === '==' || operator === '!=') &&
-        (!this.isPortableScalarEqualityOperand(expression.left, left) ||
-          !this.isPortableScalarEqualityOperand(expression.right, right))
+        (!this.isPortableScalarEqualityOperand(
+          expression.left,
+          left,
+          right,
+        ) ||
+          !this.isPortableScalarEqualityOperand(
+            expression.right,
+            right,
+            left,
+          ))
       ) {
         this.report(
           expression.operatorToken,
@@ -1497,6 +2109,7 @@ export class SourceCompiler {
   private isPortableScalarEqualityOperand(
     expression: ts.Expression,
     compiled: PlanExpression,
+    other: PlanExpression,
   ): boolean {
     if (compiled.kind === 'literal') {
       return (
@@ -1511,6 +2124,14 @@ export class SourceCompiler {
     if (compiled.kind === 'binary') {
       return !['&&', '||', '??'].includes(compiled.operator)
     }
+    if (
+      compiled.kind === 'path' &&
+      other.kind === 'literal' &&
+      (other.value === null ||
+        typeof other.value === 'string' ||
+        typeof other.value === 'number' ||
+        typeof other.value === 'boolean')
+    ) return true
     return this.isPortableScalarType(this.checker.getTypeAtLocation(expression))
   }
 
@@ -1699,7 +2320,8 @@ export class SourceCompiler {
         visit(node.consequent, ancestors)
         if (node.alternate) visit(node.alternate, ancestors)
       } else if (node.kind === 'each') visit(node.body, ancestors)
-      else if (node.kind === 'clientOnly') visit(node.fallback, ancestors)
+      else if (node.kind === 'clientOnly' && node.fallback)
+        visit(node.fallback, ancestors)
     }
     visit(root, [])
   }
@@ -1718,7 +2340,9 @@ export class SourceCompiler {
       case 'each':
         return this.planCanYieldTag(node.body, tag)
       case 'clientOnly':
-        return this.planCanYieldTag(node.fallback, tag)
+        return node.fallback
+          ? this.planCanYieldTag(node.fallback, tag)
+          : false
       default:
         return false
     }
@@ -1774,19 +2398,58 @@ export class SourceCompiler {
 }
 
 export function compileSource(options: CompileOptions): CompileResult {
+  const context = standaloneContext()
   const compiler = new SourceCompiler(
     options.sourceText,
     options.fileName ?? 'page.tsx',
+    context,
   )
   const plan = compiler.compile(options.routeId, options.componentName)
   if (!plan || compiler.diagnostics.length > 0) {
     return { ok: false, diagnostics: compiler.diagnostics }
   }
-  return { ok: true, plan, diagnostics: [] }
+  return {
+    ok: true,
+    plan,
+    clientBoundaries: context.clientBoundaries,
+    diagnostics: [],
+  }
 }
 
 export function compileSourceOrThrow(options: CompileOptions): RenderPlan {
   const result = compileSource(options)
   if (!result.ok) throw new PortableCompileError(result.diagnostics)
   return result.plan
+}
+
+function isDowngradeableDiagnostic(diagnostic: Diagnostic): boolean {
+  const match = /^GB(\d{4})$/.exec(diagnostic.code)
+  if (!match) return false
+  const number = Number(match[1])
+  if (number < 1010 || number > 1099) return false
+  // These codes describe broken module/export resolution, not unsupported
+  // render behavior, and must remain fatal even below a client directive.
+  return ![1051, 1053, 1054, 1055].includes(number)
+}
+
+function mergeProperties(
+  target: CompiledProperty[],
+  additions: readonly CompiledProperty[],
+): void {
+  for (const addition of additions) {
+    const existing = target.findIndex((property) => property.name === addition.name)
+    if (existing !== -1) target.splice(existing, 1)
+    target.push(addition)
+  }
+}
+
+function hasClientDirective(sourceFile: ts.SourceFile): boolean {
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isExpressionStatement(statement) ||
+      !ts.isStringLiteral(statement.expression)
+    ) return false
+    if (statement.expression.text === 'use client') return true
+  }
+  return false
 }

@@ -688,6 +688,10 @@ test('compileProject compiles the real SEO article and imported product componen
   )
   if (!result.ok) return
   assert.equal(result.output.apiVersion, 'gobeyond.compiler-project/v1alpha1')
+  assert.deepEqual(result.output.clientBoundaries, {
+    apiVersion: 'gobeyond.client-boundaries/v1alpha1',
+    boundaries: [],
+  })
   assert.deepEqual(
     result.output.plans.map((plan) => plan.routeId),
     ['articles_slug', 'products_slug'],
@@ -1075,6 +1079,249 @@ test('composes root and nested layouts and emits browser registry module order',
   assert.equal(root.children?.[0]?.kind, 'element')
   const nested = root.children?.[0]
   if (nested?.kind === 'element') assert.equal(nested.tag, 'section')
+})
+
+test('keeps portable use-client components in the Go plan without a downgrade', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `
+      import { Badge } from '../components/badge.js'
+      export default function Page() { return <main><Badge label="Portable" /></main> }
+    `,
+    'components/badge.tsx': `
+      'use client'
+      export function Badge({ label }: { label: string }) { return <strong>{label}</strong> }
+    `,
+  })
+  const result = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.deepEqual(result.clientBoundaries, [])
+  assert.equal(result.plan.root.kind, 'element')
+})
+
+test('downgrades unsupported rendering at the nearest use-client call site and reports it', async (t) => {
+  const files = {
+    'app/page.tsx': `
+      import { Widget } from '../components/widget.js'
+      export default function Page() { return <main><Widget /></main> }
+    `,
+    'components/widget.tsx': `
+      'use client'
+      export function Widget() {
+        const width = window.innerWidth
+        return <p>{width}</p>
+      }
+    `,
+  }
+  const projectRoot = await fixtureProject(t, files)
+  const first = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  const second = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(first.ok, true, first.ok ? '' : JSON.stringify(first.diagnostics))
+  assert.equal(second.ok, true, second.ok ? '' : JSON.stringify(second.diagnostics))
+  if (!first.ok || !second.ok) return
+  assert.deepEqual(first.clientBoundaries, second.clientBoundaries)
+  assert.equal(first.clientBoundaries.length, 1)
+  assert.deepEqual(
+    {
+      routeId: first.clientBoundaries[0]?.routeId,
+      source: first.clientBoundaries[0]?.source,
+      component: first.clientBoundaries[0]?.component,
+      boundary: first.clientBoundaries[0]?.boundary,
+      target: first.clientBoundaries[0]?.target,
+    },
+    {
+      routeId: 'root',
+      source: 'app/page.tsx',
+      component: 'Widget',
+      boundary: 'components/widget.tsx',
+      target: 'callSite',
+    },
+  )
+  assert.match(first.clientBoundaries[0]?.id ?? '', /^gbc_[0-9a-f]{20}$/)
+  assert.match(first.clientBoundaries[0]?.reason ?? '', /GB1071/)
+  assert.equal(first.plan.root.kind, 'element')
+  if (first.plan.root.kind === 'element') {
+    assert.deepEqual(first.plan.root.children, [{ kind: 'clientOnly' }])
+  }
+})
+
+test('keeps unmarked unsupported code and client-boundary module errors fatal', async (t) => {
+  const unmarkedRoot = await fixtureProject(t, {
+    'app/page.tsx': `export default function Page() { return <p>{window.innerWidth}</p> }`,
+  })
+  const unmarked = await compileFile({ projectRoot: unmarkedRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(unmarked.ok, false)
+  if (!unmarked.ok) assert.ok(unmarked.diagnostics.some((entry) => entry.code === 'GB1071'))
+
+  const brokenRoot = await fixtureProject(t, {
+    'app/page.tsx': `import Widget from '../components/widget.js'; export default function Page(){ return <Widget /> }`,
+    'components/widget.tsx': `'use client'; import Missing from './missing.js'; export default function Widget(){ return <Missing /> }`,
+  })
+  const broken = await compileFile({ projectRoot: brokenRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(broken.ok, false)
+  if (!broken.ok) assert.ok(broken.diagnostics.some((entry) => entry.code === 'GB1104'))
+
+  const parseRoot = await fixtureProject(t, {
+    'app/page.tsx': `import Widget from '../components/widget.js'; export default function Page(){ return <Widget /> }`,
+    'components/widget.tsx': `'use client'; export default function Widget(){ return <p>broken</div> }`,
+  })
+  const parse = await compileFile({ projectRoot: parseRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(parse.ok, false)
+  if (!parse.ok) assert.ok(parse.diagnostics.some((entry) => entry.code.startsWith('TS')))
+
+  const typeRoot = await fixtureProject(t, {
+    'app/page.tsx': `import Widget from '../components/widget.js'; export default function Page(){ return <Widget /> }`,
+    'components/widget.tsx': `'use client'; export default function Widget(){ const label: string = 42; return <p>{window.innerWidth}{label}</p> }`,
+  })
+  const type = await compileFile({ projectRoot: typeRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(type.ok, false)
+  if (!type.ok) assert.ok(type.diagnostics.some((entry) => entry.code === 'TS2322'))
+})
+
+test('resolves package exports and barrels to a package-authored use-client leaf', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `import { Card } from '@synthetic/react'; export default function Page(){ return <Card /> }`,
+    'node_modules/@synthetic/react/package.json': JSON.stringify({
+      name: '@synthetic/react',
+      type: 'module',
+      exports: { '.': './dist/index.mjs' },
+    }),
+    'node_modules/@synthetic/react/dist/index.mjs': `export * from '@synthetic/card'`,
+    'node_modules/@synthetic/card/package.json': JSON.stringify({
+      name: '@synthetic/card',
+      type: 'module',
+      exports: { '.': { import: './dist/index.mjs' } },
+    }),
+    'node_modules/@synthetic/card/dist/index.mjs': `
+      'use client'
+      export function Card() {
+        const width = window.innerWidth
+        return <div>{width}</div>
+      }
+    `,
+  })
+  const result = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics, null, 2))
+  if (!result.ok) return
+  assert.equal(result.clientBoundaries.length, 1)
+  assert.equal(result.clientBoundaries[0]?.boundary, 'node_modules/@synthetic/card/dist/index.mjs')
+  assert.equal(result.clientBoundaries[0]?.component, 'Card')
+})
+
+test('follows imported export aliases before downgrading a client package leaf', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `import { Navbar } from '@synthetic/ui'; export default function Page(){ return <Navbar /> }`,
+    'node_modules/@synthetic/ui/package.json': JSON.stringify({
+      name: '@synthetic/ui',
+      type: 'module',
+      exports: { '.': './dist/index.mjs' },
+    }),
+    'node_modules/@synthetic/ui/dist/index.mjs': `export * from '@synthetic/navbar'`,
+    'node_modules/@synthetic/navbar/package.json': JSON.stringify({
+      name: '@synthetic/navbar',
+      type: 'module',
+      exports: { '.': './dist/index.mjs' },
+    }),
+    'node_modules/@synthetic/navbar/dist/index.mjs': `
+      'use client'
+      import { navbar_default } from './chunk.mjs'
+      export { navbar_default as Navbar }
+    `,
+    'node_modules/@synthetic/navbar/dist/chunk.mjs': `
+      export class navbar_default {
+        render() { return null }
+      }
+    `,
+  })
+  const result = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics, null, 2))
+  if (!result.ok) return
+  assert.equal(result.clientBoundaries.length, 1)
+  assert.equal(result.clientBoundaries[0]?.component, 'Navbar')
+  assert.equal(
+    result.clientBoundaries[0]?.boundary,
+    'node_modules/@synthetic/navbar/dist/index.mjs',
+  )
+  assert.match(result.clientBoundaries[0]?.reason ?? '', /GB1056/)
+})
+
+test('downgrades a valid class package component only at its outer use-client wrapper', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `import { Gallery } from '../components/gallery.js'; export default function Page(){ return <Gallery /> }`,
+    'components/gallery.tsx': `
+      'use client'
+      import Masonry from 'react-masonry-css'
+      export function Gallery() { return <Masonry><p>Image</p></Masonry> }
+    `,
+    'node_modules/react-masonry-css/package.json': JSON.stringify({
+      name: 'react-masonry-css',
+      type: 'module',
+      exports: './index.js',
+    }),
+    'node_modules/react-masonry-css/index.js': `
+      export default class Masonry {
+        render() { return this.props.children }
+      }
+    `,
+  })
+  const result = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics, null, 2))
+  if (!result.ok) return
+  assert.equal(result.clientBoundaries.length, 1)
+  assert.equal(result.clientBoundaries[0]?.component, 'Gallery')
+  assert.equal(result.clientBoundaries[0]?.boundary, 'components/gallery.tsx')
+  assert.match(result.clientBoundaries[0]?.reason ?? '', /GB1056/)
+})
+
+test('normalizes Heroicon-style compiled JavaScript components into portable markup', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `
+      import { SparkIcon } from '@synthetic/icons/24/outline'
+      export default function Page() { return <SparkIcon className="size-6" title="Spark" /> }
+    `,
+    'node_modules/@synthetic/icons/package.json': JSON.stringify({
+      name: '@synthetic/icons',
+      type: 'module',
+      exports: { './24/outline': './dist/outline/index.js' },
+    }),
+    'node_modules/@synthetic/icons/dist/outline/index.js': `export { default as SparkIcon } from './SparkIcon.js'`,
+    'node_modules/@synthetic/icons/dist/outline/SparkIcon.js': `
+      import React, { forwardRef, memo } from 'react'
+      const SparkIcon = memo(forwardRef(function SparkIcon({ title, titleId, ...rest }, ref) {
+        return React.createElement(
+          'svg',
+          Object.assign({ viewBox: '0 0 24 24', fill: 'none', ref: ref }, rest),
+          title ? React.createElement('title', { id: titleId }, title) : null,
+          React.createElement('path', { d: 'M12 2v20' }),
+        )
+      }))
+      export default SparkIcon
+    `,
+  })
+  const result = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics, null, 2))
+  if (!result.ok) return
+  assert.deepEqual(result.clientBoundaries, [])
+  assert.equal(result.plan.root.kind, 'element')
+  if (result.plan.root.kind !== 'element') return
+  assert.equal(result.plan.root.tag, 'svg')
+  assert.deepEqual(
+    result.plan.root.attributes?.map((attribute) => attribute.name),
+    ['viewBox', 'fill', 'className'],
+  )
+  assert.equal(result.plan.root.children?.[0]?.kind, 'conditional')
+  assert.equal(result.plan.root.children?.[1]?.kind, 'element')
+})
+
+test('ClientOnly accepts an omitted or explicitly null fallback', () => {
+  for (const sourceText of [
+    `export default function Page(){ return <ClientOnly><canvas /></ClientOnly> }`,
+    `export default function Page(){ return <ClientOnly fallback={null}><canvas /></ClientOnly> }`,
+  ]) {
+    const result = compileSource({ routeId: 'root', sourceText })
+    assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+    if (result.ok) assert.equal(result.plan.root.kind, 'clientOnly')
+  }
 })
 
 async function fixtureProject(

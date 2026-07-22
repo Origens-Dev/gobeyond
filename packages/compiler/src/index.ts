@@ -21,6 +21,7 @@ export {
 } from './diagnostics.js'
 export {
   COMPILER_PROJECT_API_VERSION,
+  CLIENT_BOUNDARY_API_VERSION,
   RENDER_PLAN_API_VERSION,
   STATIC_BUILD_API_VERSION,
   VALUE_CONTRACT_API_VERSION,
@@ -29,6 +30,8 @@ export type {
   ActionContractCompileResult,
   ActionValueContract,
   Attribute,
+  ClientBoundaryManifest,
+  ClientBoundaryRecord,
   ClientOnlyNode,
   CompileOptions,
   CompileFileOptions,

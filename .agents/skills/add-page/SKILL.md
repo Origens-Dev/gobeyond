@@ -19,8 +19,11 @@ do not create a Go package unless the page needs request-time behavior.
    links, image `src`/`alt`, and primary copy in the initial markup.
 4. Add `page.build.ts` only for build-time data or `generateStaticParams`.
    Build-only code may use secrets, but its returned props are public.
-5. Use project-owned components and the portable React profile. Browser-only
-   widgets require `<ClientOnly fallback={...}>`; the fallback must be useful.
+5. Use project-owned components and the portable React profile. The compiler
+   still attempts portable compilation below `use client`; unsupported render
+   code may downgrade only at the nearest marked boundary and is reported in
+   the build output. Explicit `<ClientOnly>` remains available, and its
+   fallback is optional.
 6. Run generation and verify static output before considering Go.
 
 `gobeyond add page <route>` creates a portable `page.tsx` and empty
@@ -45,6 +48,7 @@ pnpm test
 pnpm build
 ```
 
-Do not use effects, browser globals, or client-only regions for indexable
-content. See `docs/guides/add-page.md` and `$connect-go-data` when build-time
-data is insufficient.
+Write indexable content portably so it remains in the Go response. Optional
+client-only fallbacks are progressive enhancement, not the only copy of
+critical content. See `docs/guides/add-page.md` and `$connect-go-data` when
+build-time data is insufficient.

@@ -31,9 +31,10 @@ serialized into generated HTML and route data.
 
 Keep initial markup portable: use intrinsic tags and project components, props,
 conditions, and keyed lists. The title, headings, links, image fallbacks, and
-main copy belong in the initial HTML. A browser-only map or chart must use
-`ClientOnly` with a useful fallback; it cannot contain the only copy of an SEO
-page.
+main copy belong in the initial HTML. The compiler attempts portable
+compilation inside `use client` modules and reports any exact call site it must
+downgrade. Explicit `ClientOnly` is also available with an optional fallback;
+an empty client boundary cannot contain the only copy of an SEO page.
 
 ```tsx
 export default function Article({ title, summary }: Props) {

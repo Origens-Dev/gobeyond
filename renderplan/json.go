@@ -166,9 +166,12 @@ func decodeNode(data []byte, path string) (Node, error) {
 		if err := strictUnmarshal(data, &raw); err != nil {
 			return nil, decodeError(path, "invalid clientOnly", err)
 		}
-		fallback, err := decodeNode(raw.Fallback, path+".fallback")
-		if err != nil {
-			return nil, err
+		var fallback Node
+		if len(raw.Fallback) > 0 && string(raw.Fallback) != "null" {
+			fallback, err = decodeNode(raw.Fallback, path+".fallback")
+			if err != nil {
+				return nil, err
+			}
 		}
 		return &ClientOnly{Kind: raw.Kind, Fallback: fallback}, nil
 	case "rawHtml":

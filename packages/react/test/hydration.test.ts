@@ -26,6 +26,14 @@ function ClientBoundaryPage({ label }: { label: string }) {
   );
 }
 
+function EmptyClientBoundaryPage({ label }: { label: string }) {
+  return createElement(
+    ClientOnly,
+    null,
+    createElement("p", null, `${label} active`),
+  );
+}
+
 function installDOM(dom: JSDOM) {
   const previous = {
     window: globalThis.window,
@@ -101,6 +109,32 @@ test("ClientOnly hydrates its fallback before activating browser content", async
       });
     });
     assert.equal(dom.window.document.querySelector("p")?.textContent, "Map active");
+    assert.deepEqual(recoverable, []);
+    await act(async () => result?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("ClientOnly hydrates empty Go output before mounting browser content", async () => {
+  const props = { label: "Chart" };
+  const markup = renderToString(createElement(EmptyClientBoundaryPage, props));
+  assert.equal(markup, "");
+  const dom = documentFor("empty-client-boundary", props, markup);
+  const restore = installDOM(dom);
+  const recoverable: unknown[] = [];
+
+  try {
+    let result: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      result = bootstrap({
+        routes: { "empty-client-boundary": EmptyClientBoundaryPage },
+        document: dom.window.document,
+        onRecoverableError: (error) => recoverable.push(error),
+      });
+    });
+    assert.equal(dom.window.document.querySelector("p")?.textContent, "Chart active");
     assert.deepEqual(recoverable, []);
     await act(async () => result?.root.unmount());
   } finally {

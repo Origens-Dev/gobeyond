@@ -6,8 +6,12 @@ For a supported component, the Go renderer, React's server renderer used by
 conformance tests, and React's first hydration render must produce the same
 browser-normalized DOM.
 
-The compiler rejects render-time JavaScript outside the portable profile. It
-does not silently fall back to client rendering.
+The compiler always attempts the portable profile, including in `use client`
+modules. Unsupported render behavior can downgrade only at the nearest marked
+client boundary. The compiler emits a deterministic source-location record for
+each downgrade, and Vite transforms only those recorded call sites. Unmarked
+unsupported code and all parse, type, module, contract, and internal failures
+remain fatal.
 
 ## Source boundaries
 
@@ -48,9 +52,12 @@ later without changing the semantic plan version.
 ## Build and runtime
 
 At build time, TypeScript and TSX are parsed, validated, and compiled into a
-render plan and a browser bundle. Static build data is schema-validated,
+render plan, a client-boundary manifest, and a browser bundle. Static build data is schema-validated,
 rendered through the Go renderer, and packaged under `runtime-data/` for the
-same Go binary to serve during soft navigation. The build ID fingerprints the
+same Go binary to serve during soft navigation. A client-only plan node may
+carry portable fallback markup or no fallback. In the empty case Go emits no
+markup and the browser wrapper also returns `null` on its first render; an
+effect mounts the original component after hydration. The build ID fingerprints the
 source tree and finalized plans, contracts, route modules, static props, and
 pinned React version.
 

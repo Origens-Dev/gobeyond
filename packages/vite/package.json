@@ -1,0 +1,28 @@
+{
+  "name": "@gobeyond/vite",
+  "version": "0.1.0-alpha.0",
+  "description": "Exact client-boundary transforms for GoBeyond Vite builds",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": ["dist/src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "vite": ">=7.0.0 <9.0.0"
+  },
+  "devDependencies": {
+    "@gobeyond/compiler": "workspace:*",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3",
+    "vite": "8.1.5"
+  }
+}

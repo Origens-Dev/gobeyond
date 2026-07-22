@@ -39,10 +39,12 @@ imports only the generated packages under `internal/gobeyondgen/`.
 
 - Cross-file project React components compile to versioned rendering plans.
 - Intrinsic HTML/SVG, fragments, props, conditions, keyed lists, forms,
-  deterministic initial state, events, opaque effects, and `ClientOnly`
-  fallbacks have a strict portable profile.
-- Unsupported render-time JavaScript is a source-located compile error; there
-  is no silent client-rendering fallback.
+  deterministic initial state, events, opaque effects, and `ClientOnly` have a
+  strict portable profile.
+- Portable compilation is attempted below `use client`. Unsupported render
+  behavior may downgrade only at the nearest marked boundary, is reported in a
+  deterministic manifest, and is transformed at that exact browser call site.
+  Unmarked unsupported code and non-portability failures remain fatal.
 - TypeScript page/action schemas generate deterministic, committed Go types.
 - Go produces full metadata, canonical URLs, JSON-LD, semantic body HTML,
   hydration data, real redirects, and real `404` responses.
@@ -142,8 +144,9 @@ go run ./cmd/gobeyond preview
 SEO-critical initial markup may use project-owned components, schema-backed
 props, deterministic expressions, typed conditions, and stable keyed maps.
 Event handlers and effect bodies stay browser JavaScript and are not executed
-by Go. `ClientOnly` is available for genuinely browser-only third-party UI, but
-its fallback must carry any content required without JavaScript.
+by Go. `ClientOnly` is available for genuinely browser-only third-party UI and
+its fallback is optional. Keep content required without JavaScript outside an
+empty client boundary, or provide a portable fallback explicitly.
 
 Rich HTML is explicit: validate/sanitize it into the schema package's branded
 `SafeHTML` value, then render `<SafeHTML as="div" value={body} />`. Plain

@@ -195,6 +195,16 @@ func TestClientOnlyAndRawHTMLTrustBoundary(t *testing.T) {
 	}
 }
 
+func TestClientOnlyWithoutFallbackRendersEmptyMarkup(t *testing.T) {
+	got, err := Render(plan(&renderplan.ClientOnly{Kind: "clientOnly"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("expected empty client-only markup, got %q", got)
+	}
+}
+
 func TestURLSafetyVoidElementsAndUnsupportedAttributes(t *testing.T) {
 	cases := []struct {
 		name string

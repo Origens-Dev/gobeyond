@@ -26,13 +26,15 @@ The initial compiler supports intrinsic HTML/SVG, fragments, project-owned
 function components across relative imports and explicit source-root aliases,
 JSX `children` composition, props paths, portable unary/binary expressions,
 conditional markup, keyed `.map()` output, deterministic `useState` initial
-values, `SafeHTML`, and `ClientOnly` fallbacks. Event handlers and `useEffect`
+values, `SafeHTML`, and `ClientOnly` with an optional fallback. Event handlers and `useEffect`
 bodies remain browser code and do not enter the server plan.
 
-Unsupported initial-render JavaScript is a source-located compile error. The
-diagnostic explains whether to calculate the value in Go, use a portable
-helper, or isolate it behind `ClientOnly`; the compiler never silently switches
-the route to client rendering.
+The compiler attempts portable compilation even for `use client` modules.
+Unsupported render behavior may downgrade only at the nearest marked boundary;
+the result includes a deterministic `gobeyond.client-boundaries/v1alpha1`
+record with its route, source span, component, boundary module, and reason.
+Unmarked unsupported code remains a source-located compile error. Parse, type,
+module, contract, and internal errors are never downgraded.
 
 The CLI follows the source graph and writes a plan to stdout or a selected output file:
 
@@ -63,7 +65,7 @@ gobeyond-compile --project routes.json --out compiler-output.json
 The output is `gobeyond.compiler-project/v1alpha1` with ordered `plans` and a
 canonical `gobeyond.contract/v1alpha1` `contracts` object. It also includes
 `routeModules`, whose outer-to-inner `layoutFiles` order is the canonical input
-for the browser route registry, and a `gobeyond.static-build/v1alpha1`
+for the browser route registry, a `clientBoundaries` transform manifest, and a `gobeyond.static-build/v1alpha1`
 `staticBuild` artifact. A route defaults to
 `page.schema.ts` and optional `actions.ts` beside its entry file. Actions use
 the stable, case-sensitive ID `<routeId>:<exportedActionName>`.
@@ -104,6 +106,7 @@ const result = await compileProject({
 // result.output.plans
 // result.output.contracts
 // result.output.routeModules
+// result.output.clientBoundaries
 // result.output.staticBuild.routes[0].entries
 ```
 
@@ -113,9 +116,10 @@ never imported or executed.
 
 ## Intentional MVP boundaries
 
-- Third-party components require `ClientOnly`.
-- Source aliases must be explicit prefix/directory pairs; package resolution is
-  never guessed from the filesystem.
+- Package components are resolved through package exports and source barrels.
+  Portable package components join the Go plan; unsupported package code still
+  requires a package-authored or project-owned `use client` boundary.
+- Source aliases must be explicit prefix/directory pairs.
 - `useContext`, `useId`, `useLayoutEffect`, `useMemo`, and `useReducer` are
   rejected in initial rendering.
 - Suspense, streaming, arbitrary function calls, dynamic computed properties,

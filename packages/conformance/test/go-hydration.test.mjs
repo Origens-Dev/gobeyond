@@ -6,6 +6,7 @@ import { act } from 'react'
 import { JSDOM } from 'jsdom'
 
 import { compileSource } from '@gobeyond/compiler'
+import { ClientOnly } from '@gobeyond/react'
 import { bootstrap, BROWSER_PROTOCOL_VERSION } from '@gobeyond/react/browser'
 
 const source = `
@@ -88,6 +89,56 @@ test('Go output hydrates with pinned React and preserves interaction', async () 
     const button = dom.window.document.querySelector('button')
     await act(async () => button.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })))
     assert.equal(button.textContent, 'Count: 3')
+    await act(async () => result.root.unmount())
+  } finally {
+    restore()
+    dom.window.close()
+  }
+})
+
+test('empty Go client boundary hydrates before mounting browser content', async () => {
+  const compiled = compileSource({
+    routeId: 'client-boundary',
+    sourceText: `export default function Page() {
+      return <ClientOnly><p>{window.innerWidth}</p></ClientOnly>
+    }`,
+  })
+  assert.equal(compiled.ok, true, compiled.ok ? '' : JSON.stringify(compiled.diagnostics))
+  if (!compiled.ok) return
+  const markup = await renderWithGo(compiled.plan, {})
+  assert.equal(markup, '')
+
+  function ClientPage() {
+    return createElement(
+      ClientOnly,
+      null,
+      createElement('p', null, 'Browser content'),
+    )
+  }
+  const payload = JSON.stringify({
+    apiVersion: BROWSER_PROTOCOL_VERSION,
+    buildId: 'client-boundary-build',
+    routeId: 'client-boundary',
+    props: {},
+  })
+  const dom = new JSDOM(
+    `<!doctype html><body><div id="__gobeyond">${markup}</div>` +
+      `<script id="__GOBEYOND_DATA__" type="application/json">${payload}</script></body>`,
+    { url: 'https://example.com/' },
+  )
+  const restore = installDOM(dom)
+  const recoverable = []
+  try {
+    let result
+    await act(async () => {
+      result = bootstrap({
+        routes: { 'client-boundary': ClientPage },
+        document: dom.window.document,
+        onRecoverableError: (error) => recoverable.push(error),
+      })
+    })
+    assert.equal(dom.window.document.querySelector('p')?.textContent, 'Browser content')
+    assert.deepEqual(recoverable, [])
     await act(async () => result.root.unmount())
   } finally {
     restore()
