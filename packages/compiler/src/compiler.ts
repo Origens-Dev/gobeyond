@@ -115,7 +115,7 @@ const actionableTypeDiagnosticCodes = new Set([
 
 export class SourceCompiler {
   readonly sourceFile: ts.SourceFile
-  readonly checker: ts.TypeChecker
+  readonly checker: ts.TypeChecker | undefined
   readonly diagnostics: Diagnostic[]
   readonly isClientModule: boolean
   readonly components = new Map<string, Component>()
@@ -141,7 +141,9 @@ export class SourceCompiler {
       true,
       ts.ScriptKind.TSX,
     )
-    const typeProgram = this.createTypeChecker()
+    const typeProgram = /\.(?:tsx?|mts|cts)$/i.test(this.fileName)
+      ? this.createTypeChecker()
+      : { checker: undefined, diagnostics: [] }
     this.checker = typeProgram.checker
     const parseDiagnostics = (
       this.sourceFile as ts.SourceFile & {
@@ -187,7 +189,7 @@ export class SourceCompiler {
   }
 
   private createTypeChecker(): {
-    checker: ts.TypeChecker
+    checker: ts.TypeChecker | undefined
     diagnostics: readonly ts.DiagnosticWithLocation[]
   } {
     const options: ts.CompilerOptions = {
@@ -197,6 +199,7 @@ export class SourceCompiler {
       jsx: ts.JsxEmit.ReactJSX,
       strict: true,
       noEmit: true,
+      noResolve: true,
       skipLibCheck: true,
     }
     const host = ts.createCompilerHost(options)
@@ -2132,7 +2135,9 @@ export class SourceCompiler {
         typeof other.value === 'number' ||
         typeof other.value === 'boolean')
     ) return true
-    return this.isPortableScalarType(this.checker.getTypeAtLocation(expression))
+    return this.checker
+      ? this.isPortableScalarType(this.checker.getTypeAtLocation(expression))
+      : false
   }
 
   private isPortableScalarType(type: ts.Type): boolean {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
@@ -1243,6 +1243,55 @@ test('follows imported export aliases before downgrading a client package leaf',
     'node_modules/@synthetic/navbar/dist/index.mjs',
   )
   assert.match(result.clientBoundaries[0]?.reason ?? '', /GB1056/)
+})
+
+test('resolves export-star dependencies from a pnpm package realpath without traversing later stars', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `import { Navbar } from '@synthetic/ui'; export default function Page(){ return <Navbar /> }`,
+    'node_modules/.pnpm/@synthetic+ui@1.0.0/node_modules/@synthetic/ui/package.json': JSON.stringify({
+      name: '@synthetic/ui',
+      type: 'module',
+      exports: './dist/index.mjs',
+    }),
+    'node_modules/.pnpm/@synthetic+ui@1.0.0/node_modules/@synthetic/ui/dist/index.mjs': `
+      export * from '@synthetic/navbar'
+      export * from '@synthetic/invalid-after-navbar'
+    `,
+    'node_modules/.pnpm/@synthetic+ui@1.0.0/node_modules/@synthetic/navbar/package.json': JSON.stringify({
+      name: '@synthetic/navbar',
+      type: 'module',
+      exports: './dist/index.mjs',
+    }),
+    'node_modules/.pnpm/@synthetic+ui@1.0.0/node_modules/@synthetic/navbar/dist/index.mjs': `
+      'use client'
+      import { navbar_default } from './chunk.mjs'
+      export { navbar_default as Navbar }
+    `,
+    'node_modules/.pnpm/@synthetic+ui@1.0.0/node_modules/@synthetic/navbar/dist/chunk.mjs': `
+      export class navbar_default { render() { return null } }
+    `,
+    'node_modules/.pnpm/@synthetic+ui@1.0.0/node_modules/@synthetic/invalid-after-navbar/package.json': '{broken',
+  })
+  const logicalPackage = resolve(projectRoot, 'node_modules/@synthetic/ui')
+  await mkdir(resolve(logicalPackage, '..'), { recursive: true })
+  await symlink(
+    resolve(
+      projectRoot,
+      'node_modules/.pnpm/@synthetic+ui@1.0.0/node_modules/@synthetic/ui',
+    ),
+    logicalPackage,
+    'dir',
+  )
+
+  const result = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics, null, 2))
+  if (!result.ok) return
+  assert.equal(result.clientBoundaries.length, 1)
+  assert.equal(result.clientBoundaries[0]?.component, 'Navbar')
+  assert.match(
+    result.clientBoundaries[0]?.boundary ?? '',
+    /\.pnpm\/@synthetic\+ui@1\.0\.0\/node_modules\/@synthetic\/navbar\/dist\/index\.mjs$/,
+  )
 })
 
 test('downgrades a valid class package component only at its outer use-client wrapper', async (t) => {

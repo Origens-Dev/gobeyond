@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, realpath, stat } from 'node:fs/promises'
 import {
   dirname,
   extname,
@@ -137,21 +137,30 @@ class SourceGraph {
     ].sort(compareDiagnostics)
   }
 
-  private async load(fileName: string, entry = false): Promise<SourceCompiler | undefined> {
+  private async load(
+    fileName: string,
+    entry = false,
+    requestedExports?: ReadonlySet<string>,
+  ): Promise<SourceCompiler | undefined> {
     const absoluteFile = resolve(fileName)
-    const existing = this.compilers.get(absoluteFile)
+    const loadKey = `${absoluteFile}\0${requestedExports
+      ? [...requestedExports].sort().join(',')
+      : '*'}`
+    const existing = this.compilers.get(loadKey)
     if (existing) return existing
-    const inFlight = this.loading.get(absoluteFile)
+    const inFlight = this.loading.get(loadKey)
     if (inFlight) return inFlight
 
-    const promise = this.loadUncached(absoluteFile, entry)
-    this.loading.set(absoluteFile, promise)
+    const promise = this.loadUncached(absoluteFile, entry, requestedExports, loadKey)
+    this.loading.set(loadKey, promise)
     return promise
   }
 
   private async loadUncached(
     fileName: string,
     entry: boolean,
+    requestedExports: ReadonlySet<string> | undefined,
+    loadKey: string,
   ): Promise<SourceCompiler | undefined> {
     let sourceText: string
     try {
@@ -168,14 +177,20 @@ class SourceGraph {
     const compiler = new SourceCompiler(sourceText, fileName, this.context)
     // Register before traversing imports so an import cycle terminates. A render
     // cycle is diagnosed later using the shared component stack.
-    this.compilers.set(fileName, compiler)
+    this.compilers.set(loadKey, compiler)
+
+    const componentReferences = referencedComponentNames(compiler.sourceFile)
+    const forwardedImports = forwardedImportNames(compiler.sourceFile)
 
     for (const statement of compiler.sourceFile.statements) {
       if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
         continue
       }
       const specifier = statement.moduleSpecifier.text
-      const bindings = importBindings(statement)
+      const bindings = importBindings(statement).filter((binding) =>
+        componentReferences.has(binding.localName) ||
+        forwardedImports.has(binding.localName),
+      )
       if (statement.importClause?.isTypeOnly || bindings.length === 0) continue
       const resolution = await this.resolveImport(fileName, specifier)
 
@@ -206,7 +221,11 @@ class SourceGraph {
         continue
       }
 
-      const importedCompiler = await this.load(resolution.fileName)
+      const importedCompiler = await this.load(
+        resolution.fileName,
+        false,
+        new Set(bindings.map((binding) => binding.exportName)),
+      )
       if (!importedCompiler) {
         for (const binding of bindings) {
           compiler.registerImport(binding.localName, {
@@ -236,6 +255,7 @@ class SourceGraph {
         statement.moduleSpecifier
       ) continue
       for (const element of statement.exportClause.elements) {
+        if (requestedExports && !requestedExports.has(element.name.text)) continue
         if (element.isTypeOnly) continue
         const localName = element.propertyName?.text ?? element.name.text
         const reference = compiler.imports.get(localName)
@@ -250,12 +270,19 @@ class SourceGraph {
         !ts.isStringLiteral(statement.moduleSpecifier)
       ) continue
       const specifier = statement.moduleSpecifier.text
+      const selectedElements = statement.exportClause &&
+        ts.isNamedExports(statement.exportClause)
+        ? statement.exportClause.elements.filter((element) =>
+            !element.isTypeOnly &&
+            (!requestedExports || requestedExports.has(element.name.text)),
+          )
+        : undefined
+      if (selectedElements && selectedElements.length === 0) continue
       const resolution = await this.resolveImport(fileName, specifier)
       if (resolution.kind === 'asset') continue
       if (resolution.kind === 'package') {
-        if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
-          for (const element of statement.exportClause.elements) {
-            if (element.isTypeOnly) continue
+        if (selectedElements) {
+          for (const element of selectedElements) {
             compiler.registerReexport(element.name.text, {
               kind: 'package',
               specifier,
@@ -273,15 +300,27 @@ class SourceGraph {
         )
         continue
       }
-      const targetCompiler = await this.load(resolution.fileName)
+      const targetExports = selectedElements
+        ? new Set(selectedElements.map((element) =>
+            element.propertyName?.text ?? element.name.text,
+          ))
+        : requestedExports
+      const targetCompiler = await this.load(
+        resolution.fileName,
+        false,
+        targetExports,
+      )
       if (!targetCompiler) continue
       if (!statement.exportClause) {
         compiler.registerStarExport(targetCompiler)
+        if (
+          requestedExports &&
+          [...requestedExports].every((name) => compiler.hasExport(name))
+        ) break
         continue
       }
-      if (ts.isNamedExports(statement.exportClause)) {
-        for (const element of statement.exportClause.elements) {
-          if (element.isTypeOnly) continue
+      if (selectedElements) {
+        for (const element of selectedElements) {
           compiler.registerReexport(element.name.text, {
             kind: 'local',
             compiler: targetCompiler,
@@ -359,9 +398,21 @@ class SourceGraph {
   ): Promise<Resolution | undefined> {
     const parsed = packageSpecifier(specifier)
     if (!parsed) return undefined
-    let directory = dirname(fromFile)
-    while (true) {
+    const startDirectories = [dirname(fromFile)]
+    try {
+      const physicalDirectory = dirname(await realpath(fromFile))
+      if (!startDirectories.includes(physicalDirectory)) {
+        startDirectories.push(physicalDirectory)
+      }
+    } catch {
+      // The caller reports unreadable source modules; resolution can still try
+      // the logical path here.
+    }
+    const searched = new Set<string>()
+    for (const directory of ancestorDirectories(startDirectories)) {
       const packageRoot = resolve(directory, 'node_modules', parsed.name)
+      if (searched.has(packageRoot)) continue
+      searched.add(packageRoot)
       const packageJSONFile = resolve(packageRoot, 'package.json')
       const packageJSONSource = await readOptionalFile(packageJSONFile)
       if (packageJSONSource !== undefined) {
@@ -402,9 +453,6 @@ class SourceGraph {
         // rendered as a component, GB1053 remains a fatal module diagnostic.
         return { kind: 'package', specifier }
       }
-      const parent = dirname(directory)
-      if (parent === directory) break
-      directory = parent
     }
     return undefined
   }
@@ -439,6 +487,72 @@ function packageSpecifier(
   if (!name) return undefined
   const consumed = name.split('/').length
   return { name, subpath: parts.slice(consumed).join('/') }
+}
+
+function ancestorDirectories(startDirectories: readonly string[]): string[] {
+  const result: string[] = []
+  for (const start of startDirectories) {
+    let directory = start
+    while (true) {
+      result.push(directory)
+      const parent = dirname(directory)
+      if (parent === directory) break
+      directory = parent
+    }
+  }
+  return result
+}
+
+function referencedComponentNames(sourceFile: ts.SourceFile): Set<string> {
+  const names = new Set<string>()
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      ts.isIdentifier(node.tagName) &&
+      /^[A-Z]/.test(node.tagName.text)
+    ) names.add(node.tagName.text)
+    if (ts.isCallExpression(node)) {
+      const callName = node.expression.getText(sourceFile)
+      if (
+        [
+          'createElement',
+          'React.createElement',
+          'jsx',
+          'jsxs',
+          '_jsx',
+          '_jsxs',
+          'jsxDEV',
+          '_jsxDEV',
+        ].includes(callName)
+      ) {
+        const component = node.arguments[0]
+        if (component && ts.isIdentifier(component) && /^[A-Z]/.test(component.text)) {
+          names.add(component.text)
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return names
+}
+
+function forwardedImportNames(sourceFile: ts.SourceFile): Set<string> {
+  const names = new Set<string>()
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isExportDeclaration(statement) ||
+      statement.moduleSpecifier ||
+      !statement.exportClause ||
+      !ts.isNamedExports(statement.exportClause)
+    ) continue
+    for (const element of statement.exportClause.elements) {
+      if (!element.isTypeOnly) {
+        names.add(element.propertyName?.text ?? element.name.text)
+      }
+    }
+  }
+  return names
 }
 
 function packageEntry(packageJSON: PackageJSON, subpath: string): string | undefined {
