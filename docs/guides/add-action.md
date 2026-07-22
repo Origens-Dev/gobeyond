@@ -10,16 +10,17 @@ gobeyond add action products/[slug] save
 ```
 
 The command creates or appends the `save` declaration in `actions.ts` and a
-typed Go handler under `server/actions/products_slug/`. That handler imports
-the deterministic generated action contract and includes the registration step
-for `gbruntime.Config.Actions`. Run `gobeyond generate` before compiling it.
+typed sibling `actions.go`. That handler imports the deterministic generated
+action contract. Run `gobeyond generate` before compiling it; the build
+projects the route source into the generated safe package that the runtime
+registers in `gbruntime.Config.Actions`.
 An existing `actions.ts` is only updated when it contains the insertion marker
 created by this command; otherwise GoBeyond refuses rather than risk
 overwriting hand-authored TypeScript. Add the export manually in that case.
 
 ```text
 app/products/[slug]/actions.ts
-server/actions/products_slug/actions.go
+app/products/[slug]/actions.go
 ```
 
 Declare the input/output contract in TypeScript, generate bindings, and then
@@ -39,8 +40,8 @@ func Save(ctx *gb.ActionContext, input contract.Input) (contract.Output, error) 
   return contract.Output{Saved: true}, nil
 }
 
-// In server/cmd/app/main.go:
-Actions: []gbruntime.Action{contract.Register(Save)}
+// In the server registry, using the generated contract and route packages:
+Actions: []gbruntime.Action{actioncontract.Register(routeprojection.Save)}
 ```
 
 Actions are POST-only, schema-validated server side, and protected by the

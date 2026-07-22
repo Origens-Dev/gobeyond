@@ -9,13 +9,14 @@ Create a JSON GET starting point with:
 gobeyond add api products
 ```
 
-This writes `server/api/products/route.go` with a compiling `GET` handler and
-will refuse to overwrite an existing route implementation. Wire the route into
-your runtime's API registry, then replace the placeholder response with the
-real validation, authorization, and cache behavior.
+This writes `app/api/products/route.go` with a compiling `GET` handler and
+will refuse to overwrite an existing route implementation. The build projects
+it into a generated-safe Go package for the runtime's API registry; source
+directories under `app/` are never imported directly. Replace the placeholder
+response with the real validation, authorization, and cache behavior.
 
 ```text
-server/api/products/route.go  →  /api/products
+app/api/products/route.go  →  /api/products
 ```
 
 Implement uppercase HTTP-method functions and return an explicit

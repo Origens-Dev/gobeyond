@@ -3,8 +3,8 @@ package locations_slug
 
 import (
 	gb "github.com/gobeyond-dev/gobeyond"
-	contract "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/internal/gobeyondgen/contracts/routes/r_locations_slug_730658f7"
-	"github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/shared"
+	contract "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_locations_slug_730658f7"
+	"github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/site"
 	gbruntime "github.com/gobeyond-dev/gobeyond/runtime"
 	"net/http"
 )

@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	gb "github.com/gobeyond-dev/gobeyond"
-	contract "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/internal/gobeyondgen/contracts/routes/r_category_page_05ecbf63"
-	"github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/shared"
+	contract "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_category_page_05ecbf63"
+	"github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/site"
 	gbruntime "github.com/gobeyond-dev/gobeyond/runtime"
 )
 

@@ -5,7 +5,11 @@ begins at request-time data, actions, middleware, and API boundaries.
 
 ## Always-on guardrails
 
-- Keep the `app/` tree React-only and Go implementations under `server/`.
+- Keep route-owned source together in `app/`: `page.tsx` is static by itself;
+  add a sibling `page.go` only when the route needs request-time behavior.
+- Keep route-specific mutations in a sibling `actions.go` and HTTP endpoints in
+  `app/api/**/route.go`. Put reusable Go services and policy in ordinary
+  `internal/` packages, never in a second route tree.
 - Do not move React component composition into Go handlers.
 - Initial Go-rendered markup must stay inside the documented portable profile.
 - Unsupported initial-render JavaScript is a compile error, never a silent CSR fallback.
@@ -14,7 +18,7 @@ begins at request-time data, actions, middleware, and API boundaries.
 - Never add Node, npm, or source TypeScript execution to the production server.
 - Regenerate and run hydration conformance tests after contract or renderer changes.
 - The root orchestrator owns render-plan versions, route IDs, generated registries,
-  dependency lockfiles, and release versions.
+  generated Go projection packages, dependency lockfiles, and release versions.
 
 ## Task skills
 

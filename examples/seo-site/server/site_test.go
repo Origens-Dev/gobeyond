@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	gb "github.com/gobeyond-dev/gobeyond"
-	actioncontract "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	actioncontract "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
 	"github.com/gobeyond-dev/gobeyond/renderplan"
 	gbruntime "github.com/gobeyond-dev/gobeyond/runtime"
 )

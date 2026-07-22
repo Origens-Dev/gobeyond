@@ -119,17 +119,22 @@ function projectFiles(projectName) {
     'components/add-to-cart.tsx': `import { useState } from 'react'\n\nexport function AddToCart() {\n  const [added, setAdded] = useState(false)\n  return <button type="button" onClick={() => setAdded(true)}>{added ? 'Added to cart' : 'Add to cart'}</button>\n}\n`,
     'public/portable-react.svg': portableReactImage(),
     'public/social/home.svg': homeSocialImage(),
-    'server/pages/products_slug/page.go': dynamicPage(modulePath).replaceAll('/portable-react.jpg', '/portable-react.svg'),
-    'server/actions/products_slug/actions.go': actionHandler(modulePath)
+    'app/products/[slug]/page.go': dynamicPage(modulePath).replaceAll('/portable-react.jpg', '/portable-react.svg'),
+    'app/products/[slug]/actions.go': actionHandler(modulePath)
       .replace('(gb.ActionResult[contract.Output], error)', '(contract.Output, error)')
       .replace('return gb.ActionResult[contract.Output]{}, errors.New', 'return contract.Output{}, errors.New')
       .replace('return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil', 'return contract.Output{Added: true}, nil'),
-    'server/api/products/route.go': apiHandler(),
+    'app/api/products/route.go': apiHandler(),
     'server/middleware/middleware.go': middleware(),
     'server/cmd/app/main.go': serverMain(modulePath)
       .replaceAll('RouteProductsBySlug', 'RouteProductsSlug')
-      .replace('Actions: []gbruntime.Action{{ID: routes.RouteProductsSlug + ":addToCart", Handler: addToCart}}', 'Actions: []gbruntime.Action{actioncontract.Register(productaction.AddToCart)}')
+      .replace('Actions: []gbruntime.Action{{ID: routes.RouteProductsSlug + ":addToCart", Handler: addToCart}}', 'Actions: []gbruntime.Action{actioncontract.Register(productroute.AddToCart)}')
       .replace('\nfunc addToCart(ctx *gb.ActionContext, raw json.RawMessage) (any, error) {\n  var input actioncontract.Input\n  if err := json.Unmarshal(raw, &input); err != nil { return nil, err }\n  return productaction.AddToCart(ctx, input)\n}\n', '')
+      .replaceAll('/server/internal/gobeyondgen/', '/internal/gobeyondgen/')
+      .replace(`productaction "${modulePath}/server/actions/products_slug"\n`, '')
+      .replaceAll(`${modulePath}/server/pages/products_slug`, `${modulePath}/internal/gobeyondgen/routes/r_products__slug_3e2e8eb9`)
+      .replaceAll(`${modulePath}/server/api/products`, `${modulePath}/internal/gobeyondgen/api/r_api_products_3637094a`)
+      .replaceAll('productpage', 'productroute')
       .replaceAll('Addr: ":8080"', 'Addr: env("GOBEYOND_ADDR", ":8080")')
       .replace('  if err != nil { log.Fatal(err) }\n\n  server, err :=', '  if err != nil { log.Fatal(err) }\n  browserAssets, err := loadBrowserAssets(filepath.Join(filepath.Dir(planDirectory), "runtime-manifest.json"), routes.BuildID)\n  if err != nil { log.Fatal(err) }\n\n  server, err :=')
       .replaceAll('ClientScript: assetURL(routes.BuildID)', 'ClientScript: browserAssets.ClientScript, Styles: browserAssets.Styles')
@@ -145,7 +150,9 @@ function managedAgentsBlock() {
     '# GoBeyond project instructions', '', '<!-- gobeyond:managed:start -->',
     '## GoBeyond rules', '',
     '- Start with `app/`: React owns content, layout, and component composition.',
-    '- Add Go under `server/` only for request-time data, actions, APIs, or middleware.',
+    '- `page.tsx` alone is static; add its sibling `page.go` only for request-time data, status, metadata, or cache policy.',
+    '- Keep route-specific actions in `actions.go` and APIs in `app/api/**/route.go`; keep reusable Go code in ordinary `internal/` packages.',
+    '- The runtime imports generated-safe route projections, never `app/` source directories directly.',
     '- Do not build React fragments or duplicate templates in Go.',
     '- Values crossing TypeScript and Go must use a schema-generated contract.',
     '- SEO-critical initial markup must stay in the portable React profile; use explicit `ClientOnly` fallbacks for browser-only widgets.',
@@ -206,15 +213,17 @@ function starterReadme(projectName) {
     'Open `http://localhost:3000/` or `http://localhost:3000/products/portable-react`. `pnpm dev` watches the project, builds each replacement Go server on a fresh internal port, switches traffic only after readiness succeeds, and reloads the browser. Use `pnpm dev --port 4000` to select another public port. `pnpm serve` starts an existing production build on port 8080.', '',
     '## What is where', '',
     '- `app/page.tsx`: static React content.',
-    '- `app/products/[slug]/page.tsx`: the React view for a dynamic page.',
-    '- `server/pages/products_slug/page.go`: request-time props and metadata, using the generated Go contract.',
-    '- `server/actions/products_slug/actions.go`: typed Go mutation handler.',
-    '- `server/api/products/route.go`: Go HTTP API.',
+    '- `app/products/[slug]/page.tsx`: the React view; this route is static without its sibling Go file.',
+    '- `app/products/[slug]/page.go`: request-time props and metadata, using the generated Go contract.',
+    '- `app/products/[slug]/actions.go`: typed Go mutation handler beside its browser contract.',
+    '- `app/api/products/route.go`: Go HTTP API.',
+    '- `internal/`: reusable Go services and policy.',
     '- `server/cmd/app/main.go`: explicit runtime registry. It is the one place Go connects route IDs, loaders, actions, APIs, middleware, and assets.', '',
-    'Run `pnpm generate` after changing schemas/routes. It commits deterministic route and Go contract code under `server/internal/gobeyondgen/`; check it with `pnpm generate:check`.', '',
+    'Run `pnpm generate` after changing schemas/routes. It commits the deterministic route registry and Go contracts under `internal/gobeyondgen/`; check them with `pnpm generate:check`.', '',
+    'Generation also creates ignored, managed `go.mod` sidecars in route folders so `gopls` can type-check names such as `[slug]`. The production server imports only the safe generated packages.', '',
     '## Production', '',
     'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, rendering plans, runtime data, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN separately.', '',
-    'GoBeyond generates the browser page/layout registry during `pnpm build`. The Go runtime registry remains explicit in `server/cmd/app/main.go`; update it when adding a dynamic loader, action, or API. See `AGENTS.md` for the cross-language rules.', '',
+    'GoBeyond generates the browser page/layout registry and safe Go route projections during `pnpm build`. The runtime imports those generated projections rather than source directories in `app/`. See `AGENTS.md` for the cross-language rules.', '',
   ].join('\n')
 }
 
@@ -228,10 +237,12 @@ function clientEntry() {
 
 function dynamicPage(modulePath) {
   return `// Package products_slug supplies request-time props for app/products/[slug]/page.tsx.\npackage products_slug\n\nimport (\n  \"os\"\n\n  gb \"github.com/gobeyond-dev/gobeyond\"\n  contract \"${modulePath}/server/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9\"\n)\n\n// Page receives only request-time concerns. React remains the source of truth\n// for markup in app/products/[slug]/page.tsx.\nfunc Page(ctx *gb.PageContext) (gb.PageResult[contract.Props], error) {\n  slug := ctx.Params[\"slug\"]\n  if slug != \"portable-react\" {\n    return gb.NotFound[contract.Props](gb.Metadata{Lang: \"en\", Title: \"Product not found\", Robots: \"noindex, nofollow\"}), nil\n  }\n  origin := os.Getenv(\"GOBEYOND_PUBLIC_ORIGIN\")\n  if origin == \"\" { origin = \"http://localhost:8080\" }\n  canonical := origin + \"/products/portable-react\"\n  image := origin + \"/portable-react.jpg\"\n  return gb.OK(contract.Props{\n    Name: \"Portable React\", Description: \"Crawler-visible React markup rendered by Go.\",\n    Price: \"$49\", Availability: \"In stock\", ImageURL: image,\n  }, gb.Metadata{\n    Lang: \"en\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", Canonical: canonical, Robots: \"index, follow\",\n    OpenGraph: gb.OpenGraph{Type: \"product\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", URL: canonical, Images: []string{image}},\n    Twitter: gb.Twitter{Card: \"summary_large_image\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", Images: []string{image}},\n    JSONLD: []gb.JSONLD{{\"@context\": \"https://schema.org\", \"@type\": \"Product\", \"name\": \"Portable React\", \"offers\": map[string]any{\"@type\": \"Offer\", \"price\": \"49\", \"priceCurrency\": \"USD\", \"availability\": \"https://schema.org/InStock\"}}},\n  }), nil\n}\n`
+    .replaceAll('/server/internal/gobeyondgen/', '/internal/gobeyondgen/')
 }
 
 function actionHandler(modulePath) {
   return `// Package products_slug implements the action declared in app/products/[slug]/actions.ts.\npackage products_slug\n\nimport (\n  \"errors\"\n\n  gb \"github.com/gobeyond-dev/gobeyond\"\n  contract \"${modulePath}/server/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart\"\n)\n\nfunc AddToCart(_ *gb.ActionContext, input contract.Input) (gb.ActionResult[contract.Output], error) {\n  if input.ProductName == \"\" { return gb.ActionResult[contract.Output]{}, errors.New(\"productName is required\") }\n  return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil\n}\n`
+    .replaceAll('/server/internal/gobeyondgen/', '/internal/gobeyondgen/')
 }
 
 function apiHandler() {
