@@ -12,14 +12,14 @@ const REACT_VERSION = '19.2.8'
  * Create a complete GoBeyond starter. An existing target is accepted only
  * when it is empty: the scaffolder never merges with or overwrites a project.
  */
-export async function createProject(destination, { projectName = 'my-gobeyond-site' } = {}) {
+export async function createProject(destination, { projectName = 'my-gobeyond-site', tailwind = false } = {}) {
   const existing = await readDirectory(destination)
   if (existing !== null && existing.length > 0) {
     throw new CreateProjectError(`refusing to overwrite non-empty directory: ${destination}`)
   }
   await mkdir(destination, { recursive: true })
 
-  for (const [relativePath, contents] of Object.entries(projectFiles(projectName))) {
+  for (const [relativePath, contents] of Object.entries(projectFiles(projectName, { tailwind }))) {
     const absolutePath = join(destination, relativePath)
     await mkdir(dirname(absolutePath), { recursive: true })
     await writeFile(absolutePath, contents, { encoding: 'utf8', flag: 'wx' })
@@ -39,7 +39,7 @@ function json(value) {
   return `${JSON.stringify(value, null, 2)}\n`
 }
 
-function projectFiles(projectName) {
+function projectFiles(projectName, { tailwind }) {
   const modulePath = `example.com/${projectName}`
   return {
     'package.json': json({
@@ -70,16 +70,18 @@ function projectFiles(projectName) {
         'react-dom': REACT_VERSION,
       },
       devDependencies: {
+        ...(tailwind ? { '@tailwindcss/postcss': '^4.1.12' } : {}),
         '@gobeyond/compiler': GOBEYOND_VERSION,
         '@types/react': REACT_VERSION,
         '@types/react-dom': '19.2.3',
         '@vitejs/plugin-react': '6.0.4',
         typescript: '5.9.3',
         vite: '8.1.5',
+        ...(tailwind ? { tailwindcss: '^4.1.12' } : {}),
       },
     }),
     'go.mod': `module ${modulePath}\n\ngo 1.24.0\n\nrequire github.com/gobeyond-dev/gobeyond v${GOBEYOND_VERSION}\n`,
-    '.gitignore': `.gobeyond/\ndist/\nnode_modules/\n.env\n`,
+    '.gitignore': `.gobeyond/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n`,
     '.env.example': `GOBEYOND_PUBLIC_ORIGIN=http://localhost:8080\n`,
     'tsconfig.json': json({
       compilerOptions: {
@@ -108,7 +110,8 @@ function projectFiles(projectName) {
     'client.tsx': clientEntry(),
     'app/page.schema.ts': `import { definePage, schema } from '@gobeyond/schema'\n\nexport const page = definePage({ props: schema.object({}) })\n`,
     'app/page.tsx': `import { GreetingCounter } from '../components/greeting-counter.js'\nimport './site.css'\n\nexport default function HomePage() {\n  return (\n    <main>\n      <h1>Welcome to GoBeyond</h1>\n      <p>A website-first React application rendered by Go.</p>\n      <p><a href="/products/portable-react">See the dynamic product page</a></p>\n      <GreetingCounter initial={0} />\n    </main>\n  )\n}\n`,
-    'app/site.css': `:root { color: #17211b; background: #f4f1e8; font-family: system-ui, sans-serif; }\nbody { margin: 0; }\nmain { box-sizing: border-box; width: min(100% - 2rem, 64rem); margin-inline: auto; padding-block: 3rem; }\nimg { display: block; max-width: 100%; height: auto; }\nbutton { min-height: 2.75rem; padding-inline: 1rem; }\n`,
+    'app/site.css': `${tailwind ? '@import "tailwindcss";\n\n' : ''}:root { color: #17211b; background: #f4f1e8; font-family: system-ui, sans-serif; }\nbody { margin: 0; }\nmain { box-sizing: border-box; width: min(100% - 2rem, 64rem); margin-inline: auto; padding-block: 3rem; }\nimg { display: block; max-width: 100%; height: auto; }\nbutton { min-height: 2.75rem; padding-inline: 1rem; }\n`,
+    ...(tailwind ? { 'postcss.config.mjs': `export default { plugins: { '@tailwindcss/postcss': {} } }\n` } : {}),
     'app/vite-env.d.ts': `/// <reference types="vite/client" />\n`,
     'components/greeting-counter.tsx': `import { useState } from 'react'\n\nexport function GreetingCounter({ initial }: { initial: number }) {\n  const [count, setCount] = useState(initial)\n  return <button type="button" onClick={() => setCount(count + 1)}>Clicks: {count}</button>\n}\n`,
     'app/products/[slug]/page.schema.ts': `import { definePage, schema } from '@gobeyond/schema'\n\nexport const page = definePage({\n  props: schema.object({\n    name: schema.string(),\n    description: schema.string(),\n    price: schema.string(),\n    availability: schema.string(),\n    imageURL: schema.string(),\n  }),\n})\n`,
@@ -211,6 +214,9 @@ function starterReadme(projectName) {
     'pnpm dev',
     '```', '',
     'Open `http://localhost:3000/` or `http://localhost:3000/products/portable-react`. `pnpm dev` watches the project, builds each replacement Go server on a fresh internal port, switches traffic only after readiness succeeds, and reloads the browser. Use `pnpm dev --port 4000` to select another public port. `pnpm serve` starts an existing production build on port 8080.', '',
+    '## Environment variables', '',
+    '`gobeyond dev` reads `.env`, `.env.development`, `.env.local`, and `.env.development.local`; `gobeyond build` uses the corresponding `production` files. Later files override earlier files, while variables already present in the shell always win. The values are available to the Go build and runtime and to Vite. Only Vite variables whose names start with `VITE_` are included in browser code—keep Contentful tokens and other secrets unprefixed.', '',
+    'Tailwind is optional. Start a new Tailwind v4 project with `create-gobeyond --tailwind my-site`; it adds `tailwindcss`, `@tailwindcss/postcss`, a project-owned `postcss.config.mjs`, and the CSS import. Existing projects can opt in by adding those same dependencies and PostCSS config. GoBeyond does not add a Tailwind runtime layer.', '',
     '## What is where', '',
     '- `app/page.tsx`: static React content.',
     '- `app/products/[slug]/page.tsx`: the React view; this route is static without its sibling Go file.',

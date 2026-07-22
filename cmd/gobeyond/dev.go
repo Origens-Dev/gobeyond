@@ -62,6 +62,10 @@ func dev(root string, args []string) error {
 }
 
 func runDev(ctx context.Context, root string, options devOptions) error {
+	environment, err := projectEnvironment(websiteRoot(root), "development")
+	if err != nil {
+		return err
+	}
 	publicAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(options.port))
 	listener, err := net.Listen("tcp", publicAddress)
 	if err != nil {
@@ -101,10 +105,10 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 	fmt.Printf("GoBeyond dev building initial server for %s\n", publicOrigin)
 	buildNumber := 1
 	initialBuild := filepath.Join(workspace, fmt.Sprintf("build-%06d", buildNumber))
-	if err := buildToMode(root, initialBuild, false); err != nil {
+	if err := buildToModeWithCompilerAndEnvironment(root, initialBuild, false, "", environment); err != nil {
 		return fmt.Errorf("initial development build: %w", err)
 	}
-	current, err := startDevBackend(ctx, root, initialBuild, publicOrigin)
+	current, err := startDevBackend(ctx, root, initialBuild, publicOrigin, environment)
 	if err != nil {
 		return err
 	}
@@ -154,14 +158,14 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 			var buildErr error
 			if rebuild == devRebuildGoOnly {
 				fmt.Println("GoBeyond dev Go-only change detected; rebuilding server")
-				buildErr = buildDevGoServer(root, current.buildDirectory, candidateBuild)
+				buildErr = buildDevGoServer(root, current.buildDirectory, candidateBuild, environment)
 			} else {
 				fmt.Println("GoBeyond dev frontend or structural change detected; building complete replacement")
 				selectedCompiler := compilerCLI
 				if devCompilerInputsChanged(builtSnapshot, nextSnapshot, root) {
 					selectedCompiler = ""
 				}
-				buildErr = buildToModeWithCompiler(root, candidateBuild, false, selectedCompiler)
+				buildErr = buildToModeWithCompilerAndEnvironment(root, candidateBuild, false, selectedCompiler, environment)
 				if buildErr == nil {
 					compilerCLI, buildErr = preparedCompilerCLI(root)
 				}
@@ -172,7 +176,7 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 				gateway.broadcast(devEvent{name: "build-error", data: buildErr.Error()})
 				continue
 			}
-			candidate, err := startDevBackend(ctx, root, candidateBuild, publicOrigin)
+			candidate, err := startDevBackend(ctx, root, candidateBuild, publicOrigin, environment)
 			if err != nil {
 				_ = os.RemoveAll(candidateBuild)
 				fmt.Fprintln(os.Stderr, "GoBeyond dev replacement failed; keeping current server:", err)
@@ -290,7 +294,7 @@ func devCompilerInputsChanged(previous, next map[string]string, root string) boo
 	return false
 }
 
-func buildDevGoServer(root, currentBuild, candidateBuild string) error {
+func buildDevGoServer(root, currentBuild, candidateBuild string, environment []string) error {
 	if err := copyTree(currentBuild, candidateBuild); err != nil {
 		return fmt.Errorf("copy current development build: %w", err)
 	}
@@ -307,7 +311,7 @@ func buildDevGoServer(root, currentBuild, candidateBuild string) error {
 		return err
 	}
 	serverOutput := filepath.Join(candidateBuild, "server", "gobeyond-server")
-	if err := runCommand(root, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", serverOutput, target); err != nil {
+	if err := runCommandWithEnvironment(root, environment, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", serverOutput, target); err != nil {
 		return fmt.Errorf("build Go server: %w", err)
 	}
 	return nil
@@ -321,7 +325,7 @@ type devBackend struct {
 	stopOnce       sync.Once
 }
 
-func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin string) (*devBackend, error) {
+func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin string, environment []string) (*devBackend, error) {
 	manifestData, err := os.ReadFile(filepath.Join(buildDirectory, "server", "runtime-manifest.json"))
 	if err != nil {
 		return nil, err
@@ -340,7 +344,7 @@ func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin str
 	target, _ := url.Parse("http://" + address)
 	command := exec.CommandContext(ctx, filepath.Join(buildDirectory, "server", "gobeyond-server"))
 	command.Dir = root
-	command.Env = append(os.Environ(),
+	command.Env = withEnvironment(environment,
 		"GOBEYOND_ADDR="+address,
 		"GOBEYOND_BUILD_ID="+manifest.BuildID,
 		"GOBEYOND_PUBLIC_ORIGIN="+publicOrigin,

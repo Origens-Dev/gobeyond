@@ -112,6 +112,25 @@ manifest, so dynamic Go documents link the same stylesheet. Files under
 `public/` are copied unchanged and listed as `staticAssetPaths` in the deploy
 route trie for CDN origin routing.
 
+## Environment variables and CSS tooling
+
+`gobeyond dev` loads `.env`, `.env.development`, `.env.local`, then
+`.env.development.local`. `gobeyond build` uses the same order with
+`production` in place of `development`. A variable already supplied by the
+process always wins; dotenv loading never mutates the CLI process. The resolved
+environment is passed to the compiler, Go build, Vite build, and the dev Go
+runtime.
+
+Vite receives the resolved environment but exposes only `VITE_*` values to
+browser modules. Keep Contentful delivery/preview tokens and all other secrets
+unprefixed; static props and generated route data remain public as well.
+
+Vite owns CSS processing through each project's `vite.config.*` and optional
+`postcss.config.*`. Tailwind v4 is an opt-in project capability: install
+`tailwindcss` and `@tailwindcss/postcss`, add a project-owned PostCSS config,
+and import Tailwind from your CSS. `create-gobeyond --tailwind my-site` creates
+that setup. GoBeyond has no Tailwind runtime dependency or framework config.
+
 Preview the complete built site (static assets plus dynamic Go pages):
 
 ```bash

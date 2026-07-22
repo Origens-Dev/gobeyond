@@ -47,10 +47,16 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.equal(packageJSON.dependencies['@gobeyond/schema'], '0.1.0-alpha.0')
   assert.equal(packageJSON.devDependencies['@gobeyond/compiler'], '0.1.0-alpha.0')
   assert.equal(packageJSON.devDependencies['@gobeyond/cli'], undefined)
+  assert.equal(packageJSON.devDependencies.tailwindcss, undefined)
+  assert.equal(packageJSON.devDependencies['@tailwindcss/postcss'], undefined)
   assert.doesNotMatch(packageJSON.scripts.test, /gobeyond test/)
   assert.match(packageJSON.scripts.build, /^gobeyond generate && gobeyond build$/)
   assert.match(packageJSON.scripts.generate, /^gobeyond generate$/)
   assert.equal(packageJSON.scripts.dev, 'gobeyond dev')
+
+  const gitignore = await readFile(join(destination, '.gitignore'), 'utf8')
+  assert.match(gitignore, /^\.env\.local$/m)
+  assert.match(gitignore, /^\.env\.\*\.local$/m)
 
   const goMod = await readFile(join(destination, 'go.mod'), 'utf8')
   assert.match(goMod, /github\.com\/gobeyond-dev\/gobeyond v0\.1\.0-alpha\.0/)
@@ -142,6 +148,20 @@ test('never overwrites a non-empty destination', async () => {
     () => createProject(destination),
     (error) => error instanceof CreateProjectError && /refusing to overwrite/.test(error.message),
   )
+})
+
+test('Tailwind v4 is an explicit scaffold option with project-owned PostCSS', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'create-gobeyond-tailwind-'))
+  const destination = join(root, 'tailwind-site')
+  await createProject(destination, { projectName: 'tailwind-site', tailwind: true })
+
+  const packageJSON = JSON.parse(await readFile(join(destination, 'package.json'), 'utf8'))
+  assert.match(packageJSON.devDependencies.tailwindcss, /^\^4\./)
+  assert.match(packageJSON.devDependencies['@tailwindcss/postcss'], /^\^4\./)
+  const postcss = await readFile(join(destination, 'postcss.config.mjs'), 'utf8')
+  assert.match(postcss, /@tailwindcss\/postcss/)
+  const css = await readFile(join(destination, 'app/site.css'), 'utf8')
+  assert.match(css, /@import "tailwindcss"/)
 })
 
 function run(command, args, cwd) {

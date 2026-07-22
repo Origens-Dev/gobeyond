@@ -94,10 +94,22 @@ func buildTo(root, dist string) error {
 }
 
 func buildToMode(root, dist string, checkContracts bool) error {
-	return buildToModeWithCompiler(root, dist, checkContracts, "")
+	environment, err := projectEnvironment(websiteRoot(root), "production")
+	if err != nil {
+		return err
+	}
+	return buildToModeWithCompilerAndEnvironment(root, dist, checkContracts, "", environment)
 }
 
 func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCompilerCLI string) error {
+	environment, err := projectEnvironment(websiteRoot(root), "production")
+	if err != nil {
+		return err
+	}
+	return buildToModeWithCompilerAndEnvironment(root, dist, checkContracts, preparedCompilerCLI, environment)
+}
+
+func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string) error {
 	projectRoot := websiteRoot(root)
 	routes, err := project.Discover(projectRoot)
 	if err != nil {
@@ -120,7 +132,7 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 		{
 			name: "type-check website",
 			run: func() error {
-				return typecheckWebsite(root, projectRoot)
+				return typecheckWebsite(root, projectRoot, environment)
 			},
 		},
 	}
@@ -129,7 +141,7 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 			name: "prepare portable compiler",
 			run: func() error {
 				var prepareErr error
-				compilerCLI, prepareErr = prepareCompiler(root)
+				compilerCLI, prepareErr = prepareCompiler(root, environment)
 				return prepareErr
 			},
 		}}, prerequisites...)
@@ -139,7 +151,7 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 	if err := runBuildTasks(prerequisites...); err != nil {
 		return err
 	}
-	compiled, err := compilePortableProject(root, projectRoot, compilerCLI, manifest, planDir)
+	compiled, err := compilePortableProject(root, projectRoot, compilerCLI, manifest, planDir, environment)
 	if err != nil {
 		return err
 	}
@@ -181,13 +193,13 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 		buildTask{
 			name: "build browser assets",
 			run: func() error {
-				return buildBrowserAssets(root, projectRoot, staticDir, manifest.BuildID, clientEntry)
+				return buildBrowserAssets(root, projectRoot, staticDir, manifest.BuildID, clientEntry, environment)
 			},
 		},
 		buildTask{
 			name: "build Go server",
 			run: func() error {
-				return runCommand(root, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", serverOutput, serverTarget)
+				return runCommandWithEnvironment(root, environment, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", serverOutput, serverTarget)
 			},
 		},
 		buildTask{
@@ -626,7 +638,7 @@ type compilerStaticEntry struct {
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
-func compilePortableProject(root, website, compilerCLI string, manifest project.Manifest, planDir string) (*compilerProjectOutput, error) {
+func compilePortableProject(root, website, compilerCLI string, manifest project.Manifest, planDir string, environment []string) (*compilerProjectOutput, error) {
 	temporary, err := os.MkdirTemp("", "gobeyond-compiler-")
 	if err != nil {
 		return nil, err
@@ -676,6 +688,7 @@ func compilePortableProject(root, website, compilerCLI string, manifest project.
 	}
 	command := exec.Command("node", compilerCLI, "--project", configPath, "--out", outputPath)
 	command.Dir = root
+	command.Env = environment
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	if err := command.Run(); err != nil {
 		return nil, fmt.Errorf("compile website: %w", err)
@@ -777,6 +790,10 @@ func websiteRoot(root string) string {
 
 func generate(root string, check bool) error {
 	website := websiteRoot(root)
+	environment, err := projectEnvironment(website, "production")
+	if err != nil {
+		return err
+	}
 	routes, err := project.Discover(website)
 	if err != nil {
 		return err
@@ -786,7 +803,7 @@ func generate(root string, check bool) error {
 		return err
 	}
 	manifest := project.Manifest{APIVersion: "gobeyond.routes/v1alpha1", BuildID: provisionalID, Routes: routes}
-	compilerCLI, err := prepareCompiler(root)
+	compilerCLI, err := prepareCompiler(root, environment)
 	if err != nil {
 		return err
 	}
@@ -795,7 +812,7 @@ func generate(root string, check bool) error {
 		return err
 	}
 	defer os.RemoveAll(temporary)
-	compiled, err := compilePortableProject(root, website, compilerCLI, manifest, filepath.Join(temporary, "plans"))
+	compiled, err := compilePortableProject(root, website, compilerCLI, manifest, filepath.Join(temporary, "plans"), environment)
 	if err != nil {
 		return err
 	}
@@ -839,10 +856,10 @@ func finalizedBuildID(sourceID string, compiled *compilerProjectOutput) (string,
 	return "b_" + hex.EncodeToString(digest[:8]), nil
 }
 
-func prepareCompiler(root string) (string, error) {
+func prepareCompiler(root string, environment []string) (string, error) {
 	developmentConfig := filepath.Join(root, "packages", "compiler", "tsconfig.json")
 	if _, err := os.Stat(developmentConfig); err == nil {
-		if err := runCommand(root, filepath.Join(root, "node_modules", ".bin", "tsc"), "-p", developmentConfig); err != nil {
+		if err := runCommandWithEnvironment(root, environment, filepath.Join(root, "node_modules", ".bin", "tsc"), "-p", developmentConfig); err != nil {
 			return "", fmt.Errorf("build portable compiler: %w", err)
 		}
 	}
@@ -861,7 +878,7 @@ func preparedCompilerCLI(root string) (string, error) {
 	return "", errors.New("@gobeyond/compiler is not installed; install dependencies before generating or building")
 }
 
-func typecheckWebsite(root, website string) error {
+func typecheckWebsite(root, website string, environment []string) error {
 	config := filepath.Join(website, "tsconfig.json")
 	if _, err := os.Stat(config); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -873,7 +890,7 @@ func typecheckWebsite(root, website string) error {
 	if _, err := os.Stat(tsc); err != nil {
 		tsc = filepath.Join(website, "node_modules", ".bin", "tsc")
 	}
-	if err := runCommand(website, tsc, "-p", config, "--noEmit"); err != nil {
+	if err := runCommandWithEnvironment(website, environment, tsc, "-p", config, "--noEmit"); err != nil {
 		return err
 	}
 	return nil
@@ -904,7 +921,7 @@ func runBuildTasks(tasks ...buildTask) error {
 	return nil
 }
 
-func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string) error {
+func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, environment []string) error {
 	config := filepath.Join(website, "vite.config.ts")
 	if _, err := os.Stat(config); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -915,7 +932,7 @@ func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string) e
 	vite := filepath.Join(root, "node_modules", ".bin", "vite")
 	command := exec.Command(vite, "build", "--config", config)
 	command.Dir = website
-	command.Env = append(os.Environ(),
+	command.Env = withEnvironment(environment,
 		"GOBEYOND_BUILD_ID="+buildID,
 		"GOBEYOND_STATIC_OUT="+filepath.Join(staticDir, "_gobeyond", "assets", buildID),
 		"GOBEYOND_CLIENT_ENTRY="+clientEntry,
@@ -937,8 +954,13 @@ func serverBuildTarget(website string) (string, error) {
 }
 
 func runCommand(directory, name string, args ...string) error {
+	return runCommandWithEnvironment(directory, os.Environ(), name, args...)
+}
+
+func runCommandWithEnvironment(directory string, environment []string, name string, args ...string) error {
 	command := exec.Command(name, args...)
 	command.Dir = directory
+	command.Env = environment
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	return command.Run()
 }
@@ -1009,6 +1031,10 @@ func preview(root string, args []string) error {
 	if _, err := os.Stat(serverBinary); err != nil {
 		return errors.New("production server executable does not exist; run gobeyond build first")
 	}
+	environment, err := projectEnvironment(websiteRoot(root), "production")
+	if err != nil {
+		return err
+	}
 	host := *address
 	if strings.HasPrefix(host, ":") {
 		host = "localhost" + host
@@ -1017,11 +1043,12 @@ func preview(root string, args []string) error {
 	}
 	command := exec.Command(serverBinary)
 	command.Dir = root
-	command.Env = append(os.Environ(),
+	command.Env = withEnvironment(environment,
 		"GOBEYOND_ADDR="+*address,
 		"GOBEYOND_BUILD_ID="+manifest.BuildID,
 		"GOBEYOND_PUBLIC_ORIGIN=http://"+host,
 		"GOBEYOND_PLAN_DIR="+filepath.Join(root, "dist", "server", "render-plans"),
+		"GOBEYOND_RUNTIME_DATA_DIR="+filepath.Join(root, "dist", "server", "runtime-data"),
 		"GOBEYOND_STATIC_DIR="+filepath.Join(root, "dist", "static"),
 	)
 	command.Stdout, command.Stderr, command.Stdin = os.Stdout, os.Stderr, os.Stdin
