@@ -155,6 +155,9 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
+	if err := writeJSONFile(filepath.Join(projectRoot, ".gobeyond", "client-boundaries.json"), compiled.ClientBoundaries); err != nil {
+		return fmt.Errorf("write client-boundary manifest: %w", err)
+	}
 	if err := syncContractFiles(projectRoot, compiled.Contracts, checkContracts); err != nil {
 		return fmt.Errorf("generated contracts are stale; run gobeyond generate: %w", err)
 	}
@@ -606,11 +609,31 @@ type compilerProjectRoute struct {
 }
 
 type compilerProjectOutput struct {
-	APIVersion   string                 `json:"apiVersion"`
-	Plans        []json.RawMessage      `json:"plans"`
-	Contracts    json.RawMessage        `json:"contracts"`
-	RouteModules []compilerRouteModules `json:"routeModules"`
-	StaticBuild  compilerStaticBuild    `json:"staticBuild"`
+	APIVersion       string                         `json:"apiVersion"`
+	Plans            []json.RawMessage              `json:"plans"`
+	Contracts        json.RawMessage                `json:"contracts"`
+	RouteModules     []compilerRouteModules         `json:"routeModules"`
+	StaticBuild      compilerStaticBuild            `json:"staticBuild"`
+	ClientBoundaries compilerClientBoundaryManifest `json:"clientBoundaries"`
+}
+
+type compilerClientBoundaryManifest struct {
+	APIVersion string                         `json:"apiVersion"`
+	Boundaries []compilerClientBoundaryRecord `json:"boundaries"`
+}
+
+type compilerClientBoundaryRecord struct {
+	ID        string `json:"id"`
+	RouteID   string `json:"routeId"`
+	Source    string `json:"source"`
+	Component string `json:"component"`
+	Boundary  string `json:"boundary"`
+	Reason    string `json:"reason"`
+	Target    string `json:"target"`
+	Start     int    `json:"start"`
+	End       int    `json:"end"`
+	Line      int    `json:"line"`
+	Column    int    `json:"column"`
 }
 
 type compilerRouteModules struct {
@@ -701,8 +724,11 @@ func compilePortableProject(root, website, compilerCLI string, manifest project.
 	if err := json.Unmarshal(encoded, &output); err != nil {
 		return nil, fmt.Errorf("decode compiler output: %w", err)
 	}
-	if output.APIVersion != "gobeyond.compiler-project/v1alpha1" || output.StaticBuild.APIVersion != "gobeyond.static-build/v1alpha1" || len(output.Plans) != len(manifest.Routes) || len(output.RouteModules) != len(manifest.Routes) || len(output.Contracts) == 0 {
+	if output.APIVersion != "gobeyond.compiler-project/v1alpha1" || output.StaticBuild.APIVersion != "gobeyond.static-build/v1alpha1" || output.ClientBoundaries.APIVersion != "gobeyond.client-boundaries/v1alpha1" || len(output.Plans) != len(manifest.Routes) || len(output.RouteModules) != len(manifest.Routes) || len(output.Contracts) == 0 {
 		return nil, errors.New("portable compiler returned an incomplete or incompatible project")
+	}
+	for _, boundary := range output.ClientBoundaries.Boundaries {
+		fmt.Fprintf(os.Stderr, "GoBeyond browser-only downgrade: %s (%s) at %s:%d:%d; boundary %s; %s\n", boundary.Component, boundary.RouteID, boundary.Source, boundary.Line, boundary.Column, boundary.Boundary, boundary.Reason)
 	}
 	if err := os.MkdirAll(planDir, 0o755); err != nil {
 		return nil, err
@@ -837,17 +863,19 @@ func generateGoSources(root string) error {
 
 func finalizedBuildID(sourceID string, compiled *compilerProjectOutput) (string, error) {
 	encoded, err := json.Marshal(struct {
-		Version      string                 `json:"version"`
-		SourceID     string                 `json:"sourceId"`
-		React        string                 `json:"react"`
-		Plans        []json.RawMessage      `json:"plans"`
-		Contracts    json.RawMessage        `json:"contracts"`
-		RouteModules []compilerRouteModules `json:"routeModules"`
-		StaticBuild  compilerStaticBuild    `json:"staticBuild"`
+		Version          string                         `json:"version"`
+		SourceID         string                         `json:"sourceId"`
+		React            string                         `json:"react"`
+		Plans            []json.RawMessage              `json:"plans"`
+		Contracts        json.RawMessage                `json:"contracts"`
+		RouteModules     []compilerRouteModules         `json:"routeModules"`
+		StaticBuild      compilerStaticBuild            `json:"staticBuild"`
+		ClientBoundaries compilerClientBoundaryManifest `json:"clientBoundaries"`
 	}{
 		Version: "gobeyond-build/v2", SourceID: sourceID, React: "19.2.8",
 		Plans: compiled.Plans, Contracts: compiled.Contracts,
 		RouteModules: compiled.RouteModules, StaticBuild: compiled.StaticBuild,
+		ClientBoundaries: compiled.ClientBoundaries,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode final build inputs: %w", err)
@@ -936,6 +964,7 @@ func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, e
 		"GOBEYOND_BUILD_ID="+buildID,
 		"GOBEYOND_STATIC_OUT="+filepath.Join(staticDir, "_gobeyond", "assets", buildID),
 		"GOBEYOND_CLIENT_ENTRY="+clientEntry,
+		"GOBEYOND_CLIENT_BOUNDARIES="+filepath.Join(website, ".gobeyond", "client-boundaries.json"),
 	)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	return command.Run()

@@ -31,6 +31,38 @@ func TestFinalizedBuildIDIncludesBuildTimeOutputs(t *testing.T) {
 	}
 }
 
+func TestFinalizedBuildIDIncludesClientBoundaries(t *testing.T) {
+	compiled := &compilerProjectOutput{
+		APIVersion: "gobeyond.compiler-project/v1alpha1",
+		Plans:      []json.RawMessage{json.RawMessage(`{"routeId":"root","root":{"kind":"clientOnly"}}`)},
+		Contracts:  json.RawMessage(`{"apiVersion":"gobeyond.contract/v1alpha1","routes":[],"actions":[]}`),
+		StaticBuild: compilerStaticBuild{
+			APIVersion: "gobeyond.static-build/v1alpha1",
+			Routes:     []compilerStaticRoute{},
+		},
+		ClientBoundaries: compilerClientBoundaryManifest{
+			APIVersion: "gobeyond.client-boundaries/v1alpha1",
+			Boundaries: []compilerClientBoundaryRecord{{
+				ID: "cb_first", RouteID: "root", Source: "app/page.tsx",
+				Component: "Widget", Boundary: "app/page.tsx", Reason: "window is browser-only",
+				Target: "callSite", Start: 12, End: 21, Line: 2, Column: 3,
+			}},
+		},
+	}
+	firstID, err := finalizedBuildID("source", compiled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled.ClientBoundaries.Boundaries[0].Reason = "document is browser-only"
+	secondID, err := finalizedBuildID("source", compiled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == secondID {
+		t.Fatal("client-boundary changes must contribute to the final build ID")
+	}
+}
+
 func TestCollectBrowserAssetsUsesExactEmittedPaths(t *testing.T) {
 	root := t.TempDir()
 	assetRoot := filepath.Join(root, "_gobeyond", "assets", "build-1")
