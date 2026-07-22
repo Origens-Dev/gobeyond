@@ -37,8 +37,19 @@ func TestClassifyDevRebuildUsesGoOnlyFastPathConservatively(t *testing.T) {
 	root := t.TempDir()
 	website := filepath.Join(root, "examples", "seo-site")
 	serverPage := "examples/seo-site/server/pages/products_slug/page.go"
+	coLocatedPage := "examples/seo-site/app/products/[slug]/page.go"
+	coLocatedActions := "examples/seo-site/app/products/[slug]/actions.go"
+	coLocatedAPI := "examples/seo-site/app/api/time/route.go"
+	sharedInternal := "examples/seo-site/internal/site/site.go"
 	page := "examples/seo-site/app/products/[slug]/page.tsx"
-	previous := map[string]string{serverPage: "go-v1", page: "tsx-v1"}
+	previous := map[string]string{
+		serverPage:       "go-v1",
+		coLocatedPage:    "page-go-v1",
+		coLocatedActions: "actions-go-v1",
+		coLocatedAPI:     "api-go-v1",
+		sharedInternal:   "internal-go-v1",
+		page:             "tsx-v1",
+	}
 
 	unchanged := cloneDevSnapshot(previous)
 	if got := classifyDevRebuild(previous, unchanged, root, website); got != devRebuildNone {
@@ -49,6 +60,13 @@ func TestClassifyDevRebuildUsesGoOnlyFastPathConservatively(t *testing.T) {
 	goEdit[serverPage] = "go-v2"
 	if got := classifyDevRebuild(previous, goEdit, root, website); got != devRebuildGoOnly {
 		t.Fatalf("existing server Go edit mode = %d", got)
+	}
+	for _, file := range []string{coLocatedPage, coLocatedActions, coLocatedAPI, sharedInternal} {
+		goEdit = cloneDevSnapshot(previous)
+		goEdit[file] = "go-v2"
+		if got := classifyDevRebuild(previous, goEdit, root, website); got != devRebuildGoOnly {
+			t.Fatalf("existing co-located Go edit %s mode = %d", file, got)
+		}
 	}
 
 	tsxEdit := cloneDevSnapshot(previous)
@@ -66,20 +84,21 @@ func TestClassifyDevRebuildUsesGoOnlyFastPathConservatively(t *testing.T) {
 	}
 
 	addedGoFile := cloneDevSnapshot(previous)
-	addedGoFile["examples/seo-site/server/api/new/route.go"] = "new"
+	addedGoFile["examples/seo-site/app/api/new/route.go"] = "new"
 	if got := classifyDevRebuild(previous, addedGoFile, root, website); got != devRebuildFull {
 		t.Fatalf("added Go file mode = %d", got)
 	}
 
-	deletedGoFile := map[string]string{page: "tsx-v1"}
+	deletedGoFile := cloneDevSnapshot(previous)
+	delete(deletedGoFile, coLocatedPage)
 	if got := classifyDevRebuild(previous, deletedGoFile, root, website); got != devRebuildFull {
 		t.Fatalf("deleted Go file mode = %d", got)
 	}
 
 	failedAddition := cloneDevSnapshot(previous)
-	failedAddition["examples/seo-site/server/pages/new/page.go"] = "invalid-v1"
+	failedAddition["examples/seo-site/app/new/page.go"] = "invalid-v1"
 	correctedAddition := cloneDevSnapshot(failedAddition)
-	correctedAddition["examples/seo-site/server/pages/new/page.go"] = "valid-v2"
+	correctedAddition["examples/seo-site/app/new/page.go"] = "valid-v2"
 	if got := classifyDevRebuild(previous, correctedAddition, root, website); got != devRebuildFull {
 		t.Fatalf("edited file added after the last successful build mode = %d", got)
 	}

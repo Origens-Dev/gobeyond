@@ -6,8 +6,9 @@ untyped JSON or client-only SEO content.
 
 1. Run `pnpm generate --check`. If output is stale, run `pnpm generate` and
    review the generated diff with the schema change.
-2. Compare `page.schema.ts` or `actions.ts` to the generated Go type and
-   implementation signature.
+2. Compare `page.schema.ts` or `actions.ts` to the generated Go type and the
+   sibling `page.go` or `actions.go` implementation signature. The runtime
+   consumes their generated-safe projection, never the source `app/` folder.
 3. For a render-plan failure, compute the initial value in Go, use a portable
    helper, or isolate a genuinely browser-only widget with `ClientOnly`.
 4. For hydration warnings, compare Go’s no-JS document with React’s first

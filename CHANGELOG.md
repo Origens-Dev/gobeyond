@@ -12,6 +12,8 @@ surfaces; alpha releases may revise them with explicit changelog entries.
   conformance tests.
 - Add deterministic route discovery, generated Go page/action contracts,
   dynamic Go documents, middleware, APIs, actions, and build mismatch safety.
+- Co-locate route-owned Go with React under `app/`, project it into import-safe
+  generated packages, and add managed route modules for bracket-path IDE support.
 - Add the SEO acceptance website, Node-free artifact audit, starter generator,
   AWS OpenTofu reference, and website-first contributor documentation.
 

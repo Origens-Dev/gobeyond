@@ -52,18 +52,18 @@ func TestAddDynamicCreatesTypedLoaderWithGeneratedContractPath(t *testing.T) {
 		filepath.Join(root, "app", "products", "[slug]", "page.schema.ts"),
 		"definePage",
 	)
-	loaderPath := filepath.Join(root, "server", "pages", "products_slug", "page.go")
+	loaderPath := filepath.Join(root, "app", "products", "[slug]", "page.go")
 	assertAddFileContains(t, loaderPath,
-		"contract \"example.com/add-test/server/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9\"",
+		"contract \"example.com/add-test/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9\"",
 		"func Page(_ *gb.PageContext) (gbruntime.LoadedPage, error)",
 		"generatedroutes.RouteProductsSlug",
 		"Props:  contract.Props{}",
 	)
 	writeAddTestFile(t,
-		filepath.Join(root, "server", "internal", "gobeyondgen", "contracts", "routes", "r_products_slug_3e2e8eb9", "types.gobeyond_gen.go"),
+		filepath.Join(root, "internal", "gobeyondgen", "contracts", "routes", "r_products_slug_3e2e8eb9", "types.gobeyond_gen.go"),
 		"package r_products_slug_3e2e8eb9\n\ntype Props struct{}\n",
 	)
-	assertAddGoPackageCompiles(t, root, "./server/pages/products_slug")
+	assertAddGoPackageCompiles(t, root, "./internal/gobeyondgen/routes/r_products__slug_3e2e8eb9")
 
 	if err := add(root, []string{"dynamic", "products/[slug]"}); err != nil {
 		t.Fatalf("unchanged dynamic scaffold should be idempotent: %v", err)
@@ -81,6 +81,9 @@ func TestAddActionMergesOnlyMarkedScaffoldsAndCreatesTypedHandler(t *testing.T) 
 	if err := add(root, []string{"action", "orders", "cancelOrder"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := add(root, []string{"action", "orders", "cancel"}); err != nil {
+		t.Fatalf("action names that prefix an existing action must remain distinct: %v", err)
+	}
 
 	actionsPath := filepath.Join(root, "app", "orders", "actions.ts")
 	assertAddFileContains(t, actionsPath,
@@ -88,6 +91,7 @@ func TestAddActionMergesOnlyMarkedScaffoldsAndCreatesTypedHandler(t *testing.T) 
 		actionInsertionMarker,
 		"export const submitOrder = defineAction(",
 		"export const cancelOrder = defineAction(",
+		"export const cancel = defineAction(",
 	)
 	before, err := os.ReadFile(actionsPath)
 	if err != nil {
@@ -104,21 +108,43 @@ func TestAddActionMergesOnlyMarkedScaffoldsAndCreatesTypedHandler(t *testing.T) 
 		t.Fatal("adding an existing action changed actions.ts")
 	}
 
-	handlerPath := filepath.Join(root, "server", "actions", "orders", "submitOrder.go")
+	handlerPath := filepath.Join(root, "app", "orders", "actions.go")
 	assertAddFileContains(t, handlerPath,
-		"contract \"example.com/add-test/server/internal/gobeyondgen/contracts/actions/r_orders_fc7d0552_submit_order\"",
-		"func SubmitOrder(_ *gb.ActionContext, _ contract.Input) (contract.Output, error)",
-		"contract.Register(SubmitOrder)",
+		"contractSubmitOrder \"example.com/add-test/internal/gobeyondgen/contracts/actions/r_orders_fc7d0552_submit_order\"",
+		"contractCancelOrder \"example.com/add-test/internal/gobeyondgen/contracts/actions/r_orders_fc7d0552_cancel_order\"",
+		"func SubmitOrder(_ *gb.ActionContext, _ contractSubmitOrder.Input) (contractSubmitOrder.Output, error)",
+		"contractSubmitOrder.Register(SubmitOrder)",
+		"func CancelOrder(_ *gb.ActionContext, _ contractCancelOrder.Input) (contractCancelOrder.Output, error)",
+		"func Cancel(_ *gb.ActionContext, _ contractCancel.Input) (contractCancel.Output, error)",
 	)
 	writeAddTestFile(t,
-		filepath.Join(root, "server", "internal", "gobeyondgen", "contracts", "actions", "r_orders_fc7d0552_submit_order", "types.gobeyond_gen.go"),
+		filepath.Join(root, "internal", "gobeyondgen", "contracts", "actions", "r_orders_fc7d0552_submit_order", "types.gobeyond_gen.go"),
 		"package r_orders_fc7d0552_submit_order\n\ntype Input struct{}\ntype Output struct{}\n",
 	)
 	writeAddTestFile(t,
-		filepath.Join(root, "server", "internal", "gobeyondgen", "contracts", "actions", "r_orders_fc7d0552_cancel_order", "types.gobeyond_gen.go"),
+		filepath.Join(root, "internal", "gobeyondgen", "contracts", "actions", "r_orders_fc7d0552_cancel_order", "types.gobeyond_gen.go"),
 		"package r_orders_fc7d0552_cancel_order\n\ntype Input struct{}\ntype Output struct{}\n",
 	)
-	assertAddGoPackageCompiles(t, root, "./server/actions/orders")
+	writeAddTestFile(t,
+		filepath.Join(root, "internal", "gobeyondgen", "contracts", "actions", "r_orders_fc7d0552_cancel", "types.gobeyond_gen.go"),
+		"package r_orders_fc7d0552_cancel\n\ntype Input struct{}\ntype Output struct{}\n",
+	)
+	assertAddGoPackageCompiles(t, root, "./internal/gobeyondgen/routes/r_orders_fc7d0552")
+
+	beforeCollision, err := os.ReadFile(actionsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := add(root, []string{"action", "orders", "submit_order"}); err == nil || !strings.Contains(err.Error(), "collides with an existing Go handler SubmitOrder") {
+		t.Fatalf("expected exported Go name collision, got %v", err)
+	}
+	afterCollision, err := os.ReadFile(actionsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterCollision) != string(beforeCollision) {
+		t.Fatal("rejected Go action name collision modified actions.ts")
+	}
 
 	manualPath := filepath.Join(root, "app", "orders", "actions.ts")
 	manual := "import { defineAction, schema } from '@gobeyond/schema'\n\nexport const manual = defineAction({ input: schema.object({}), output: schema.object({}) })\n"
@@ -143,11 +169,23 @@ func TestAddAPICreatesGETHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertAddFileContains(t,
-		filepath.Join(root, "server", "api", "status", "route.go"),
+		filepath.Join(root, "app", "api", "status", "route.go"),
 		"func GET(ctx *gb.RequestContext) (gb.Response, error)",
 		"Status: http.StatusOK",
 		"\"Content-Type\": {\"application/json\"}",
 	)
+	assertAddFileContains(t,
+		filepath.Join(root, "internal", "gobeyondgen", "api", "r_api_status_0ea44bf5", "route.go"),
+		"//line app/api/status/route.go:1",
+		"func GET(ctx *gb.RequestContext) (gb.Response, error)",
+	)
+}
+
+func TestAddRejectsPageRoutesUnderReservedAPIPath(t *testing.T) {
+	root := newAddTestProject(t)
+	if err := add(root, []string{"page", "api/products"}); err == nil || !strings.Contains(err.Error(), "app/api is reserved") {
+		t.Fatalf("expected reserved app/api page error, got %v", err)
+	}
 }
 
 func newAddTestProject(t *testing.T) string {

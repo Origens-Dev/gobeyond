@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -207,6 +208,16 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 		return devRebuildFull
 	}
 	serverPrefix := strings.TrimSuffix(filepath.ToSlash(serverRoot), "/") + "/"
+	appRoot, err := filepath.Rel(root, filepath.Join(website, "app"))
+	if err != nil {
+		return devRebuildFull
+	}
+	appPrefix := strings.TrimSuffix(filepath.ToSlash(appRoot), "/") + "/"
+	internalRoot, err := filepath.Rel(root, filepath.Join(website, "internal"))
+	if err != nil {
+		return devRebuildFull
+	}
+	internalPrefix := strings.TrimSuffix(filepath.ToSlash(internalRoot), "/") + "/"
 	changed := false
 	for path, previousDigest := range previous {
 		nextDigest, exists := next[path]
@@ -217,7 +228,7 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 			continue
 		}
 		changed = true
-		if !strings.HasPrefix(path, serverPrefix) || filepath.Ext(path) != ".go" {
+		if !devGoOnlyPath(path, serverPrefix, appPrefix, internalPrefix) {
 			return devRebuildFull
 		}
 	}
@@ -230,6 +241,21 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 		return devRebuildGoOnly
 	}
 	return devRebuildNone
+}
+
+func devGoOnlyPath(file, serverPrefix, appPrefix, internalPrefix string) bool {
+	if (strings.HasPrefix(file, serverPrefix) || strings.HasPrefix(file, internalPrefix)) && filepath.Ext(file) == ".go" {
+		return true
+	}
+	if !strings.HasPrefix(file, appPrefix) {
+		return false
+	}
+	relative := strings.TrimPrefix(file, appPrefix)
+	base := path.Base(relative)
+	if base == "page.go" || base == "actions.go" {
+		return true
+	}
+	return strings.HasPrefix(relative, "api/") && base == "route.go"
 }
 
 func devSnapshotsEqual(left, right map[string]string) bool {
@@ -268,7 +294,15 @@ func buildDevGoServer(root, currentBuild, candidateBuild string) error {
 	if err := copyTree(currentBuild, candidateBuild); err != nil {
 		return fmt.Errorf("copy current development build: %w", err)
 	}
-	target, err := serverBuildTarget(websiteRoot(root))
+	website := websiteRoot(root)
+	routes, err := project.Discover(website)
+	if err != nil {
+		return err
+	}
+	if err := project.SyncGoSources(website, routes, false); err != nil {
+		return fmt.Errorf("project route Go sources: %w", err)
+	}
+	target, err := serverBuildTarget(website)
 	if err != nil {
 		return err
 	}

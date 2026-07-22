@@ -11,20 +11,22 @@ gobeyond add page articles/[slug]
 
 It creates both `page.tsx` and `page.schema.ts`. The command is idempotent for
 an unchanged scaffold and refuses to overwrite either file after you edit it.
-Use `gobeyond add dynamic articles/[slug]` when the page also needs
-request-time Go data. In addition to those two files, it creates a typed
-`server/pages/articles_slug/page.go` that imports the deterministic generated
-route contract. Run `gobeyond generate` before compiling the Go server, then
-register the loader in `gbruntime.Config.Pages` with the generated route ID.
+`page.tsx` alone is a static route. Use `gobeyond add dynamic articles/[slug]`
+when the page also needs request-time Go data; it adds a typed sibling
+`app/articles/[slug]/page.go` that imports the deterministic generated route
+contract. Run `gobeyond generate` before compiling the Go server. The build
+projects the route source into a generated Go package that the runtime
+registers by route ID; never import an `app/` directory directly.
 
 ```text
 app/articles/[slug]/page.tsx        React content and composition
 app/articles/[slug]/page.schema.ts  serializable component props
 app/articles/[slug]/page.build.ts   optional build-time data
+app/articles/[slug]/page.go         optional request-time data and metadata
 ```
 
-`page.tsx` alone creates a static route. Add `page.build.ts` when a page needs
-build-time props or `generateStaticParams`. Its output is public because it is
+Add `page.build.ts` when a page needs build-time props or
+`generateStaticParams`. Its output is public because it is
 serialized into generated HTML and route data.
 
 Keep initial markup portable: use intrinsic tags and project components, props,

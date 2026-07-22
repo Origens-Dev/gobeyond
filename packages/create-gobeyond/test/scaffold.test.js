@@ -23,9 +23,9 @@ test('scaffolds an internally consistent website-first hello world', async () =>
     'app/products/[slug]/actions.ts',
     'client.tsx',
     'vite.config.ts',
-    'server/pages/products_slug/page.go',
-    'server/actions/products_slug/actions.go',
-    'server/api/products/route.go',
+    'app/products/[slug]/page.go',
+    'app/products/[slug]/actions.go',
+    'app/api/products/route.go',
     'server/middleware/middleware.go',
     'server/cmd/app/main.go',
     'public/portable-react.svg',
@@ -67,16 +67,18 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(client, /r_products__slug_3e2e8eb9/)
   const vite = await readFile(join(destination, 'vite.config.ts'), 'utf8')
   assert.match(vite, /dedupe: \['react', 'react-dom'\]/)
-  const loader = await readFile(join(destination, 'server/pages/products_slug/page.go'), 'utf8')
+  const loader = await readFile(join(destination, 'app/products/[slug]/page.go'), 'utf8')
   assert.match(loader, /contracts\/routes\/r_products_slug_3e2e8eb9/)
   assert.match(loader, /func Page\(ctx \*gb\.PageContext\)/)
-  const action = await readFile(join(destination, 'server/actions/products_slug/actions.go'), 'utf8')
+  const action = await readFile(join(destination, 'app/products/[slug]/actions.go'), 'utf8')
   assert.match(action, /contracts\/actions\/r_products_slug_3e2e8eb9_add_to_cart/)
   const main = await readFile(join(destination, 'server/cmd/app/main.go'), 'utf8')
   assert.match(main, /routes\.RouteProductsSlug/)
   assert.match(main, /withStaticAssets/)
-  assert.match(main, /productaction\.AddToCart/)
-  assert.match(main, /actioncontract\.Register\(productaction\.AddToCart\)/)
+  assert.match(main, /productroute\.AddToCart/)
+  assert.match(main, /actioncontract\.Register\(productroute\.AddToCart\)/)
+  assert.match(main, /internal\/gobeyondgen\/routes\/r_products__slug_3e2e8eb9/)
+  assert.match(main, /internal\/gobeyondgen\/api\/r_api_products_3637094a/)
   assert.match(main, /Static: home\(origin\)/)
   assert.doesNotMatch(main, /staticStore\.Loader/)
   assert.doesNotMatch(main, /func addToCart\(ctx \*gb\.ActionContext, raw json\.RawMessage\)/)
@@ -113,7 +115,7 @@ test('local workspace integration generates contracts and type-checks the starte
   await run('go', ['test', './...'], destination)
   await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'build'], destination)
 
-  const generatedContract = join(destination, 'server/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9/types.gobeyond_gen.go')
+  const generatedContract = join(destination, 'internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9/types.gobeyond_gen.go')
   await access(generatedContract)
   await access(join(destination, 'dist/server/gobeyond-server'))
   const runtimeManifest = JSON.parse(await readFile(join(destination, 'dist/server/runtime-manifest.json'), 'utf8'))

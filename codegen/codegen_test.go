@@ -20,11 +20,11 @@ func TestProductAndActionGoldens(t *testing.T) {
 	}
 
 	assertGolden(t, files,
-		"server/internal/gobeyondgen/contracts/routes/products_slug/types.gobeyond_gen.go",
+		"internal/gobeyondgen/contracts/routes/products_slug/types.gobeyond_gen.go",
 		"products_slug.golden.go",
 	)
 	assertGolden(t, files,
-		"server/internal/gobeyondgen/contracts/actions/add_to_cart/types.gobeyond_gen.go",
+		"internal/gobeyondgen/contracts/actions/add_to_cart/types.gobeyond_gen.go",
 		"add_to_cart.golden.go",
 	)
 	for generatedPath, source := range files {
@@ -66,7 +66,7 @@ func TestOptionalAndNullableRepresentations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(files["server/internal/gobeyondgen/contracts/routes/profile/types.gobeyond_gen.go"])
+	source := string(files["internal/gobeyondgen/contracts/routes/profile/types.gobeyond_gen.go"])
 	for _, pattern := range []string{
 		`Avatar\s+\*\[\]byte\s+` + "`json:\"avatar,omitempty\"`" + ` // MVP: absent and null both decode as nil\.`,
 		`Bio\s+\*string\s+` + "`json:\"bio\"`",
@@ -95,7 +95,7 @@ func TestNestedArraysObjectsAndEnums(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(files["server/internal/gobeyondgen/contracts/routes/catalog/types.gobeyond_gen.go"])
+	source := string(files["internal/gobeyondgen/contracts/routes/catalog/types.gobeyond_gen.go"])
 	for _, expected := range []string{
 		"[]PropsGroupsItem",
 		"[]PropsGroupsItemItemsItem",

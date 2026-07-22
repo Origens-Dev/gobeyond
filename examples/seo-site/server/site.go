@@ -2,24 +2,22 @@
 package seosite
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	gb "github.com/gobeyond-dev/gobeyond"
-	productactions "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/actions/products_slug"
-	actioncontract "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
-	generatedroutes "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/internal/gobeyondgen/routes"
-	pageaccount "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/account"
-	pagearticle "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/articles_slug"
-	pagecategory "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/category_page"
-	pageenglish "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/en_articles_slug"
-	pagefrench "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/fr_articles_slug"
-	pagelocation "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/locations_slug"
-	pageproduct "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/products_slug"
-	"github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/shared"
+	apitime "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/api/r_api_time_066a4b03"
+	actioncontract "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	generatedroutes "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes"
+	pageaccount "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_account_441bb226"
+	pagearticle "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_articles__slug_c2f99372"
+	pagecategory "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_category__page_05ecbf63"
+	pageenglish "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_en_articles__slug_2da8a82a"
+	pagefrench "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_fr_articles__slug_fee2939e"
+	pagelocation "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_locations__slug_730658f7"
+	productroute "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_products__slug_3e2e8eb9"
+	"github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/site"
 	gbmiddleware "github.com/gobeyond-dev/gobeyond/middleware"
 	"github.com/gobeyond-dev/gobeyond/renderplan"
 	"github.com/gobeyond-dev/gobeyond/router"
@@ -184,21 +182,18 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 				Plan:  plans[ProductRouteID],
 				Load: func(ctx *gb.PageContext) (gbruntime.LoadedPage, error) {
 					withPublicOrigin(ctx, publicOrigin)
-					return pageproduct.Page(ctx, pageproduct.Params{Slug: ctx.Params["slug"]})
+					return productroute.Page(ctx, productroute.Params{Slug: ctx.Params["slug"]})
 				},
 				Indexable:    true,
 				ClientScript: assets.ClientScript,
 				Styles:       assets.Styles,
 			},
 		},
-		Actions: []gbruntime.Action{actioncontract.Register(productactions.AddToCart)},
+		Actions: []gbruntime.Action{actioncontract.Register(productroute.AddToCart)},
 		APIs: []gbruntime.APIRoute{{
 			Route: router.Route{ID: "api_time", Pattern: "/api/time", Mode: router.ModeAPI},
 			Methods: map[string]gb.Handler{
-				http.MethodGet: func(*gb.RequestContext) (gb.Response, error) {
-					body, _ := json.Marshal(map[string]string{"time": time.Now().UTC().Format(time.RFC3339)})
-					return gb.Response{Status: http.StatusOK, Headers: http.Header{"Content-Type": {"application/json"}}, Body: body}, nil
-				},
+				http.MethodGet: apitime.GET,
 			},
 		}},
 		Middleware: []gbmiddleware.Rule{{

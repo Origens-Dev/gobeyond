@@ -5,12 +5,14 @@ Keep the view in `app/`; add Go only at its request-time boundary.
 ```text
 app/products/[slug]/page.tsx
 app/products/[slug]/page.schema.ts
-server/pages/products_slug/page.go
+app/products/[slug]/page.go
 ```
 
 The schema describes what React needs. Code generation makes the matching Go
-props type and route registry. The loader reads `PageContext`, loads data, and
-returns a typed result plus complete metadata.
+props type and route registry. The build projects the route-owned Go source
+into a generated safe package; the loader reads `PageContext`, loads data, and
+returns a typed result plus complete metadata. Do not import Go source from
+`app/` directly. Put reusable data access or policy in `internal/` packages.
 
 ```go
 func Page(ctx *gb.PageContext) (gb.PageResult[Props], error) {

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -52,6 +53,10 @@ func Discover(root string) ([]Route, error) {
 		if err != nil {
 			return err
 		}
+		relativeSlash := filepath.ToSlash(relative)
+		if relativeSlash == "api" || strings.HasPrefix(relativeSlash, "api/") {
+			return fmt.Errorf("page routes under app/api are reserved for Go API route.go files: %s", filepath.ToSlash(path))
+		}
 		pattern, serverKey, err := routeNames(relative)
 		if err != nil {
 			return err
@@ -83,7 +88,17 @@ func Discover(root string) ([]Route, error) {
 			}
 		}
 		serverFile := filepath.Join(root, "server", "pages", serverKey, "page.go")
-		if _, statErr := os.Stat(serverFile); statErr == nil {
+		coLocatedFile := filepath.Join(dir, "page.go")
+		_, coLocatedErr := os.Stat(coLocatedFile)
+		_, serverErr := os.Stat(serverFile)
+		if coLocatedErr == nil && serverErr == nil {
+			return fmt.Errorf("route %s has both %s and legacy %s; keep only the co-located app page", pattern, filepath.ToSlash(coLocatedFile), filepath.ToSlash(serverFile))
+		}
+		if coLocatedErr == nil {
+			route.Mode = "dynamic"
+			route.Reason = "co-located request-time Go page loader"
+			route.ServerFile = filepath.ToSlash(coLocatedFile)
+		} else if serverErr == nil {
 			route.Mode = "dynamic"
 			route.Reason = "paired request-time Go page loader"
 			route.ServerFile = filepath.ToSlash(serverFile)
@@ -106,6 +121,12 @@ func Discover(root string) ([]Route, error) {
 		seen[route.Pattern] = struct{}{}
 	}
 	return routes, nil
+}
+
+// APIKey returns the deterministic, Go-safe generated package directory for a
+// co-located app/api route. The input is relative to app/api.
+func APIKey(relative string) string {
+	return stableID("/api/" + strings.Trim(filepath.ToSlash(relative), "/"))
 }
 
 func routeNames(relative string) (string, string, error) {

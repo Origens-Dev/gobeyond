@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/format"
 	"io"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -46,8 +48,15 @@ func run(args []string) error {
 	case "generate":
 		set := flag.NewFlagSet("generate", flag.ContinueOnError)
 		check := set.Bool("check", false, "fail if generated output is stale")
+		goOnly := set.Bool("go-only", false, "materialize Go route projections without running the TypeScript compiler")
 		if err := set.Parse(args[1:]); err != nil {
 			return err
+		}
+		if *goOnly {
+			if *check {
+				return errors.New("generate --go-only cannot be combined with --check")
+			}
+			return generateGoSources(root)
 		}
 		return generate(root, *check)
 	case "routes":
@@ -735,7 +744,7 @@ func syncContractFiles(website string, contracts json.RawMessage, check bool) er
 			return err
 		}
 	}
-	generatedRoot := filepath.Join(website, "server", "internal", "gobeyondgen", "contracts")
+	generatedRoot := filepath.Join(website, "internal", "gobeyondgen", "contracts")
 	if err := filepath.WalkDir(generatedRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if errors.Is(walkErr, os.ErrNotExist) {
@@ -798,6 +807,15 @@ func generate(root string, check bool) error {
 		return err
 	}
 	return syncContractFiles(website, compiled.Contracts, check)
+}
+
+func generateGoSources(root string) error {
+	website := websiteRoot(root)
+	routes, err := project.Discover(website)
+	if err != nil {
+		return err
+	}
+	return project.SyncGoSources(website, routes, false)
 }
 
 func finalizedBuildID(sourceID string, compiled *compilerProjectOutput) (string, error) {
@@ -1033,6 +1051,9 @@ func add(root string, args []string) error {
 	if route == "" && kind != "page" {
 		return errors.New("route cannot be empty")
 	}
+	if kind != "api" && (route == "api" || strings.HasPrefix(route, "api/")) {
+		return errors.New("app/api is reserved for Go API route.go files; choose a different page route")
+	}
 	if err := validateCLIRoute(route); err != nil {
 		return err
 	}
@@ -1045,7 +1066,7 @@ func add(root string, args []string) error {
 	}
 	switch kind {
 	case "page":
-		return writeScaffolds([]scaffoldFile{
+		return writeAndSyncScaffolds(website, []scaffoldFile{
 			{path: filepath.Join(appDir, "page.tsx"), content: []byte(pageTemplate(route))},
 			{path: filepath.Join(appDir, "page.schema.ts"), content: []byte(schemaTemplate())},
 		})
@@ -1054,15 +1075,14 @@ func add(root string, args []string) error {
 		if err != nil {
 			return err
 		}
-		serverDir := filepath.Join(website, "server", "pages", routeInfo.ServerKey)
-		return writeScaffolds([]scaffoldFile{
+		return writeAndSyncScaffolds(website, []scaffoldFile{
 			{path: filepath.Join(appDir, "page.tsx"), content: []byte(pageTemplate(route)), preserve: true},
 			{path: filepath.Join(appDir, "page.schema.ts"), content: []byte(schemaTemplate()), preserve: true},
-			{path: filepath.Join(serverDir, "page.go"), content: []byte(goPageTemplate(routeInfo, contractImport)), preserve: true},
+			{path: filepath.Join(appDir, "page.go"), content: []byte(goPageTemplate(routeInfo, contractImport)), preserve: true},
 		})
 	case "api":
-		return writeScaffolds([]scaffoldFile{{
-			path:    filepath.Join(website, "server", "api", routeInfo.ServerKey, "route.go"),
+		return writeAndSyncScaffolds(website, []scaffoldFile{{
+			path:    filepath.Join(website, "app", "api", filepath.FromSlash(route), "route.go"),
 			content: []byte(apiTemplate(routeInfo.ServerKey)),
 		}})
 	case "action":
@@ -1087,17 +1107,35 @@ func add(root string, args []string) error {
 		if err != nil {
 			return err
 		}
-		files := []scaffoldFile{{
-			path:    filepath.Join(website, "server", "actions", routeInfo.ServerKey, actionName+".go"),
-			content: []byte(actionTemplate(routeInfo.ServerKey, actionName, contractImport)),
-		}}
+		actionGo, goChanged, err := mergeActionGoSource(filepath.Join(appDir, "actions.go"), routeInfo.ServerKey, actionName, contractImport)
+		if err != nil {
+			return err
+		}
+		if changed && !goChanged {
+			return fmt.Errorf("action name %q collides with an existing Go handler %s; choose a name with a distinct exported Go identifier", actionName, exportedActionName(actionName))
+		}
+		files := []scaffoldFile{}
+		if goChanged {
+			files = append(files, scaffoldFile{path: filepath.Join(appDir, "actions.go"), content: actionGo, replace: true})
+		}
 		if changed {
 			files = append(files, scaffoldFile{path: filepath.Join(appDir, "actions.ts"), content: actionSource, replace: true})
 		}
-		return writeScaffolds(files)
+		return writeAndSyncScaffolds(website, files)
 	default:
 		return errors.New("unknown add target: " + kind)
 	}
+}
+
+func writeAndSyncScaffolds(website string, files []scaffoldFile) error {
+	if err := writeScaffolds(files); err != nil {
+		return err
+	}
+	routes, err := project.Discover(website)
+	if err != nil {
+		return err
+	}
+	return project.SyncGoSources(website, routes, false)
 }
 
 func findRoot() (string, error) {
@@ -1106,8 +1144,11 @@ func findRoot() (string, error) {
 		return "", err
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
-			return current, nil
+		moduleFile := filepath.Join(current, "go.mod")
+		if data, err := os.ReadFile(moduleFile); err == nil {
+			if !bytes.HasPrefix(data, []byte("// Code generated by gobeyond route tooling; DO NOT EDIT.")) {
+				return current, nil
+			}
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
@@ -1234,6 +1275,8 @@ func validActionName(value string) (string, error) {
 
 const actionInsertionMarker = "// gobeyond:add-action declarations"
 const actionScaffoldImport = "import { defineAction, schema } from '@gobeyond/schema'\n\n"
+const actionGoImportMarker = "// gobeyond:add-action imports"
+const actionGoDeclarationMarker = "// gobeyond:add-action declarations"
 
 func mergeActionSource(path, actionName string) ([]byte, bool, error) {
 	definition := actionDefinition(actionName)
@@ -1245,7 +1288,7 @@ func mergeActionSource(path, actionName string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	source := string(existing)
-	if strings.Contains(source, "export const "+actionName) {
+	if strings.Contains(source, "export const "+actionName+" = defineAction(") {
 		return existing, false, nil
 	}
 	if !strings.HasPrefix(source, actionScaffoldImport) || strings.Count(source, actionInsertionMarker) != 1 {
@@ -1262,6 +1305,41 @@ func mergeActionSource(path, actionName string) ([]byte, bool, error) {
 
 func actionDefinition(actionName string) string {
 	return "export const " + actionName + " = defineAction({\n\tinput: schema.object({}),\n\toutput: schema.object({}),\n})\n"
+}
+
+func mergeActionGoSource(file, packageName, actionName, contractImport string) ([]byte, bool, error) {
+	exported := exportedActionName(actionName)
+	existing, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		existing = []byte("package " + safeIdentifier(packageName) + "\n\nimport (\n\tgb \"github.com/gobeyond-dev/gobeyond\"\n\t" + actionGoImportMarker + "\n)\n\n" + actionGoDeclarationMarker + "\n")
+	} else if err != nil {
+		return nil, false, err
+	} else if strings.Contains(string(existing), "func "+exported+"(") {
+		if strings.Contains(string(existing), strconv.Quote(contractImport)) {
+			return existing, false, nil
+		}
+		return nil, false, fmt.Errorf("action name %q collides with an existing Go handler %s; choose a name with a distinct exported Go identifier", actionName, exported)
+	}
+	source := string(existing)
+	if strings.Count(source, actionGoImportMarker) != 1 || strings.Count(source, actionGoDeclarationMarker) != 1 {
+		return nil, false, fmt.Errorf("cannot safely update %s: add %q manually or use an actions.go scaffold created by gobeyond add action", file, exported)
+	}
+	importMarker := actionGoImportMarker + "\n"
+	importIndex := strings.Index(source, importMarker)
+	declarationMarker := actionGoDeclarationMarker + "\n"
+	declarationIndex := strings.Index(source, declarationMarker)
+	if importIndex < 0 || declarationIndex < 0 {
+		return nil, false, fmt.Errorf("cannot safely update %s: GoBeyond action markers must each end with a newline", file)
+	}
+	alias := "contract" + exported
+	source = source[:importIndex+len(importMarker)] + "\t" + alias + " \"" + contractImport + "\"\n" + source[importIndex+len(importMarker):]
+	declarationIndex = strings.Index(source, declarationMarker)
+	source = source[:declarationIndex+len(declarationMarker)] + actionGoDefinition(alias, actionName) + "\n" + source[declarationIndex+len(declarationMarker):]
+	formatted, formatErr := format.Source([]byte(source))
+	if formatErr != nil {
+		return nil, false, fmt.Errorf("format %s action scaffold: %w", file, formatErr)
+	}
+	return formatted, true, nil
 }
 
 func generatedContractImport(moduleRoot, website, kind, identifier string) (string, error) {
@@ -1338,8 +1416,9 @@ func apiTemplate(packageName string) string {
 	return "package " + safeIdentifier(packageName) + "\n\nimport (\n\t\"net/http\"\n\n\tgb \"github.com/gobeyond-dev/gobeyond\"\n)\n\nfunc GET(ctx *gb.RequestContext) (gb.Response, error) {\n\treturn gb.Response{Status: http.StatusOK, Headers: http.Header{\"Content-Type\": {\"application/json\"}}, Body: []byte(`{\"ok\":true}`)}, nil\n}\n"
 }
 
-func actionTemplate(packageName, actionName, contractImport string) string {
-	return "package " + safeIdentifier(packageName) + "\n\nimport (\n\tgb \"github.com/gobeyond-dev/gobeyond\"\n\tcontract \"" + contractImport + "\"\n)\n\n// " + exportedActionName(actionName) + " implements the generated action contract. Run gobeyond generate after editing actions.ts.\n// Register it with contract.Register(" + exportedActionName(actionName) + ") so input and output stay schema-checked at the HTTP boundary.\nfunc " + exportedActionName(actionName) + "(_ *gb.ActionContext, _ contract.Input) (contract.Output, error) {\n\treturn contract.Output{}, nil\n}\n"
+func actionGoDefinition(contractAlias, actionName string) string {
+	exported := exportedActionName(actionName)
+	return "// " + exported + " implements the generated action contract. Run gobeyond generate after editing actions.ts.\n// Register it with " + contractAlias + ".Register(" + exported + ") so input and output stay schema-checked at the HTTP boundary.\nfunc " + exported + "(_ *gb.ActionContext, _ " + contractAlias + ".Input) (" + contractAlias + ".Output, error) {\n\treturn " + contractAlias + ".Output{}, nil\n}"
 }
 
 func exportedActionName(actionName string) string {

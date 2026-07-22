@@ -13,13 +13,13 @@ import (
 )
 
 const (
-	defaultOutputDir      = "server/internal/gobeyondgen/contracts"
+	defaultOutputDir      = "internal/gobeyondgen/contracts"
 	defaultSafeHTMLImport = "github.com/gobeyond-dev/gobeyond/renderplan"
 )
 
 type Options struct {
 	// OutputDir is the slash-separated relative directory used as the root of
-	// returned paths. It defaults to server/internal/gobeyondgen/contracts.
+	// returned paths. It defaults to internal/gobeyondgen/contracts.
 	OutputDir string
 	// SafeHTMLImportPath supplies the package containing SafeHTML. It defaults
 	// to the GoBeyond renderplan package.

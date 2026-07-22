@@ -11,21 +11,33 @@ does not silently fall back to client rendering.
 
 ## Source boundaries
 
-- `app/`: website routes and React components.
-- `server/`: Go loaders, actions, APIs, layouts, and middleware.
-- `server/internal/gobeyondgen/`: committed generated contracts and registries.
+- `app/`: website route source. `page.tsx` is a static route; a sibling
+  `page.go` opts that route into request-time Go. Route-owned `actions.go` and
+  `app/api/**/route.go` stay beside the route they serve.
+- `internal/`: reusable Go services, policy, and integrations that are not
+  owned by one route.
+- `internal/gobeyondgen/`: committed generated contracts and registries,
+  plus ignored safe Go projection packages. The runtime imports projections,
+  never source directories below `app/`.
 - `render-plans/`: versioned language-neutral render artifacts packaged with the server.
 
 The same URL is represented by a React route directory and, only when needed,
 a Go-safe server key:
 
 ```text
-app/products/[slug]/page.tsx       /products/[slug]
-server/pages/products_slug/page.go request-time loader
+app/products/[slug]/page.tsx       static /products/[slug]
+app/products/[slug]/page.go        request-time loader for /products/[slug]
 ```
 
 Generated stable IDs join those trees; filesystem paths and Go package names
 are never inferred from one another at runtime.
+
+Go import paths cannot contain route brackets. Generation therefore writes an
+ignored, marker-protected `go.mod` beside every route as an editor-only package
+boundary, then projects authored Go into a safe package under
+`internal/gobeyondgen/`. This lets `gopls` diagnose the authored `page.go`
+without making `app/products/[slug]` a production import path. Generated module
+files are never shipped and user-owned `go.mod` files are never overwritten.
 
 ## Render-plan contract
 
@@ -48,9 +60,10 @@ browser assets. No JavaScript executes on the server.
 
 In development, one stable public listener proxies to a generated Go server.
 The watcher records content digests for build inputs and classifies their
-impact. An edit to an existing Go file below the website's `server/` directory
-reuses the current render plans, contracts, static documents, browser assets,
-and compatibility build ID while compiling a replacement Go executable.
+impact. An edit to shared Go code under `internal/` can reuse the current
+render plans, contracts, static documents, browser assets, and compatibility
+build ID while compiling a replacement Go executable. Route-owned Go changes
+are projected into generated packages before the candidate is built.
 Additions, deletions, frontend files, schemas, route structure, framework
 runtime files, and ambiguous changes take the complete staged-build path.
 Complete development rebuilds reuse the prepared portable compiler unless its

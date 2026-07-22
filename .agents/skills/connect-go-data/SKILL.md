@@ -2,7 +2,7 @@
 name: connect-go-data
 description: >
   Connect an existing GoBeyond React page to request-time Go data. Use when
-  adding server/pages/<route>/page.go, page.schema.ts, PageContext, metadata,
+  adding app/<route>/page.go, page.schema.ts, PageContext, metadata,
   redirects, not-found results, auth, or dynamic SEO pages.
 user-invocable: false
 ---
@@ -14,15 +14,18 @@ authorization, a request-specific status, or SEO metadata.
 
 1. Keep the React view in `app/<route>/page.tsx`; add or refine its
    `page.schema.ts` contract first.
-2. Add `server/pages/<go-safe-route-key>/page.go`. The key mirrors the route:
-   `products/[slug]` becomes `products_slug`.
-3. Return the generated props type, not maps or untyped JSON. Derive data from
+2. Add the sibling `app/<route>/page.go`. `page.tsx` alone is static; this
+   file opts the route into request-time Go behavior.
+3. Run generation before compiling. The generated-safe runtime package lives
+   at `internal/gobeyondgen/routes/<route-ID>/`; runtime code imports that
+   package, never an `app/` source directory.
+4. Return the generated props type, not maps or untyped JSON. Derive data from
    `ctx.Params`, `ctx.Request`, and context values.
-4. Return explicit `OK`, `NotFound`, or `Redirect` results. Do not use a 200
+5. Return explicit `OK`, `NotFound`, or `Redirect` results. Do not use a 200
    error page for missing SEO content.
-5. Resolve complete metadata before returning. Canonicals use the configured
+6. Resolve complete metadata before returning. Canonicals use the configured
    public origin, never the request Host header.
-6. Treat cookies or authorization as private/no-store. Public body content may
+7. Treat cookies or authorization as private/no-store. Public body content may
    not vary by authentication cookie.
 
 ```go

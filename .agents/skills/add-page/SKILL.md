@@ -24,9 +24,12 @@ do not create a Go package unless the page needs request-time behavior.
 6. Run generation and verify static output before considering Go.
 
 `gobeyond add page <route>` creates a portable `page.tsx` and empty
-`page.schema.ts` scaffold. `gobeyond add dynamic <route>` additionally creates
-a typed `server/pages/<safe-key>/page.go`; run `gobeyond generate` to emit its
-contract, then register that loader with the generated route ID.
+`page.schema.ts` scaffold; `page.tsx` alone is a static route. `gobeyond add
+dynamic <route>` additionally creates a typed sibling
+`app/<route>/page.go`. Run `gobeyond generate` to emit its contract and a safe
+runtime projection under `internal/gobeyondgen/routes/<route-ID>/`. The runtime
+imports that projection by generated route ID, never the source directory below
+`app/`.
 
 ```tsx
 // app/articles/[slug]/page.tsx

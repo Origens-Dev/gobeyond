@@ -3,8 +3,8 @@ package fr_articles_slug
 
 import (
 	gb "github.com/gobeyond-dev/gobeyond"
-	contract "github.com/gobeyond-dev/gobeyond/examples/seo-site/server/internal/gobeyondgen/contracts/routes/r_fr_articles_slug_fee2939e"
-	"github.com/gobeyond-dev/gobeyond/examples/seo-site/server/pages/shared"
+	contract "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_fr_articles_slug_fee2939e"
+	"github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/site"
 	gbruntime "github.com/gobeyond-dev/gobeyond/runtime"
 	"net/http"
 	"time"

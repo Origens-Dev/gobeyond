@@ -19,6 +19,12 @@ The fixture demonstrates articles, products, crawlable pagination, locations,
 localized URLs, an authenticated noindex page, a typed action declaration,
 robots.txt, and sitemap.xml.
 
+Its route source is co-located: a static route has `page.tsx` only, while each
+request-time route adds a sibling `page.go`; the product mutation lives beside
+its declaration in `app/products/[slug]/actions.go`. Shared Go policy lives in
+`internal/site`. The runtime imports generated-safe projections of these route
+files, never the `app/` source directories directly.
+
 It also imports a real stylesheet and ships product/Open Graph image fixtures.
 `gobeyond build` links the content-hashed CSS in static and dynamic documents,
 copies the images to `dist/static`, and records their public URLs in

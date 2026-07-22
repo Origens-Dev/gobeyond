@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestDiscoverAndGenerate(t *testing.T) {
 	root := t.TempDir()
+	writeTestModule(t, root)
 	writeTestFile(t, filepath.Join(root, "app", "page.tsx"))
 	writeTestFile(t, filepath.Join(root, "app", "(shop)", "products", "[slug]", "page.tsx"))
 	writeTestFile(t, filepath.Join(root, "server", "pages", "products_slug", "page.go"))
@@ -35,6 +37,7 @@ func TestGeneratedManifestIsPortableAcrossProjectDirectories(t *testing.T) {
 	generated := make([][]byte, 0, 2)
 	for _, parent := range []string{"first", "second"} {
 		root := filepath.Join(t.TempDir(), parent)
+		writeTestModule(t, root)
 		writeTestFile(t, filepath.Join(root, "app", "page.tsx"))
 		writeTestFile(t, filepath.Join(root, "app", "page.schema.ts"))
 		writeTestFile(t, filepath.Join(root, "server", "pages", "root", "page.go"))
@@ -101,7 +104,7 @@ func TestBuildIDIgnoresGeneratedAndSecretFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(root, "server", "internal", "gobeyondgen", "routes", "routes_gen.go"))
+	writeTestFile(t, filepath.Join(root, "internal", "gobeyondgen", "routes", "routes_gen.go"))
 	if err := os.WriteFile(filepath.Join(root, ".env.local"), []byte("SECRET=rotated"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +122,7 @@ func TestBuildSnapshotTracksInputsAndIgnoresGeneratedFiles(t *testing.T) {
 	page := filepath.Join(root, "app", "page.tsx")
 	writeTestFile(t, page)
 	writeTestFile(t, filepath.Join(root, "server", "pages", "root", "page.go"))
-	writeTestFile(t, filepath.Join(root, "server", "internal", "gobeyondgen", "routes", "routes_gen.go"))
+	writeTestFile(t, filepath.Join(root, "internal", "gobeyondgen", "routes", "routes_gen.go"))
 
 	first, err := BuildSnapshot(root)
 	if err != nil {
@@ -128,7 +131,7 @@ func TestBuildSnapshotTracksInputsAndIgnoresGeneratedFiles(t *testing.T) {
 	if first["app/page.tsx"] == "" || first["server/pages/root/page.go"] == "" {
 		t.Fatalf("snapshot is missing build inputs: %#v", first)
 	}
-	if _, exists := first["server/internal/gobeyondgen/routes/routes_gen.go"]; exists {
+	if _, exists := first["internal/gobeyondgen/routes/routes_gen.go"]; exists {
 		t.Fatal("generated files must not enter the build snapshot")
 	}
 
@@ -144,6 +147,16 @@ func TestBuildSnapshotTracksInputsAndIgnoresGeneratedFiles(t *testing.T) {
 	}
 }
 
+func writeTestModule(t *testing.T, root string) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/site\n\ngo 1.24.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMiddlewareMakesStaticRoutesDynamic(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "app", "page.tsx"))
@@ -154,6 +167,14 @@ func TestMiddlewareMakesStaticRoutesDynamic(t *testing.T) {
 	}
 	if len(routes) != 1 || routes[0].Mode != "dynamic" {
 		t.Fatalf("middleware route classification = %#v", routes)
+	}
+}
+
+func TestDiscoverRejectsPageRoutesUnderReservedAPIPath(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "app", "api", "products", "page.tsx"))
+	if _, err := Discover(root); err == nil || !strings.Contains(err.Error(), "app/api") {
+		t.Fatalf("expected reserved app/api page error, got %v", err)
 	}
 }
 

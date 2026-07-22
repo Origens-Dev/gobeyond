@@ -22,7 +22,10 @@ go run ./cmd/gobeyond build
 ./scripts/verify-node-free-server.sh
 ```
 
-Keep website examples in React. Go owns data, status, metadata, mutations,
-middleware, and APIs; it must not become a second component/template tree.
+Keep website examples route-first: `page.tsx` is a static route on its own;
+add a sibling `page.go` when Go owns request-time data, status, metadata, or
+cache policy. Keep route-specific mutations in `actions.go` and APIs in
+`app/api/**/route.go`. Shared Go services belong in ordinary `internal/`
+packages. Go must not become a second component/template tree.
 Changes to JSON schemas, generated IDs, React pins, or release versions require
 root maintainer review and a changelog entry.

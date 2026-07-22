@@ -23,15 +23,17 @@ Start with the page. Add Go only when the page crosses a request-time boundary.
 app/products/[slug]/page.tsx        React content, composition, interaction
 app/products/[slug]/page.schema.ts  serializable props contract
 app/products/[slug]/actions.ts      browser-visible action contract
-
-server/pages/products_slug/page.go  request-time data, status, metadata, cache
-server/actions/products_slug/       authorization and mutations
-server/api/products/route.go        Go HTTP API
+app/products/[slug]/page.go         request-time data, status, metadata, cache
+app/products/[slug]/actions.go       authorization and mutations
+app/api/products/route.go            Go HTTP API
+internal/                            shared Go services and policy
 ```
 
 `page.tsx` is the single source of truth for initial markup. The build produces
 both its browser bundle and its Go rendering plan. Developers do not maintain a
-second Go template.
+second Go template. GoBeyond also creates ignored, managed `go.mod` sidecars in
+route folders so `gopls` can type-check names such as `[slug]`; production code
+imports only the generated packages under `internal/gobeyondgen/`.
 
 ## What the MVP proves
 
@@ -75,9 +77,12 @@ old process. Failed builds leave the last working server online and appear in
 the browser development overlay. Independent build stages overlap: compiler
 preparation runs with the website type-check, and the browser bundle runs with
 the Go server build after generated contracts are ready. Editing an existing
-Go file under `server/` takes a dependency-aware fast path: GoBeyond reuses the
+Go file under `app/`, `server/`, or `internal/` takes a dependency-aware fast
+path: GoBeyond reuses the
 unchanged render plans, hydration contract, static documents, and browser
-assets, then compiles and swaps only the Go server. Structural or frontend
+assets, then compiles and swaps only the Go server. Route-owned Go source is
+projected into generated packages before its candidate is built; shared Go
+code under `internal/` uses the same Go-only path. Structural or frontend
 changes automatically fall back to a complete staged build. Development also
 reuses the already-prepared portable compiler until the compiler's own source
 changes.
