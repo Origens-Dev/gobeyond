@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-labelledby="title">
+  <title id="title">GoBeyond Seattle</title>
+  <rect width="1200" height="630" fill="#cde0dc"/>
+  <path d="M0 455 210 290l140 105 215-235 210 220 185-145 240 220v175H0z" fill="#4d806e"/>
+  <path d="M750 455V185h70v270m-110-215h150" stroke="#173f35" stroke-width="24"/>
+  <text x="80" y="120" fill="#173f35" font-family="system-ui,sans-serif" font-size="68" font-weight="700">GoBeyond Seattle</text>
+</svg>

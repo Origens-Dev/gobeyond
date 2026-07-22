@@ -1,0 +1,20 @@
+{
+  "name": "create-gobeyond",
+  "version": "0.1.0-alpha.0",
+  "description": "Create a website-first GoBeyond project",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "bin": {
+    "create-gobeyond": "./src/cli.js"
+  },
+  "files": [
+    "src",
+    "templates"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

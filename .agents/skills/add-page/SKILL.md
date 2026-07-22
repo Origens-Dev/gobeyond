@@ -1,0 +1,47 @@
+---
+name: add-page
+description: >
+  Create a website-first GoBeyond route in app/. Use when adding page.tsx,
+  layout.tsx, page.build.ts, route groups, or dynamic route segments such as
+  [slug]. Covers static React pages, portable initial markup, and verification.
+user-invocable: false
+---
+
+# Add a GoBeyond page
+
+Use this skill when the request is primarily a website page. Start in `app/`;
+do not create a Go package unless the page needs request-time behavior.
+
+1. Pick the route directory under `app/`: `app/products/[slug]/page.tsx` maps
+   to `/products/[slug]`; `(marketing)` affects organization but not the URL.
+2. Add `page.schema.ts` when the page receives props. Keep props serializable.
+3. Write `page.tsx` with semantic, crawler-visible HTML. Put title, headings,
+   links, image `src`/`alt`, and primary copy in the initial markup.
+4. Add `page.build.ts` only for build-time data or `generateStaticParams`.
+   Build-only code may use secrets, but its returned props are public.
+5. Use project-owned components and the portable React profile. Browser-only
+   widgets require `<ClientOnly fallback={...}>`; the fallback must be useful.
+6. Run generation and verify static output before considering Go.
+
+`gobeyond add page <route>` creates a portable `page.tsx` and empty
+`page.schema.ts` scaffold. `gobeyond add dynamic <route>` additionally creates
+a typed `server/pages/<safe-key>/page.go`; run `gobeyond generate` to emit its
+contract, then register that loader with the generated route ID.
+
+```tsx
+// app/articles/[slug]/page.tsx
+export default function Article({ title, body }: { title: string; body: string }) {
+  return <article><h1>{title}</h1><p>{body}</p></article>
+}
+```
+
+```bash
+pnpm generate
+pnpm routes
+pnpm test
+pnpm build
+```
+
+Do not use effects, browser globals, or client-only regions for indexable
+content. See `docs/guides/add-page.md` and `$connect-go-data` when build-time
+data is insufficient.

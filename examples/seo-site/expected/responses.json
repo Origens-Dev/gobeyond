@@ -1,0 +1,11 @@
+[
+  { "route": "/articles/portable-react", "file": "article.html", "status": 200, "cacheControl": "public, max-age=0, s-maxage=300" },
+  { "route": "/products/trail-pack", "file": "product.html", "status": 200, "cacheControl": "public, max-age=0, s-maxage=60" },
+  { "route": "/category/2", "file": "category.html", "status": 200, "cacheControl": "public, max-age=0, s-maxage=300" },
+  { "route": "/locations/seattle", "file": "location.html", "status": 200, "cacheControl": "public, max-age=0, s-maxage=3600" },
+  { "route": "/en/articles/portable-react", "file": "en-article.html", "status": 200, "cacheControl": "public, max-age=0, s-maxage=300" },
+  { "route": "/fr/articles/react-portable", "file": "fr-article.html", "status": 200, "cacheControl": "public, max-age=0, s-maxage=300" },
+  { "route": "/account", "file": "account.html", "status": 200, "cacheControl": "private, no-store" },
+  { "route": "/missing", "file": "not-found.html", "status": 404, "cacheControl": "private, no-store" },
+  { "route": "/old-field-guide", "status": 308, "location": "/articles/portable-react", "cacheControl": "public, max-age=3600" }
+]

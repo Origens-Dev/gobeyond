@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gobeyond.dev/schemas/value-contract-v1alpha1.json",
+  "title": "GoBeyond TypeScript to Go value contracts",
+  "type": "object",
+  "required": ["apiVersion", "routes", "actions"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "gobeyond.contract/v1alpha1" },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["routeId", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "routeId": { "type": "string", "minLength": 1 },
+          "props": { "$ref": "#/$defs/valueSchema" }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["actionId", "input", "output"],
+        "additionalProperties": false,
+        "properties": {
+          "actionId": { "type": "string", "minLength": 1 },
+          "input": { "$ref": "#/$defs/valueSchema" },
+          "output": { "$ref": "#/$defs/valueSchema" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "valueSchema": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["string", "number", "integer", "boolean", "datetime", "bytes", "safeHtml", "literal", "enum", "array", "object", "union"]
+        },
+        "optional": { "type": "boolean", "default": false },
+        "nullable": { "type": "boolean", "default": false },
+        "value": { "type": ["string", "number", "boolean", "null"] },
+        "values": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "items": { "$ref": "#/$defs/valueSchema" },
+        "shape": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/valueSchema" }
+        },
+        "variants": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/valueSchema" },
+          "minItems": 2
+        }
+      }
+    }
+  }
+}

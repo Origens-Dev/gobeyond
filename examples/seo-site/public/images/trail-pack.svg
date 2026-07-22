@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" role="img" aria-labelledby="title description">
+  <title id="title">Blue Trail Pack</title>
+  <desc id="description">A blue hiking pack standing on a warm field background.</desc>
+  <rect width="1200" height="800" fill="#efe4c9"/>
+  <path d="M430 205c20-95 320-95 340 0l72 430c10 58-34 110-93 110H451c-59 0-103-52-93-110z" fill="#246b83"/>
+  <path d="M470 205c24-120 236-120 260 0" fill="none" stroke="#173f50" stroke-width="34" stroke-linecap="round"/>
+  <rect x="420" y="410" width="360" height="210" rx="60" fill="#3188a1"/>
+  <path d="M440 335h320M478 510h244" stroke="#d8f1ed" stroke-width="22" stroke-linecap="round"/>
+</svg>

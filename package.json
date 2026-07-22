@@ -1,0 +1,25 @@
+{
+  "name": "gobeyond-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "go run ./cmd/gobeyond build",
+    "build:packages": "pnpm --recursive build",
+    "dev": "go run ./cmd/gobeyond dev",
+    "generate": "go run ./cmd/gobeyond generate",
+    "generate:check": "go run ./cmd/gobeyond generate --check",
+    "preview": "go run ./cmd/gobeyond preview",
+    "routes": "go run ./cmd/gobeyond routes",
+    "test": "go test ./... && pnpm --recursive test",
+    "typecheck": "pnpm --recursive typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3",
+    "vite": "8.1.5"
+  }
+}

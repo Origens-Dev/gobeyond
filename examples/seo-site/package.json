@@ -1,0 +1,24 @@
+{
+  "name": "@gobeyond/example-seo-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "test": "node --test test/no-js-seo.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@gobeyond/react": "workspace:*",
+    "@gobeyond/schema": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.0.4",
+    "@types/react": "19.2.8",
+    "@types/react-dom": "19.2.3",
+    "vite": "8.1.5"
+  }
+}

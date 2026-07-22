@@ -1,0 +1,34 @@
+{
+  "name": "@gobeyond/compiler",
+  "version": "0.1.0-alpha.0",
+  "description": "Compile GoBeyond's portable TSX profile into v1alpha1 Go rendering plans",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "bin": {
+    "gobeyond-compile": "./dist/src/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "test:update": "UPDATE_GOLDENS=1 npm test"
+  },
+  "dependencies": {
+    "typescript": "5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1"
+  }
+}
