@@ -51,6 +51,33 @@ func TestSyncGoSourcesProjectsRoutesAndAPIs(t *testing.T) {
 	assertSourceTestContains(t, filepath.Join(root, "internal", "gobeyondgen", "routes", "routes_gen.go"), "package routes")
 }
 
+func TestGeneratedRouteModulePropagatesLocalReplacements(t *testing.T) {
+	root := t.TempDir()
+	writeTestModule(t, root)
+	moduleFile := filepath.Join(root, "go.mod")
+	moduleData, err := os.ReadFile(moduleFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleData = append(moduleData, []byte("\nreplace github.com/gobeyond-dev/gobeyond => ../gobeyond\n")...)
+	if err := os.WriteFile(moduleFile, moduleData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	routeDir := filepath.Join(root, "app", "products", "[slug]")
+	writeSourceTestFile(t, filepath.Join(routeDir, "page.tsx"), "fixture\n")
+	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n")
+	routes, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SyncGoSources(root, routes, false); err != nil {
+		t.Fatal(err)
+	}
+	assertSourceTestContains(t, filepath.Join(routeDir, "go.mod"),
+		`replace github.com/gobeyond-dev/gobeyond => "../../../../gobeyond"`,
+	)
+}
+
 func TestWriteCheckMaterializesIgnoredRouteOutputs(t *testing.T) {
 	root := t.TempDir()
 	writeTestModule(t, root)

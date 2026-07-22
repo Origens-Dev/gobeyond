@@ -185,7 +185,77 @@ func routeModule(moduleRoot, modulePath, websiteImport, goVersion, routeDir, key
 		"go " + goVersion + "\n\n" +
 		"require " + modulePath + " " + moduleRequireVersion(modulePath) + "\n\n" +
 		"replace " + modulePath + " => " + strconv.Quote(filepath.ToSlash(replacement)) + "\n"
+	localReplacements, err := routeLocalReplacements(moduleRoot, modulePath, routeDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, localReplacement := range localReplacements {
+		content += localReplacement + "\n"
+	}
 	return []byte(content), nil
+}
+
+// routeLocalReplacements copies local replace directives from the website
+// module into each generated route module. Go deliberately does not propagate
+// replace directives through dependencies, so without this an unreleased local
+// GoBeyond checkout (or another local module used directly by page.go) becomes
+// unavailable as soon as route tooling regenerates the sidecar go.mod.
+func routeLocalReplacements(moduleRoot, modulePath, routeDir string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(moduleRoot, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	inBlock := false
+	var replacements []string
+	for _, original := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(strings.SplitN(original, "//", 2)[0])
+		if line == "" {
+			continue
+		}
+		if line == "replace (" {
+			inBlock = true
+			continue
+		}
+		if inBlock && line == ")" {
+			inBlock = false
+			continue
+		}
+		if !inBlock {
+			if !strings.HasPrefix(line, "replace ") {
+				continue
+			}
+			line = strings.TrimSpace(strings.TrimPrefix(line, "replace "))
+		}
+		fields := strings.Fields(line)
+		arrow := -1
+		for index, field := range fields {
+			if field == "=>" {
+				arrow = index
+				break
+			}
+		}
+		if arrow < 1 || arrow+2 != len(fields) || fields[0] == modulePath {
+			continue
+		}
+		target, unquoteErr := strconv.Unquote(fields[arrow+1])
+		if unquoteErr != nil {
+			target = fields[arrow+1]
+		}
+		if !filepath.IsAbs(target) && target != "." && !strings.HasPrefix(target, "./") && !strings.HasPrefix(target, "../") {
+			continue
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(moduleRoot, filepath.FromSlash(target))
+		}
+		relative, relErr := filepath.Rel(routeDir, target)
+		if relErr != nil {
+			return nil, relErr
+		}
+		left := strings.Join(fields[:arrow], " ")
+		replacements = append(replacements, "replace "+left+" => "+strconv.Quote(filepath.ToSlash(relative)))
+	}
+	sort.Strings(replacements)
+	return replacements, nil
 }
 
 func moduleRequireVersion(modulePath string) string {
