@@ -195,6 +195,22 @@ func validateExpression(expr Expression, path string, depth int) error {
 		if e.Name == "style" && len(e.Arguments)%2 != 0 {
 			return invalid(path+".arguments", "style helper requires name/value pairs")
 		}
+	case *Intrinsic:
+		if e == nil || e.Kind != "intrinsic" {
+			return invalid(path+".kind", "intrinsic kind must be intrinsic")
+		}
+		spec, ok := IntrinsicDefinition(e.Name)
+		if !ok {
+			return invalid(path+".name", "unsupported intrinsic")
+		}
+		if len(e.Arguments) != spec.Arity {
+			return invalid(path+".arguments", fmt.Sprintf("intrinsic expects %d arguments", spec.Arity))
+		}
+		for i, arg := range e.Arguments {
+			if err := validateExpression(arg, fmt.Sprintf("%s.arguments[%d]", path, i), depth+1); err != nil {
+				return err
+			}
+		}
 	default:
 		return invalid(path, fmt.Sprintf("unsupported expression type %T", expr))
 	}

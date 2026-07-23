@@ -3,6 +3,7 @@ package renderer
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,31 @@ func TestOrderedStyleHelperMatchesSourceOrder(t *testing.T) {
 	}
 	if want := `<div style="color:red;background-color:blue;margin-top:8px;aspect-ratio:2;"></div>`; got != want {
 		t.Fatalf("want %s, got %s", want, got)
+	}
+}
+
+func TestDateIntrinsicsUseOneRenderSnapshot(t *testing.T) {
+	snapshot := time.Date(2026, 12, 31, 23, 59, 59, 0, time.FixedZone("local", -8*60*60))
+	root := &renderplan.Element{Kind: "element", Tag: "footer", Children: []renderplan.Node{
+		&renderplan.Text{Kind: "text", Value: &renderplan.Intrinsic{Kind: "intrinsic", Name: renderplan.IntrinsicDateGetFullYear}},
+		&renderplan.Text{Kind: "text", Value: lit("/")},
+		&renderplan.Text{Kind: "text", Value: &renderplan.Intrinsic{Kind: "intrinsic", Name: renderplan.IntrinsicDateGetUTCFullYear}},
+	}}
+	r := New()
+	clockReads := 0
+	r.now = func() time.Time {
+		clockReads++
+		return snapshot
+	}
+	got, err := r.Render(plan(root), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strconv.Itoa(snapshot.Year()) + `<!-- -->/<!-- -->` + strconv.Itoa(snapshot.UTC().Year()); got != `<footer>`+want+`</footer>` {
+		t.Fatalf("want current year %s, got %s", want, got)
+	}
+	if clockReads != 1 {
+		t.Fatalf("request snapshot clock read %d times, want 1", clockReads)
 	}
 }
 

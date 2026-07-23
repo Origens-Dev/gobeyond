@@ -79,6 +79,26 @@ func TestClientOnlyFallbackMayBeOmittedOrNull(t *testing.T) {
 	}
 }
 
+func TestIntrinsicRoundTripAndRegistryValidation(t *testing.T) {
+	input := `{"apiVersion":"gobeyond.render/v1alpha1","routeId":"footer","root":{"kind":"text","value":{"kind":"intrinsic","name":"ecmascript.Date.prototype.getFullYear","arguments":[]}}}`
+	plan, err := Parse([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := plan.Root.(*Text)
+	intrinsic, ok := text.Value.(*Intrinsic)
+	if !ok || intrinsic.Name != IntrinsicDateGetFullYear {
+		t.Fatalf("unexpected intrinsic: %#v", text.Value)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(encoded); err != nil {
+		t.Fatalf("intrinsic round-trip failed: %v", err)
+	}
+}
+
 func TestStrictDecodeRejectsUnknownProperties(t *testing.T) {
 	cases := []string{
 		`{"apiVersion":"gobeyond.render/v1alpha1","routeId":"x","extra":true,"root":{"kind":"fragment","children":[]}}`,
@@ -133,6 +153,9 @@ func TestValidation(t *testing.T) {
 		{"bad operator", func(p *Plan) {
 			p.Root = &Text{Kind: "text", Value: &Binary{Kind: "binary", Operator: "**", Left: lit(1), Right: lit(2)}}
 		}, "operator"},
+		{"unknown intrinsic", func(p *Plan) {
+			p.Root = &Text{Kind: "text", Value: &Intrinsic{Kind: "intrinsic", Name: "host.secret"}}
+		}, "name"},
 		{"same bindings", func(p *Plan) {
 			p.Root = &Each{Kind: "each", Items: lit([]any{}), Item: "x", Index: "x", Key: lit(1), Body: &Fragment{Kind: "fragment"}}
 		}, "index"},

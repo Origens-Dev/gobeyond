@@ -74,7 +74,12 @@ export type PlanExpression =
   | { kind: 'unary'; operator: '!' | '-'; operand: PlanExpression }
   | {
       kind: 'helper'
-	  name: 'string' | 'lower' | 'upper' | 'join' | 'url' | 'style'
+      name: 'string' | 'lower' | 'upper' | 'join' | 'url' | 'style'
+      arguments: PlanExpression[]
+    }
+  | {
+      kind: 'intrinsic'
+      name: string
       arguments: PlanExpression[]
     }
 

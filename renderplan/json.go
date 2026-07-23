@@ -282,6 +282,23 @@ func decodeExpression(data []byte, path string) (Expression, error) {
 			n.Arguments = append(n.Arguments, arg)
 		}
 		return n, nil
+	case "intrinsic":
+		var raw struct {
+			Kind, Name string
+			Arguments  []json.RawMessage
+		}
+		if err := strictUnmarshal(data, &raw); err != nil {
+			return nil, decodeError(path, "invalid intrinsic", err)
+		}
+		n := &Intrinsic{Kind: raw.Kind, Name: raw.Name}
+		for i, value := range raw.Arguments {
+			arg, err := decodeExpression(value, fmt.Sprintf("%s.arguments[%d]", path, i))
+			if err != nil {
+				return nil, err
+			}
+			n.Arguments = append(n.Arguments, arg)
+		}
+		return n, nil
 	default:
 		return nil, decodeError(path+".kind", fmt.Sprintf("unsupported expression kind %q", kind), nil)
 	}

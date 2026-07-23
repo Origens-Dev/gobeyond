@@ -55,6 +55,52 @@ function standaloneContext(): CompilationContext {
 }
 
 const helperNames = new Set(['string', 'lower', 'upper', 'join', 'url'])
+type PortableIntrinsicDefinition = {
+  name: string
+  stability: 'pure' | 'render-snapshot'
+}
+
+const dateProjectionIntrinsics = new Map<string, PortableIntrinsicDefinition>([
+  [
+    'getFullYear',
+    {
+      name: 'ecmascript.Date.prototype.getFullYear',
+      stability: 'render-snapshot',
+    },
+  ],
+  [
+    'getUTCFullYear',
+    {
+      name: 'ecmascript.Date.prototype.getUTCFullYear',
+      stability: 'render-snapshot',
+    },
+  ],
+])
+
+function compilePortableIntrinsic(
+  expression: ts.CallExpression,
+): PlanExpression | undefined {
+  if (
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    expression.arguments.length !== 0
+  ) {
+    return undefined
+  }
+  const receiver = expression.expression.expression
+  if (
+    !ts.isNewExpression(receiver) ||
+    !ts.isIdentifier(receiver.expression) ||
+    receiver.expression.text !== 'Date' ||
+    (receiver.arguments?.length ?? 0) !== 0
+  ) {
+    return undefined
+  }
+  const definition = dateProjectionIntrinsics.get(expression.expression.name.text)
+  return definition
+    ? { kind: 'intrinsic', name: definition.name, arguments: [] }
+    : undefined
+}
+
 const parserControlledTextElements = new Set([
   'iframe',
   'noembed',
@@ -2006,6 +2052,8 @@ export class SourceCompiler {
         : undefined
     }
     if (ts.isCallExpression(expression)) {
+      const intrinsic = compilePortableIntrinsic(expression)
+      if (intrinsic) return intrinsic
       if (
         ts.isIdentifier(expression.expression) &&
         helperNames.has(expression.expression.text)

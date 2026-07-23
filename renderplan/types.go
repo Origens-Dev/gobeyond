@@ -172,6 +172,17 @@ type Helper struct {
 
 func (*Helper) isExpression() {}
 
+// Intrinsic is a compiler-recognized platform operation with equivalent Go
+// runtime semantics. Names are stable protocol identifiers, not Go function
+// names, so the registry can grow without adding expression kinds.
+type Intrinsic struct {
+	Kind      string       `json:"kind"`
+	Name      string       `json:"name"`
+	Arguments []Expression `json:"arguments"`
+}
+
+func (*Intrinsic) isExpression() {}
+
 // SafeHTML marks HTML that was sanitized by the application before it crossed
 // the rendering boundary. The unexported representation prevents plain strings
 // from being used accidentally.

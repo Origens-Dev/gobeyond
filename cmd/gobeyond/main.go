@@ -1236,7 +1236,7 @@ func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, e
 		return err
 	}
 	vite := filepath.Join(root, "node_modules", ".bin", "vite")
-	command := exec.Command(vite, "build", "--config", config, "--manifest")
+	command := exec.Command(vite, viteBuildArguments(config, buildID)...)
 	command.Dir = website
 	command.Env = withEnvironment(environment,
 		"GOBEYOND_BUILD_ID="+buildID,
@@ -1246,6 +1246,17 @@ func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, e
 	)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	return command.Run()
+}
+
+func viteBuildArguments(config, buildID string) []string {
+	return []string{
+		"build",
+		"--config",
+		config,
+		"--manifest",
+		"--base",
+		"/_gobeyond/assets/" + buildID + "/",
+	}
 }
 
 func serverBuildTarget(website string) (string, error) {

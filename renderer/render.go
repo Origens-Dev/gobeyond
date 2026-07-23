@@ -8,13 +8,16 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/holbrookab/gobeyond/renderplan"
 )
 
-type Renderer struct{}
+type Renderer struct {
+	now func() time.Time
+}
 
 const maxRenderedBytes = 8 << 20
 
@@ -39,7 +42,7 @@ func (buffer *renderBuffer) appendByte(value byte) {
 	_ = buffer.Builder.WriteByte(value)
 }
 
-func New() *Renderer { return &Renderer{} }
+func New() *Renderer { return &Renderer{now: time.Now} }
 
 // Render validates and renders a complete plan. It never returns partial HTML.
 func Render(plan *renderplan.Plan, props any) (string, error) { return New().Render(plan, props) }
@@ -49,7 +52,11 @@ func (r *Renderer) Render(plan *renderplan.Plan, props any) (string, error) {
 		return "", err
 	}
 	var out renderBuffer
-	ctx := renderContext{env: environment{props: props, locals: map[string]any{}}, namespace: renderplan.NamespaceHTML}
+	now := time.Now()
+	if r.now != nil {
+		now = r.now()
+	}
+	ctx := renderContext{env: environment{props: props, locals: map[string]any{}, now: now}, namespace: renderplan.NamespaceHTML}
 	if err := r.node(&out, plan.Root, ctx, "$.root"); err != nil {
 		return "", err
 	}

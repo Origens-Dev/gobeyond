@@ -17,6 +17,7 @@ import (
 type environment struct {
 	props  any
 	locals map[string]any
+	now    time.Time
 }
 
 type orderedStyleProperty struct {
@@ -53,6 +54,8 @@ func evaluate(expr renderplan.Expression, env environment, path string) (any, er
 		}
 	case *renderplan.Helper:
 		return evalHelper(e, env, path)
+	case *renderplan.Intrinsic:
+		return evalIntrinsic(e, env, path)
 	default:
 		return nil, evaluation(path, fmt.Sprintf("unsupported expression %T", expr))
 	}
@@ -303,6 +306,32 @@ func evalHelper(expr *renderplan.Helper, env environment, path string) (any, err
 		return strings.Join(values, separator), nil
 	default:
 		return nil, evaluation(path, "unsupported helper")
+	}
+}
+
+func evalIntrinsic(expr *renderplan.Intrinsic, env environment, path string) (any, error) {
+	args := make([]any, len(expr.Arguments))
+	for i, arg := range expr.Arguments {
+		value, err := evaluate(arg, env, fmt.Sprintf("%s.arguments[%d]", path, i))
+		if err != nil {
+			return nil, err
+		}
+		args[i] = value
+	}
+	spec, ok := renderplan.IntrinsicDefinition(expr.Name)
+	if !ok {
+		return nil, evaluation(path, "unsupported intrinsic")
+	}
+	if len(args) != spec.Arity {
+		return nil, evaluation(path, fmt.Sprintf("intrinsic %s expects %d arguments", expr.Name, spec.Arity))
+	}
+	switch expr.Name {
+	case renderplan.IntrinsicDateGetFullYear:
+		return env.now.Year(), nil
+	case renderplan.IntrinsicDateGetUTCFullYear:
+		return env.now.UTC().Year(), nil
+	default:
+		return nil, evaluation(path, "unsupported intrinsic")
 	}
 }
 

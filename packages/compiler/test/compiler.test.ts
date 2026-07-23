@@ -322,6 +322,39 @@ test('restricts portable case helpers to statically known ASCII strings', () => 
   }
 })
 
+test('compiles the current local year from a zero-argument Date', () => {
+  const result = compileSource({
+    routeId: 'current-year',
+    sourceText: `export default function Page() {
+      return <footer>© {new Date().getFullYear()} Studio</footer>
+    }`,
+  })
+  assert.equal(
+    result.ok,
+    true,
+    result.ok ? '' : JSON.stringify(result.diagnostics, null, 2),
+  )
+  if (!result.ok) return
+  assert.deepEqual(result.plan.root, {
+    kind: 'element',
+    tag: 'footer',
+    namespace: 'html',
+    attributes: [],
+    children: [
+      { kind: 'text', value: { kind: 'literal', value: '© ' } },
+      {
+        kind: 'text',
+        value: {
+          kind: 'intrinsic',
+          name: 'ecmascript.Date.prototype.getFullYear',
+          arguments: [],
+        },
+      },
+      { kind: 'text', value: { kind: 'literal', value: ' Studio' } },
+    ],
+  })
+})
+
 test('rejects all children in HTML raw-text and RCDATA elements', () => {
   for (const tag of [
     'iframe',

@@ -138,6 +138,21 @@ func TestCollectBrowserAssetsProjectsRouteAwareViteManifest(t *testing.T) {
 	}
 }
 
+func TestViteBuildUsesVersionedAssetBase(t *testing.T) {
+	got := viteBuildArguments("/site/vite.config.ts", "build-1")
+	want := []string{
+		"build",
+		"--config",
+		"/site/vite.config.ts",
+		"--manifest",
+		"--base",
+		"/_gobeyond/assets/build-1/",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected Vite arguments:\nwant %#v\n got %#v", want, got)
+	}
+}
+
 func TestDiscoverPublicAssetsProducesCloudFrontPaths(t *testing.T) {
 	root := t.TempDir()
 	writeAssetTestFile(t, filepath.Join(root, "images", "product.svg"), "<svg/>")
