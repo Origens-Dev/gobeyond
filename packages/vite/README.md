@@ -1,12 +1,12 @@
-# `@gobeyond/vite`
+# `@go-beyond/vite`
 
 This Vite plugin consumes the exact client-boundary manifest emitted by
-`@gobeyond/compiler`. It wraps only compiler-approved downgraded call sites;
+`@go-beyond/compiler`. It wraps only compiler-approved downgraded call sites;
 ordinary `use client` modules that compiled portably are left unchanged.
 
 ```ts
 import { defineConfig } from 'vite'
-import { goBeyond } from '@gobeyond/vite'
+import { goBeyond } from '@go-beyond/vite'
 
 export default defineConfig({ plugins: [goBeyond()] })
 ```

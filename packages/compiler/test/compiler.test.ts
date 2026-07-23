@@ -815,7 +815,7 @@ test('rejects executable helpers in value contracts', () => {
   const result = compilePageContractSource({
     routeId: 'unsafe',
     sourceText: `
-      import { definePage, schema } from '@gobeyond/schema'
+      import { definePage, schema } from '@go-beyond/schema'
       const choose = () => schema.string()
       export const page = definePage({ props: choose() })
     `,
@@ -909,7 +909,7 @@ test('executes literal static props and metadata in build-only Node modules', as
       export default function Page(props: { title: string }) { return <h1>{props.title}</h1> }
     `,
     'app/page.schema.ts': `
-      import { definePage, schema } from '@gobeyond/schema'
+      import { definePage, schema } from '@go-beyond/schema'
       export const page = definePage({ props: schema.object({ title: schema.string() }) })
     `,
     'app/page.build.ts': `
@@ -987,7 +987,7 @@ test('generates and validates parameterized static route entries', async (t) => 
       export default function Page(props: { slug: string; title: string }) { return <h1>{props.title}</h1> }
     `,
     'app/articles/[slug]/page.schema.ts': `
-      import { definePage, schema } from '@gobeyond/schema'
+      import { definePage, schema } from '@go-beyond/schema'
       export const page = definePage({ props: schema.object({ slug: schema.string(), title: schema.string() }) })
     `,
     'app/articles/[slug]/page.build.ts': `
@@ -1022,7 +1022,7 @@ test('generates and validates parameterized static route entries', async (t) => 
 
 test('rejects schema-invalid and non-serializable static props', async (t) => {
   const schema = `
-    import { definePage, schema } from '@gobeyond/schema'
+    import { definePage, schema } from '@go-beyond/schema'
     export const page = definePage({ props: schema.object({ count: schema.integer() }) })
   `
   const invalidRoot = await fixtureProject(t, {
@@ -1056,7 +1056,7 @@ test('emits an empty-props entry when a literal static route has no build file',
   const projectRoot = await fixtureProject(t, {
     'app/page.tsx': `export default function Page() { return <p>Static</p> }`,
     'app/page.schema.ts': `
-      import { definePage, schema } from '@gobeyond/schema'
+      import { definePage, schema } from '@go-beyond/schema'
       export const page = definePage({ props: schema.object({}) })
     `,
   })
@@ -1082,7 +1082,7 @@ test('composes root and nested layouts and emits browser registry module order',
     'app/products/layout.tsx': `export default function Products({ children }: { children: unknown }) { return <section id="products">{children}</section> }`,
     'app/products/[slug]/page.tsx': `export default function Page(props: { name: string }) { return <h1>{props.name}</h1> }`,
     'app/products/[slug]/page.schema.ts': `
-      import { definePage, schema } from '@gobeyond/schema'
+      import { definePage, schema } from '@go-beyond/schema'
       export const page = definePage({ props: schema.object({ name: schema.string() }) })
     `,
   })

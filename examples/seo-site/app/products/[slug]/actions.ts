@@ -3,7 +3,7 @@ import {
   schema,
   type InferActionInput,
   type InferActionOutput,
-} from "@gobeyond/schema";
+} from "@go-beyond/schema";
 
 export const addToCart = defineAction({
   input: schema.object({

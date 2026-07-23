@@ -59,7 +59,7 @@ func TestGeneratedRouteModulePropagatesLocalReplacements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	moduleData = append(moduleData, []byte("\nreplace github.com/holbrookab/gobeyond => ../gobeyond\n")...)
+	moduleData = append(moduleData, []byte("\nreplace github.com/Origens-Dev/gobeyond => ../gobeyond\n")...)
 	if err := os.WriteFile(moduleFile, moduleData, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestGeneratedRouteModulePropagatesLocalReplacements(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSourceTestContains(t, filepath.Join(routeDir, "go.mod"),
-		`replace github.com/holbrookab/gobeyond => "../../../../gobeyond"`,
+		`replace github.com/Origens-Dev/gobeyond => "../../../../gobeyond"`,
 	)
 }
 

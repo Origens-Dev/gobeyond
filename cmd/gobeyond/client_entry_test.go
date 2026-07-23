@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/holbrookab/gobeyond/internal/project"
+	"github.com/Origens-Dev/gobeyond/internal/project"
 )
 
 func TestGenerateClientEntryIncludesManifestPatterns(t *testing.T) {
@@ -31,7 +31,7 @@ func TestGenerateClientEntryIncludesManifestPatterns(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
-		`import { bootstrapAsync } from '@gobeyond/react/browser'`,
+		`import { bootstrapAsync } from '@go-beyond/react/browser'`,
 		`"r_products": { load: () => import("./routes/`,
 		`pattern: "/products/[slug]" }`,
 	} {

@@ -1,5 +1,5 @@
-import type { DocumentMetadata } from "@gobeyond/react";
-import type { InferPageProps } from "@gobeyond/schema";
+import type { DocumentMetadata } from "@go-beyond/react";
+import type { InferPageProps } from "@go-beyond/schema";
 
 import { page } from "./page.schema.js";
 

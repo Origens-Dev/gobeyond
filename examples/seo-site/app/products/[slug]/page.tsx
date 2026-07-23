@@ -1,4 +1,4 @@
-import type { InferPageProps } from "@gobeyond/schema";
+import type { InferPageProps } from "@go-beyond/schema";
 import { AddToCart } from "../../../components/add-to-cart.js";
 import { page } from "./page.schema.js";
 

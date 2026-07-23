@@ -12,7 +12,7 @@ responses against the same assertions in `test/no-js-seo.test.mjs`.
 Run the dependency-free no-JavaScript contract checks with:
 
 ```bash
-pnpm --filter @gobeyond/example-seo-site test
+pnpm --filter @go-beyond/example-seo-site test
 ```
 
 The fixture demonstrates articles, products, crawlable pagination, locations,

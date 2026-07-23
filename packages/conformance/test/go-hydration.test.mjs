@@ -5,9 +5,9 @@ import { createElement, useState } from 'react'
 import { act } from 'react'
 import { JSDOM } from 'jsdom'
 
-import { compileSource } from '@gobeyond/compiler'
-import { ClientOnly } from '@gobeyond/react'
-import { bootstrap, BROWSER_PROTOCOL_VERSION } from '@gobeyond/react/browser'
+import { compileSource } from '@go-beyond/compiler'
+import { ClientOnly } from '@go-beyond/react'
+import { bootstrap, BROWSER_PROTOCOL_VERSION } from '@go-beyond/react/browser'
 
 const source = `
   import { useEffect, useState } from 'react'

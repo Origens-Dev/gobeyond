@@ -1,4 +1,4 @@
-import { bootstrap } from "@gobeyond/react/browser";
+import { bootstrap } from "@go-beyond/react/browser";
 
 import AccountPage from "./app/account/page.js";
 import ArticlePage from "./app/articles/[slug]/page.js";

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	gb "github.com/holbrookab/gobeyond"
+	gb "github.com/Origens-Dev/gobeyond"
 )
 
 func TestRenderCompleteSEODocument(t *testing.T) {

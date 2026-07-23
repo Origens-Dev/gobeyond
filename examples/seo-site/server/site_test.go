@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	gb "github.com/holbrookab/gobeyond"
-	actioncontract "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
-	"github.com/holbrookab/gobeyond/renderplan"
-	gbruntime "github.com/holbrookab/gobeyond/runtime"
+	gb "github.com/Origens-Dev/gobeyond"
+	actioncontract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	"github.com/Origens-Dev/gobeyond/renderplan"
+	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
 
 func TestLiveNoJavaScriptSEOArticle(t *testing.T) {

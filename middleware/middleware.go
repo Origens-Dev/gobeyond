@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	gb "github.com/holbrookab/gobeyond"
-	"github.com/holbrookab/gobeyond/router"
+	gb "github.com/Origens-Dev/gobeyond"
+	"github.com/Origens-Dev/gobeyond/router"
 )
 
 type Rule struct {

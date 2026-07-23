@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { build } from 'vite'
 
-import { compileFile } from '@gobeyond/compiler'
+import { compileFile } from '@go-beyond/compiler'
 import {
   goBeyond,
   loadClientBoundaryManifest,
@@ -143,7 +143,7 @@ test('bundles a direct JSX child as an executable empty-first-render boundary', 
     })],
     resolve: {
       alias: {
-        '@gobeyond/react': resolve(root, 'gobeyond-react.js'),
+        '@go-beyond/react': resolve(root, 'gobeyond-react.js'),
         'react/jsx-runtime': resolve(root, 'jsx-runtime.js'),
       },
     },

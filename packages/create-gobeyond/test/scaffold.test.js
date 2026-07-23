@@ -43,10 +43,10 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.equal(packageJSON.packageManager, 'pnpm@10.33.0')
   assert.equal(packageJSON.dependencies.react, '19.2.8')
   assert.equal(packageJSON.dependencies['react-dom'], '19.2.8')
-  assert.equal(packageJSON.dependencies['@gobeyond/react'], '0.1.0-alpha.0')
-  assert.equal(packageJSON.dependencies['@gobeyond/schema'], '0.1.0-alpha.0')
-  assert.equal(packageJSON.devDependencies['@gobeyond/compiler'], '0.1.0-alpha.0')
-  assert.equal(packageJSON.devDependencies['@gobeyond/cli'], undefined)
+  assert.equal(packageJSON.dependencies['@go-beyond/react'], '0.1.0-alpha.0')
+  assert.equal(packageJSON.dependencies['@go-beyond/schema'], '0.1.0-alpha.0')
+  assert.equal(packageJSON.devDependencies['@go-beyond/compiler'], '0.1.0-alpha.0')
+  assert.equal(packageJSON.devDependencies['@go-beyond/cli'], undefined)
   assert.equal(packageJSON.devDependencies.tailwindcss, undefined)
   assert.equal(packageJSON.devDependencies['@tailwindcss/postcss'], undefined)
   assert.doesNotMatch(packageJSON.scripts.test, /gobeyond test/)
@@ -59,7 +59,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(gitignore, /^\.env\.\*\.local$/m)
 
   const goMod = await readFile(join(destination, 'go.mod'), 'utf8')
-  assert.match(goMod, /github\.com\/holbrookab\/gobeyond v0\.1\.0-alpha\.0/)
+  assert.match(goMod, /github\.com\/Origens-Dev\/gobeyond v0\.1\.0-alpha\.0/)
 
   const dockerfile = await readFile(join(destination, 'Dockerfile'), 'utf8')
   assert.match(dockerfile, /FROM scratch/)
@@ -68,7 +68,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.doesNotMatch(dockerfile, /COPY --from=build \/src\/dist\/static/)
 
   const client = await readFile(join(destination, 'client.tsx'), 'utf8')
-  assert.match(client, /@gobeyond\/react\/browser/)
+  assert.match(client, /@go-beyond\/react\/browser/)
   assert.match(client, /r_route_8a5edab2/)
   assert.match(client, /r_products__slug_3e2e8eb9/)
   const vite = await readFile(join(destination, 'vite.config.ts'), 'utf8')
@@ -114,7 +114,7 @@ test('local workspace integration generates contracts and type-checks the starte
   await createProject(destination, { projectName: 'starter-integration' })
   await linkWorkspacePackages(destination)
 
-  await run('go', ['mod', 'edit', '-replace', `github.com/holbrookab/gobeyond=${workspaceRoot}`], destination)
+  await run('go', ['mod', 'edit', '-replace', `github.com/Origens-Dev/gobeyond=${workspaceRoot}`], destination)
   await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'generate'], destination)
   await run('go', ['mod', 'tidy'], destination)
   await run(join(nodeModules, '.bin', 'tsc'), ['-p', 'tsconfig.json', '--noEmit'], destination)
@@ -183,7 +183,7 @@ function run(command, args, cwd) {
 
 async function linkWorkspacePackages(destination) {
   const nodeModules = join(destination, 'node_modules')
-  await mkdir(join(nodeModules, '@gobeyond'), { recursive: true })
+  await mkdir(join(nodeModules, '@go-beyond'), { recursive: true })
   await mkdir(join(nodeModules, '@types'), { recursive: true })
   await mkdir(join(nodeModules, '@vitejs'), { recursive: true })
   await mkdir(join(nodeModules, '.bin'), { recursive: true })
@@ -192,7 +192,7 @@ async function linkWorkspacePackages(destination) {
     react: join(workspaceRoot, 'packages/react'),
     schema: join(workspaceRoot, 'packages/schema'),
   })) {
-    await symlink(source, join(nodeModules, '@gobeyond', name), 'dir')
+    await symlink(source, join(nodeModules, '@go-beyond', name), 'dir')
   }
   for (const [name, source] of Object.entries({
     react: join(workspaceRoot, 'packages/react/node_modules/react'),

@@ -4,7 +4,7 @@
 package products_slug
 
 import (
-	"github.com/holbrookab/gobeyond/renderplan"
+	"github.com/Origens-Dev/gobeyond/renderplan"
 	"time"
 )
 

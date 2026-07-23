@@ -1,4 +1,4 @@
-import { fetchWithBuildGuard } from "@gobeyond/react/browser";
+import { fetchWithBuildGuard } from "@go-beyond/react/browser";
 import { useState } from "react";
 
 export interface AddToCartProps {

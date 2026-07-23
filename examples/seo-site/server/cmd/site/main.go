@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/holbrookab/gobeyond/browserassets"
-	seosite "github.com/holbrookab/gobeyond/examples/seo-site/server"
-	gbruntime "github.com/holbrookab/gobeyond/runtime"
+	"github.com/Origens-Dev/gobeyond/browserassets"
+	seosite "github.com/Origens-Dev/gobeyond/examples/seo-site/server"
+	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
 
 func main() {

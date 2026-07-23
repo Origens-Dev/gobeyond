@@ -345,8 +345,8 @@ class SourceGraph {
       if (
         specifier === 'react' ||
         specifier.startsWith('react/') ||
-        specifier === '@gobeyond/react' ||
-        specifier.startsWith('@gobeyond/react/')
+        specifier === '@go-beyond/react' ||
+        specifier.startsWith('@go-beyond/react/')
       ) return { kind: 'package', specifier }
       const sourceRoot = this.sourceRoots
         .filter((root) => specifier.startsWith(root.prefix))

@@ -107,7 +107,7 @@ class ContractCompiler {
       if (
         !ts.isImportDeclaration(statement) ||
         !ts.isStringLiteral(statement.moduleSpecifier) ||
-        statement.moduleSpecifier.text !== '@gobeyond/schema' ||
+        statement.moduleSpecifier.text !== '@go-beyond/schema' ||
         !statement.importClause?.namedBindings ||
         !ts.isNamedImports(statement.importClause.namedBindings)
       ) continue
@@ -153,7 +153,7 @@ class ContractCompiler {
       this.report(
         node,
         'GB1210',
-        'Value contracts must use direct @gobeyond/schema descriptor calls.',
+        'Value contracts must use direct @go-beyond/schema descriptor calls.',
         'Use schema.object, schema.string, and the other documented schema primitives without helper execution.',
       )
       return undefined

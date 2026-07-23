@@ -5,7 +5,7 @@ import { createElement } from 'react'
 import { renderToString } from 'react-dom/server'
 import { JSDOM } from 'jsdom'
 
-import { compileSource } from '@gobeyond/compiler'
+import { compileSource } from '@go-beyond/compiler'
 
 test('portable equality excludes JavaScript reference-identity values', () => {
   const value = { id: 'same' }

@@ -20,10 +20,10 @@ importers:
 
   examples/seo-site:
     dependencies:
-      '@gobeyond/react':
+      '@go-beyond/react':
         specifier: workspace:*
         version: link:../../packages/react
-      '@gobeyond/schema':
+      '@go-beyond/schema':
         specifier: workspace:*
         version: link:../../packages/schema
       react:
@@ -58,10 +58,10 @@ importers:
 
   packages/conformance:
     dependencies:
-      '@gobeyond/compiler':
+      '@go-beyond/compiler':
         specifier: workspace:*
         version: link:../compiler
-      '@gobeyond/react':
+      '@go-beyond/react':
         specifier: workspace:*
         version: link:../react
       jsdom:
@@ -108,7 +108,7 @@ importers:
 
   packages/vite:
     devDependencies:
-      '@gobeyond/compiler':
+      '@go-beyond/compiler':
         specifier: workspace:*
         version: link:../compiler
       '@types/node':

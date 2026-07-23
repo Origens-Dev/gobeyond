@@ -2,10 +2,10 @@
 package fr_articles_slug
 
 import (
-	gb "github.com/holbrookab/gobeyond"
-	contract "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_fr_articles_slug_fee2939e"
-	"github.com/holbrookab/gobeyond/examples/seo-site/internal/site"
-	gbruntime "github.com/holbrookab/gobeyond/runtime"
+	gb "github.com/Origens-Dev/gobeyond"
+	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_fr_articles_slug_fee2939e"
+	"github.com/Origens-Dev/gobeyond/examples/seo-site/internal/site"
+	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 	"net/http"
 	"time"
 )

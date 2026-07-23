@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/holbrookab/gobeyond/renderer"
-	"github.com/holbrookab/gobeyond/renderplan"
+	"github.com/Origens-Dev/gobeyond/renderer"
+	"github.com/Origens-Dev/gobeyond/renderplan"
 )
 
 func main() {

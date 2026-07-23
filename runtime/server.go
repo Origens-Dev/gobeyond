@@ -17,15 +17,15 @@ import (
 	"strings"
 	"time"
 
-	gb "github.com/holbrookab/gobeyond"
-	"github.com/holbrookab/gobeyond/browserassets"
-	"github.com/holbrookab/gobeyond/document"
-	"github.com/holbrookab/gobeyond/internal/jsvalue"
-	gbmiddleware "github.com/holbrookab/gobeyond/middleware"
-	"github.com/holbrookab/gobeyond/renderer"
-	"github.com/holbrookab/gobeyond/renderplan"
-	"github.com/holbrookab/gobeyond/router"
-	"github.com/holbrookab/gobeyond/security"
+	gb "github.com/Origens-Dev/gobeyond"
+	"github.com/Origens-Dev/gobeyond/browserassets"
+	"github.com/Origens-Dev/gobeyond/document"
+	"github.com/Origens-Dev/gobeyond/internal/jsvalue"
+	gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
+	"github.com/Origens-Dev/gobeyond/renderer"
+	"github.com/Origens-Dev/gobeyond/renderplan"
+	"github.com/Origens-Dev/gobeyond/router"
+	"github.com/Origens-Dev/gobeyond/security"
 )
 
 const maxRewrites = 8

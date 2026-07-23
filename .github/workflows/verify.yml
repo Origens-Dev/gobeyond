@@ -57,7 +57,7 @@ jobs:
           go-version: "1.24.x"
           check-latest: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @gobeyond/compiler build
+      - run: pnpm --filter @go-beyond/compiler build
       - run: pnpm build
       - run: ./scripts/verify-node-free-server.sh dist/server
 

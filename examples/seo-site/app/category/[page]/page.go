@@ -4,10 +4,10 @@ package category_page
 import (
 	"net/http"
 
-	gb "github.com/holbrookab/gobeyond"
-	contract "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_category_page_05ecbf63"
-	"github.com/holbrookab/gobeyond/examples/seo-site/internal/site"
-	gbruntime "github.com/holbrookab/gobeyond/runtime"
+	gb "github.com/Origens-Dev/gobeyond"
+	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_category_page_05ecbf63"
+	"github.com/Origens-Dev/gobeyond/examples/seo-site/internal/site"
+	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
 
 type Params struct{ Page string }

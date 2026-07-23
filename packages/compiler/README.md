@@ -1,11 +1,11 @@
-# `@gobeyond/compiler`
+# `@go-beyond/compiler`
 
 This package compiles GoBeyond's portable TSX profile into the canonical
 `gobeyond.render/v1alpha1` JSON rendering plan. It is a build-time package;
 it is never part of the Go production runtime.
 
 ```ts
-import { compileFile, compileSourceOrThrow } from '@gobeyond/compiler'
+import { compileFile, compileSourceOrThrow } from '@go-beyond/compiler'
 
 const plan = compileSourceOrThrow({
   routeId: 'products_slug',

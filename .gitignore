@@ -4,6 +4,9 @@ dist/
 coverage/
 *.log
 .DS_Store
+.env
+.env.*
+!.env.example
 
 # Route-owned Go is authored under app/ but compiled only from generated,
 # import-safe packages. Per-route go.mod files exist solely for Go tooling.

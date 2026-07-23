@@ -1,5 +1,5 @@
 {
-  "name": "@gobeyond/react",
+  "name": "@go-beyond/react",
   "version": "0.1.0-alpha.0",
   "description": "Pinned React hydration runtime for GoBeyond",
   "license": "MIT",

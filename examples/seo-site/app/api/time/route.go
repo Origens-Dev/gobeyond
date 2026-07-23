@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	gb "github.com/holbrookab/gobeyond"
+	gb "github.com/Origens-Dev/gobeyond"
 )
 
 func GET(_ *gb.RequestContext) (gb.Response, error) {

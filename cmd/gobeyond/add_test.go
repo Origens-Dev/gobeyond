@@ -87,7 +87,7 @@ func TestAddActionMergesOnlyMarkedScaffoldsAndCreatesTypedHandler(t *testing.T) 
 
 	actionsPath := filepath.Join(root, "app", "orders", "actions.ts")
 	assertAddFileContains(t, actionsPath,
-		"import { defineAction, schema } from '@gobeyond/schema'",
+		"import { defineAction, schema } from '@go-beyond/schema'",
 		actionInsertionMarker,
 		"export const submitOrder = defineAction(",
 		"export const cancelOrder = defineAction(",
@@ -147,7 +147,7 @@ func TestAddActionMergesOnlyMarkedScaffoldsAndCreatesTypedHandler(t *testing.T) 
 	}
 
 	manualPath := filepath.Join(root, "app", "orders", "actions.ts")
-	manual := "import { defineAction, schema } from '@gobeyond/schema'\n\nexport const manual = defineAction({ input: schema.object({}), output: schema.object({}) })\n"
+	manual := "import { defineAction, schema } from '@go-beyond/schema'\n\nexport const manual = defineAction({ input: schema.object({}), output: schema.object({}) })\n"
 	if err := os.WriteFile(manualPath, []byte(manual), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func newAddTestProject(t *testing.T) string {
 		t.Fatal(err)
 	}
 	repositoryRoot := filepath.Clean(filepath.Join(workingDirectory, "..", ".."))
-	writeAddTestFile(t, filepath.Join(root, "go.mod"), "module example.com/add-test\n\ngo 1.24.0\n\nrequire github.com/holbrookab/gobeyond v0.0.0\n\nreplace github.com/holbrookab/gobeyond => "+repositoryRoot+"\n")
+	writeAddTestFile(t, filepath.Join(root, "go.mod"), "module example.com/add-test\n\ngo 1.24.0\n\nrequire github.com/Origens-Dev/gobeyond v0.0.0\n\nreplace github.com/Origens-Dev/gobeyond => "+repositoryRoot+"\n")
 	return root
 }
 

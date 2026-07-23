@@ -1,5 +1,5 @@
 {
-  "name": "@gobeyond/conformance",
+  "name": "@go-beyond/conformance",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,8 +7,8 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@gobeyond/compiler": "workspace:*",
-    "@gobeyond/react": "workspace:*",
+    "@go-beyond/compiler": "workspace:*",
+    "@go-beyond/react": "workspace:*",
     "jsdom": "29.1.1",
     "react": "19.2.8",
     "react-dom": "19.2.8"

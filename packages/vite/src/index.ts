@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from 'node:path'
 import type {
   ClientBoundaryManifest,
   ClientBoundaryRecord,
-} from '@gobeyond/compiler'
+} from '@go-beyond/compiler'
 import type { Plugin, ResolvedConfig } from 'vite'
 
 export type GoBeyondViteOptions = {
@@ -126,7 +126,7 @@ export function transformClientBoundaries(
       ? `import { createElement as __gbCreateElement } from 'react';`
       : '',
     needsClientOnly || needsDeferredRoot
-      ? `import { ${needsClientOnly ? 'ClientOnly as __gbClientOnly' : ''}${needsClientOnly && needsDeferredRoot ? ', ' : ''}${needsDeferredRoot ? 'deferClientRender as __gbDeferClientRender' : ''} } from '@gobeyond/react';`
+      ? `import { ${needsClientOnly ? 'ClientOnly as __gbClientOnly' : ''}${needsClientOnly && needsDeferredRoot ? ', ' : ''}${needsDeferredRoot ? 'deferClientRender as __gbDeferClientRender' : ''} } from '@go-beyond/react';`
       : '',
   ].filter(Boolean).join('\n')
   const insertion = directivePrologueEnd(code)

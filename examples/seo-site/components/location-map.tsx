@@ -1,4 +1,4 @@
-import { ClientOnly } from "@gobeyond/react";
+import { ClientOnly } from "@go-beyond/react";
 
 export interface LocationMapProps {
   name: string;

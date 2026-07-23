@@ -10,7 +10,7 @@ import (
 	"io"
 	"strings"
 
-	gb "github.com/holbrookab/gobeyond"
+	gb "github.com/Origens-Dev/gobeyond"
 )
 
 type BodyHTML string

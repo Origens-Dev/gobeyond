@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	gb "github.com/holbrookab/gobeyond"
+	gb "github.com/Origens-Dev/gobeyond"
 )
 
 func TestChainAppliesMatchingRulesInOrder(t *testing.T) {

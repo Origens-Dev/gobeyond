@@ -1,5 +1,5 @@
 {
-  "name": "@gobeyond/example-seo-site",
+  "name": "@go-beyond/example-seo-site",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gobeyond/react": "workspace:*",
-    "@gobeyond/schema": "workspace:*",
+    "@go-beyond/react": "workspace:*",
+    "@go-beyond/schema": "workspace:*",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

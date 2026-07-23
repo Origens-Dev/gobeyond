@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ClientOnly, SafeHTML, string } from '@gobeyond/react'
+import { ClientOnly, SafeHTML, string } from '@go-beyond/react'
 
 type Product = {
   slug: string

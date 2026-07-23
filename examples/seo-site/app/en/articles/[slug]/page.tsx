@@ -1,4 +1,4 @@
-import type { InferPageProps } from "@gobeyond/schema";
+import type { InferPageProps } from "@go-beyond/schema";
 import { page } from "./page.schema.js";
 
 export type PageProps = InferPageProps<typeof page>;
