@@ -1,9 +1,18 @@
 {
-  "name": "create-gobeyond",
-  "version": "0.1.0-alpha.0",
+  "name": "@go-beyond/create-gobeyond",
+  "version": "0.1.0-alpha.1",
   "description": "Create a website-first GoBeyond project",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Origens-Dev/gobeyond.git",
+    "directory": "packages/create-gobeyond"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "engines": {
     "node": ">=22.0.0"
   },

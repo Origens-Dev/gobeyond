@@ -1,9 +1,18 @@
 {
   "name": "@go-beyond/schema",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Serializable page and action schema contracts for GoBeyond",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Origens-Dev/gobeyond.git",
+    "directory": "packages/schema"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

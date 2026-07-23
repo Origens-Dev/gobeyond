@@ -1,0 +1,112 @@
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "npm dist-tag to publish under"
+        required: true
+        default: "next"
+        type: choice
+        options:
+          - next
+          - latest
+          - beta
+      dry_run:
+        description: "Run publish --dry-run instead of publishing"
+        required: true
+        default: false
+        type: boolean
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: pnpm
+
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: >
+          pnpm
+          --filter @go-beyond/schema
+          --filter @go-beyond/compiler
+          --filter @go-beyond/react
+          --filter @go-beyond/vite
+          build
+
+      - name: Resolve publish tag
+        id: publish
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.release.prerelease }}" = "true" ]; then
+            echo "tag=next" >> "$GITHUB_OUTPUT"
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.publish.outputs.tag }}"
+          DRY_RUN="${{ steps.publish.outputs.dry_run }}"
+
+          publish_one() {
+            local filter="$1"
+            local name version
+            name="$(pnpm --filter "$filter" exec node -p "require('./package.json').name")"
+            version="$(pnpm --filter "$filter" exec node -p "require('./package.json').version")"
+
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published; skipping."
+              return 0
+            fi
+
+            local args=(--access public --tag "$TAG" --no-git-checks)
+            if [ "$DRY_RUN" = "true" ]; then
+              args+=(--dry-run)
+            fi
+
+            echo "Publishing $name@$version (tag=$TAG dry_run=$DRY_RUN)"
+            pnpm --filter "$filter" publish "${args[@]}"
+          }
+
+          publish_one @go-beyond/schema
+          publish_one @go-beyond/compiler
+          publish_one @go-beyond/react
+          publish_one @go-beyond/vite
+          publish_one @go-beyond/create-gobeyond
