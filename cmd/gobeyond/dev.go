@@ -105,7 +105,7 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 	fmt.Printf("GoBeyond dev building initial server for %s\n", publicOrigin)
 	buildNumber := 1
 	initialBuild := filepath.Join(workspace, fmt.Sprintf("build-%06d", buildNumber))
-	if err := buildToModeWithCompilerAndEnvironment(root, initialBuild, false, "", environment); err != nil {
+	if err := buildToModeWithCompilerAndEnvironment(root, initialBuild, false, "", environment, "development"); err != nil {
 		return fmt.Errorf("initial development build: %w", err)
 	}
 	current, err := startDevBackend(ctx, root, initialBuild, publicOrigin, environment)
@@ -165,7 +165,7 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 				if devCompilerInputsChanged(builtSnapshot, nextSnapshot, root) {
 					selectedCompiler = ""
 				}
-				buildErr = buildToModeWithCompilerAndEnvironment(root, candidateBuild, false, selectedCompiler, environment)
+				buildErr = buildToModeWithCompilerAndEnvironment(root, candidateBuild, false, selectedCompiler, environment, "development")
 				if buildErr == nil {
 					compilerCLI, buildErr = preparedCompilerCLI(root)
 				}

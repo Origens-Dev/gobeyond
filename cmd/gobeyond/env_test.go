@@ -78,7 +78,7 @@ func TestViteHonorsProjectPostCSSAndDoesNotExposeUnprefixedSecret(t *testing.T) 
 		t.Fatal(err)
 	}
 	staticDir := filepath.Join(root, "output")
-	if err := buildBrowserAssets(workspaceRoot(t), root, staticDir, "test", filepath.Join(root, "entry.js"), environment); err != nil {
+	if err := buildBrowserAssets(workspaceRoot(t), root, staticDir, "test", filepath.Join(root, "entry.js"), environment, "production"); err != nil {
 		t.Fatal(err)
 	}
 	assets := readTree(t, filepath.Join(staticDir, "_gobeyond", "assets", "test"))

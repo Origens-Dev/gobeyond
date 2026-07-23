@@ -139,17 +139,28 @@ func TestCollectBrowserAssetsProjectsRouteAwareViteManifest(t *testing.T) {
 }
 
 func TestViteBuildUsesVersionedAssetBase(t *testing.T) {
-	got := viteBuildArguments("/site/vite.config.ts", "build-1")
+	got := viteBuildArguments("/site/vite.config.ts", "build-1", "production")
 	want := []string{
 		"build",
 		"--config",
 		"/site/vite.config.ts",
 		"--manifest",
+		"--mode",
+		"production",
 		"--base",
 		"/_gobeyond/assets/build-1/",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected Vite arguments:\nwant %#v\n got %#v", want, got)
+	}
+}
+
+func TestBrowserNodeEnvironmentMatchesBuildMode(t *testing.T) {
+	if got := browserNodeEnvironment("development"); got != "development" {
+		t.Fatalf("development NODE_ENV = %q", got)
+	}
+	if got := browserNodeEnvironment("production"); got != "production" {
+		t.Fatalf("production NODE_ENV = %q", got)
 	}
 }
 

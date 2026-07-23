@@ -100,7 +100,7 @@ func buildToMode(root, dist string, checkContracts bool) error {
 	if err != nil {
 		return err
 	}
-	return buildToModeWithCompilerAndEnvironment(root, dist, checkContracts, "", environment)
+	return buildToModeWithCompilerAndEnvironment(root, dist, checkContracts, "", environment, "production")
 }
 
 func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCompilerCLI string) error {
@@ -108,10 +108,10 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 	if err != nil {
 		return err
 	}
-	return buildToModeWithCompilerAndEnvironment(root, dist, checkContracts, preparedCompilerCLI, environment)
+	return buildToModeWithCompilerAndEnvironment(root, dist, checkContracts, preparedCompilerCLI, environment, "production")
 }
 
-func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string) error {
+func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string, browserMode string) error {
 	projectRoot := websiteRoot(root)
 	routes, err := project.Discover(projectRoot)
 	if err != nil {
@@ -198,7 +198,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		buildTask{
 			name: "build browser assets",
 			run: func() error {
-				return buildBrowserAssets(root, projectRoot, staticDir, manifest.BuildID, clientEntry.EntryFile, environment)
+				return buildBrowserAssets(root, projectRoot, staticDir, manifest.BuildID, clientEntry.EntryFile, environment, browserMode)
 			},
 		},
 		buildTask{
@@ -1227,7 +1227,7 @@ func runBuildTasks(tasks ...buildTask) error {
 	return nil
 }
 
-func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, environment []string) error {
+func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, environment []string, mode string) error {
 	config := filepath.Join(website, "vite.config.ts")
 	if _, err := os.Stat(config); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1236,27 +1236,38 @@ func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, e
 		return err
 	}
 	vite := filepath.Join(root, "node_modules", ".bin", "vite")
-	command := exec.Command(vite, viteBuildArguments(config, buildID)...)
+	command := exec.Command(vite, viteBuildArguments(config, buildID, mode)...)
 	command.Dir = website
 	command.Env = withEnvironment(environment,
 		"GOBEYOND_BUILD_ID="+buildID,
 		"GOBEYOND_STATIC_OUT="+filepath.Join(staticDir, "_gobeyond", "assets", buildID),
 		"GOBEYOND_CLIENT_ENTRY="+clientEntry,
 		"GOBEYOND_CLIENT_BOUNDARIES="+filepath.Join(website, ".gobeyond", "client-boundaries.json"),
+		"GOBEYOND_MODE="+mode,
+		"NODE_ENV="+browserNodeEnvironment(mode),
 	)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	return command.Run()
 }
 
-func viteBuildArguments(config, buildID string) []string {
+func viteBuildArguments(config, buildID, mode string) []string {
 	return []string{
 		"build",
 		"--config",
 		config,
 		"--manifest",
+		"--mode",
+		mode,
 		"--base",
 		"/_gobeyond/assets/" + buildID + "/",
 	}
+}
+
+func browserNodeEnvironment(mode string) string {
+	if mode == "development" {
+		return "development"
+	}
+	return "production"
 }
 
 func serverBuildTarget(website string) (string, error) {
