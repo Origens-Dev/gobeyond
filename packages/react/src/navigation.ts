@@ -6,6 +6,7 @@ import {
   fetchWithBuildGuard,
   handleBuildMismatch,
   renderUpdateRequired,
+  shouldShowUpdateRequiredUI,
   type BuildMismatchEnvironment,
 } from "./build-mismatch.js";
 import type {
@@ -116,6 +117,7 @@ export interface SoftNavigationOptions {
   fetch?: typeof globalThis.fetch;
   mismatchEnvironment?: BuildMismatchEnvironment;
   onUpdateRequired?: (error: BuildMismatchError) => void;
+  showUpdateRequiredUI?: boolean;
   onNavigationError?: (error: unknown) => void;
   hardNavigate?: (url: string) => void;
   scrollTo?: (x: number, y: number) => void;
@@ -741,7 +743,10 @@ export function createSoftNavigation(
   };
   const onUpdateRequired =
     options.onUpdateRequired ??
-    ((error: BuildMismatchError) => renderUpdateRequired(error, options.document));
+    ((error: BuildMismatchError) => {
+      if (!shouldShowUpdateRequiredUI(options)) return;
+      renderUpdateRequired(error, options.document);
+    });
   const previousScrollRestoration = targetWindow.history.scrollRestoration;
   targetWindow.history.scrollRestoration = "manual";
   let active: AbortController | undefined;

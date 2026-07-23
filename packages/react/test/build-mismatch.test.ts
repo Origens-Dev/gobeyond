@@ -60,6 +60,29 @@ test("a stale document build reloads once, then requests an update screen", () =
   assert.equal(updateRequired, 1);
 });
 
+test("production keeps the reload but skips the terminal update UI by default", () => {
+  const env = environment();
+  handleBuildMismatch("old", "new", { environment: env.value });
+  let updateRequired = 0;
+  const second = handleBuildMismatch("old", "new", {
+    environment: env.value,
+    showUpdateRequiredUI: false,
+    onUpdateRequired: () => updateRequired++,
+  });
+  assert.equal(second.disposition, "update-required");
+  assert.equal(updateRequired, 1);
+
+  const silent = environment();
+  handleBuildMismatch("stale", "fresh", { environment: silent.value });
+  // Exhausted mismatch with no callback and UI disabled must not throw.
+  const exhausted = handleBuildMismatch("stale", "fresh", {
+    environment: silent.value,
+    showUpdateRequiredUI: false,
+  });
+  assert.equal(exhausted.disposition, "update-required");
+  assert.equal(silent.reloads(), 1);
+});
+
 test("a stale reload keeps its guard until a different build hydrates", () => {
   const env = environment();
   handleBuildMismatch("old", "new", { environment: env.value });

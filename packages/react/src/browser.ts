@@ -28,6 +28,7 @@ export {
   handleBuildMismatch,
   markBuildHealthy,
   renderUpdateRequired,
+  shouldShowUpdateRequiredUI,
   type BuildAwareFetchOptions,
   type BuildMismatchBody,
   type BuildMismatchEnvironment,

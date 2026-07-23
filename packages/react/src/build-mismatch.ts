@@ -65,6 +65,54 @@ export interface BuildMismatchEnvironment {
 export interface BuildMismatchOptions {
   environment?: BuildMismatchEnvironment;
   onUpdateRequired?: (error: BuildMismatchError) => void;
+  /**
+   * When true, exhausted mismatches render the terminal "This site was updated"
+   * UI. Defaults to development only (Vite `import.meta.env.DEV` or
+   * `NODE_ENV=development`). Production keeps the one guarded reload and stays
+   * silent afterward.
+   */
+  showUpdateRequiredUI?: boolean;
+}
+
+/** Whether the default update-required banner should appear. */
+export function shouldShowUpdateRequiredUI(
+  options: Pick<BuildMismatchOptions, "showUpdateRequiredUI"> = {},
+): boolean {
+  if (typeof options.showUpdateRequiredUI === "boolean") {
+    return options.showUpdateRequiredUI;
+  }
+  const meta = import.meta as ImportMeta & {
+    env?: { DEV?: boolean };
+  };
+  if (typeof meta.env?.DEV === "boolean") {
+    return meta.env.DEV;
+  }
+  return (
+    typeof process !== "undefined" &&
+    typeof process.env?.NODE_ENV === "string" &&
+    process.env.NODE_ENV === "development"
+  );
+}
+
+function presentUpdateRequired(
+  error: BuildMismatchError,
+  options: BuildMismatchOptions,
+  targetDocument?: Document,
+): void {
+  if (options.onUpdateRequired) {
+    options.onUpdateRequired(error);
+    return;
+  }
+  if (!shouldShowUpdateRequiredUI(options)) {
+    return;
+  }
+  if (targetDocument) {
+    renderUpdateRequired(error, targetDocument);
+    return;
+  }
+  if (typeof document !== "undefined") {
+    renderUpdateRequired(error);
+  }
 }
 
 /** Render an accessible terminal state after the guarded reload was exhausted. */
@@ -147,11 +195,7 @@ export function handleBuildMismatch(
     expectedBuildId,
     "update-required",
   );
-  if (options.onUpdateRequired) {
-    options.onUpdateRequired(error);
-  } else if (typeof document !== "undefined") {
-    renderUpdateRequired(error);
-  }
+  presentUpdateRequired(error, options);
   return error;
 }
 
@@ -169,11 +213,7 @@ export function handleAssetLoadFailure(
     return error;
   }
   const error = new BuildMismatchError(currentBuildId, undefined, "update-required");
-  if (options.onUpdateRequired) {
-    options.onUpdateRequired(error);
-  } else if (typeof document !== "undefined") {
-    renderUpdateRequired(error);
-  }
+  presentUpdateRequired(error, options);
   return error;
 }
 
