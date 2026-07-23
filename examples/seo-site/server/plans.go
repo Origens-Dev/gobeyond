@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/gobeyond-dev/gobeyond/renderplan"
+	"github.com/holbrookab/gobeyond/renderplan"
 )
 
 func LoadPlans(directory string) (map[string]*renderplan.Plan, error) {

@@ -4,9 +4,13 @@ import {
   type ReactElement,
 } from "react";
 import { hydrateRoot, type RootOptions } from "react-dom/client";
-import { markBuildHealthy } from "./build-mismatch.js";
+import {
+  handleAssetLoadFailure,
+  markBuildHealthy,
+} from "./build-mismatch.js";
 import {
   createSoftNavigation,
+  resolveRouteComponent,
   routeComponent,
   type RouteRegistry,
   type SoftNavigationOptions,
@@ -20,6 +24,7 @@ export {
   BuildMismatchError,
   UPDATE_REQUIRED_ELEMENT_ID,
   fetchWithBuildGuard,
+  handleAssetLoadFailure,
   handleBuildMismatch,
   markBuildHealthy,
   renderUpdateRequired,
@@ -36,9 +41,12 @@ export {
   createSoftNavigation,
   matchBrowserRoute,
   parseRuntimeNavigationPayload,
+  resolveRouteComponent,
   routeComponent,
   type BrowserRoute,
   type BrowserRouteRegistration,
+  type BrowserRouteModule,
+  type LazyBrowserRoute,
   type MatchedBrowserRoute,
   type NavigateOptions,
   type NavigationHistoryMode,
@@ -108,6 +116,50 @@ export function bootstrap(options: BootstrapOptions) {
   assertPinnedReactVersions();
 
   const targetDocument = options.document ?? document;
+  const payload = readBootstrapPayload(options, targetDocument);
+  const page = routeComponent(options.routes[payload.routeId]);
+  if (!page) {
+    throw new Error(
+      `No eager browser route registered for ${payload.routeId}; use bootstrapAsync for lazy routes.`,
+    );
+  }
+  return hydrate(options, targetDocument, payload, page);
+}
+
+/** Load the initial route chunk before hydrating server-rendered markup. */
+export async function bootstrapAsync(options: BootstrapOptions) {
+  assertPinnedReactVersions();
+  const targetDocument = options.document ?? document;
+  const payload = readBootstrapPayload(options, targetDocument);
+  let page: ComponentType<any> | undefined;
+  try {
+    page = await resolveRouteComponent(options.routes[payload.routeId]);
+  } catch (error) {
+    options.onNavigationError?.(error);
+    const targetWindow = targetDocument.defaultView;
+    handleAssetLoadFailure(payload.buildId, {
+      environment:
+        options.mismatchEnvironment ??
+        (targetWindow
+          ? {
+              location: targetWindow.location,
+              sessionStorage: targetWindow.sessionStorage,
+            }
+          : undefined),
+      onUpdateRequired: options.onUpdateRequired,
+    });
+    return undefined;
+  }
+  if (!page) {
+    throw new Error(`No browser route registered for ${payload.routeId}.`);
+  }
+  return hydrate(options, targetDocument, payload, page);
+}
+
+function readBootstrapPayload(
+  options: BootstrapOptions,
+  targetDocument: Document,
+): BootstrapPayload {
   const dataElement = targetDocument.getElementById(
     options.dataElementId ?? DEFAULT_DATA_ELEMENT_ID,
   );
@@ -115,12 +167,15 @@ export function bootstrap(options: BootstrapOptions) {
     throw new Error("GoBeyond bootstrap data element is missing or empty.");
   }
 
-  const payload = parseBootstrapPayload(dataElement.textContent);
-  const page = routeComponent(options.routes[payload.routeId]);
-  if (!page) {
-    throw new Error(`No browser route registered for ${payload.routeId}.`);
-  }
+  return parseBootstrapPayload(dataElement.textContent);
+}
 
+function hydrate(
+  options: BootstrapOptions,
+  targetDocument: Document,
+  payload: BootstrapPayload,
+  page: ComponentType<any>,
+) {
   const rootElement = targetDocument.querySelector<HTMLElement>(
     options.rootSelector ?? DEFAULT_ROOT_SELECTOR,
   );
@@ -150,6 +205,7 @@ export function bootstrap(options: BootstrapOptions) {
           async navigate() {
             return undefined;
           },
+          async prefetch() {},
           destroy() {},
         }
       : createSoftNavigation({

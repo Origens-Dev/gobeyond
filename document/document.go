@@ -10,7 +10,7 @@ import (
 	"io"
 	"strings"
 
-	gb "github.com/gobeyond-dev/gobeyond"
+	gb "github.com/holbrookab/gobeyond"
 )
 
 type BodyHTML string
@@ -28,14 +28,15 @@ type HydrationData struct {
 }
 
 type Input struct {
-	PublicOrigin string
-	Indexable    bool
-	Metadata     gb.Metadata
-	Body         BodyHTML
-	Hydration    HydrationData
-	Styles       []Asset
-	Scripts      []Asset
-	Nonce        string
+	PublicOrigin   string
+	Indexable      bool
+	Metadata       gb.Metadata
+	Body           BodyHTML
+	Hydration      HydrationData
+	Styles         []Asset
+	ModulePreloads []Asset
+	Scripts        []Asset
+	Nonce          string
 }
 
 func Render(writer io.Writer, input Input) error {
@@ -85,6 +86,13 @@ func Render(writer io.Writer, input Input) error {
 		output.WriteString(attribute(style.URL))
 		output.WriteByte('"')
 		writeIntegrity(&output, style.Integrity)
+		output.WriteByte('>')
+	}
+	for _, module := range input.ModulePreloads {
+		output.WriteString("<link rel=\"modulepreload\" href=\"")
+		output.WriteString(attribute(module.URL))
+		output.WriteByte('"')
+		writeIntegrity(&output, module.Integrity)
 		output.WriteByte('>')
 	}
 	for _, value := range input.Metadata.JSONLD {

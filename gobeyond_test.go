@@ -1,6 +1,9 @@
 package gobeyond
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestMetadataValidation(t *testing.T) {
 	valid := Metadata{
@@ -33,5 +36,12 @@ func TestCachePolicy(t *testing.T) {
 	got := (CachePolicy{Mode: CachePublic, MaxAge: 60, StaleWhileRevalidate: 30}).HeaderValue()
 	if got != "public, max-age=60, stale-while-revalidate=30" {
 		t.Fatalf("unexpected public policy: %s", got)
+	}
+}
+
+func TestPublicRevalidate(t *testing.T) {
+	policy := PublicRevalidate(time.Minute, 5*time.Minute, 24*time.Hour)
+	if got, want := policy.HeaderValue(), "public, max-age=0, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"; got != want {
+		t.Fatalf("HeaderValue() = %q, want %q", got, want)
 	}
 }

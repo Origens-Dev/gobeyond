@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	gb "github.com/gobeyond-dev/gobeyond"
-	"github.com/gobeyond-dev/gobeyond/codegen"
+	gb "github.com/holbrookab/gobeyond"
+	"github.com/holbrookab/gobeyond/codegen"
 )
 
 type staticBuildArtifact struct {

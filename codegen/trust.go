@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/gobeyond-dev/gobeyond/renderplan"
+	"github.com/holbrookab/gobeyond/renderplan"
 )
 
 // TrustStaticSafeHTML restores SafeHTML trust markers after build props have

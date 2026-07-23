@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gobeyond-dev/gobeyond/internal/project"
+	"github.com/holbrookab/gobeyond/internal/project"
 )
 
 const (

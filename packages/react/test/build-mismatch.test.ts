@@ -4,6 +4,7 @@ import {
   BUILD_ID_HEADER,
   BuildMismatchError,
   fetchWithBuildGuard,
+  handleAssetLoadFailure,
   handleBuildMismatch,
   markBuildHealthy,
   type BuildMismatchEnvironment,
@@ -75,6 +76,26 @@ test("a stale reload keeps its guard until a different build hydrates", () => {
 
   markBuildHealthy("new", env.value);
   assert.equal(env.value.sessionStorage.length, 0);
+});
+
+test("an initial route chunk reloads once and a successful hydrate clears its guard", () => {
+  const env = environment();
+  const first = handleAssetLoadFailure("build-current", { environment: env.value });
+  assert.equal(first.disposition, "reloading");
+  assert.equal(env.reloads(), 1);
+
+  let updateRequired = 0;
+  const repeated = handleAssetLoadFailure("build-current", {
+    environment: env.value,
+    onUpdateRequired: () => updateRequired++,
+  });
+  assert.equal(repeated.disposition, "update-required");
+  assert.equal(updateRequired, 1);
+
+  markBuildHealthy("build-current", env.value);
+  const later = handleAssetLoadFailure("build-current", { environment: env.value });
+  assert.equal(later.disposition, "reloading");
+  assert.equal(env.reloads(), 2);
 });
 
 test("build-aware fetch sends the build and never replays a mismatched action", async () => {

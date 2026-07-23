@@ -70,7 +70,7 @@ func TestCollectBrowserAssetsUsesExactEmittedPaths(t *testing.T) {
 	writeAssetTestFile(t, filepath.Join(assetRoot, "assets", "site-z9.css"), "body{}")
 	writeAssetTestFile(t, filepath.Join(assetRoot, "assets", "theme-a1.css"), ":root{}")
 
-	assets, err := collectBrowserAssets(root, "build-1")
+	assets, err := collectBrowserAssets(root, "build-1", browserBuildInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +83,58 @@ func TestCollectBrowserAssetsUsesExactEmittedPaths(t *testing.T) {
 	}
 	if !reflect.DeepEqual(assets.Styles, want) {
 		t.Fatalf("styles = %#v, want %#v", assets.Styles, want)
+	}
+}
+
+func TestCollectBrowserAssetsProjectsRouteAwareViteManifest(t *testing.T) {
+	root := t.TempDir()
+	assetRoot := filepath.Join(root, "_gobeyond", "assets", "build-1")
+	entry := filepath.Join(t.TempDir(), ".gobeyond", "client-entry.tsx")
+	route := filepath.Join(filepath.Dir(entry), "routes", "home.tsx")
+	writeAssetTestFile(t, filepath.Join(assetRoot, "app.js"), "export {}")
+	writeAssetTestFile(t, filepath.Join(assetRoot, "chunks", "home-a1.js"), "export default function(){}")
+	writeAssetTestFile(t, filepath.Join(assetRoot, "chunks", "shared-b1.js"), "export {}")
+	writeAssetTestFile(t, filepath.Join(assetRoot, "assets", "base.css"), "body{}")
+	writeAssetTestFile(t, filepath.Join(assetRoot, "assets", "home.css"), "main{}")
+	writeAssetTestFile(t, filepath.Join(assetRoot, ".vite", "manifest.json"), `{
+  ".gobeyond/client-entry.tsx": {"file":"app.js","src":".gobeyond/client-entry.tsx","isEntry":true,"css":["assets/base.css"]},
+  ".gobeyond/routes/home.tsx": {"file":"chunks/home-a1.js","src":".gobeyond/routes/home.tsx","isDynamicEntry":true,"imports":["shared"],"css":["assets/home.css"]},
+  "shared": {"file":"chunks/shared-b1.js","src":"src/shared.ts"}
+}`)
+
+	assets, err := collectBrowserAssets(root, "build-1", browserBuildInput{
+		EntryFile:    entry,
+		RouteEntries: map[string]string{"home": route},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(assetRoot, ".vite", "manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("internal Vite manifest should not be deployed: %v", err)
+	}
+	if assets.APIVersion != "gobeyond.browser-assets/v1alpha1" || assets.BuildID != "build-1" {
+		t.Fatalf("manifest identity = %q %q", assets.APIVersion, assets.BuildID)
+	}
+	routeAssets, err := assets.ForRoute("home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routeAssets.Bootstrap != "/_gobeyond/assets/build-1/app.js" {
+		t.Fatalf("bootstrap = %q", routeAssets.Bootstrap)
+	}
+	wantPreloads := []string{
+		"/_gobeyond/assets/build-1/chunks/home-a1.js",
+		"/_gobeyond/assets/build-1/chunks/shared-b1.js",
+	}
+	if !reflect.DeepEqual(routeAssets.ModulePreloads, wantPreloads) {
+		t.Fatalf("preloads = %#v, want %#v", routeAssets.ModulePreloads, wantPreloads)
+	}
+	wantStyles := []string{
+		"/_gobeyond/assets/build-1/assets/base.css",
+		"/_gobeyond/assets/build-1/assets/home.css",
+	}
+	if !reflect.DeepEqual(routeAssets.Styles, wantStyles) {
+		t.Fatalf("styles = %#v, want %#v", routeAssets.Styles, wantStyles)
 	}
 }
 

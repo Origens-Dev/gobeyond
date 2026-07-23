@@ -13,8 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	seosite "github.com/gobeyond-dev/gobeyond/examples/seo-site/server"
-	gbruntime "github.com/gobeyond-dev/gobeyond/runtime"
+	"github.com/holbrookab/gobeyond/browserassets"
+	seosite "github.com/holbrookab/gobeyond/examples/seo-site/server"
+	gbruntime "github.com/holbrookab/gobeyond/runtime"
 )
 
 func main() {
@@ -34,7 +35,7 @@ func main() {
 	if buildID == "" {
 		buildID = "development"
 	}
-	assets, err := loadAssetConfig(filepath.Join(filepath.Dir(planDir), "runtime-manifest.json"), buildID)
+	assets, err := loadBrowserAssets(filepath.Join(filepath.Dir(planDir), "runtime-manifest.json"), buildID)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -92,26 +93,32 @@ func main() {
 	}
 }
 
-func loadAssetConfig(path, buildID string) (seosite.AssetConfig, error) {
-	fallback := seosite.AssetConfig{ClientScript: "/_gobeyond/assets/" + buildID + "/app.js", Styles: []string{}}
+func loadBrowserAssets(path, buildID string) (*browserassets.Manifest, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return fallback, nil
+		return nil, nil
 	}
 	if err != nil {
-		return seosite.AssetConfig{}, err
+		return nil, err
 	}
 	var manifest struct {
-		BuildID string              `json:"buildId"`
-		Assets  seosite.AssetConfig `json:"assets"`
+		BuildID string          `json:"buildId"`
+		Assets  json.RawMessage `json:"assets"`
 	}
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return seosite.AssetConfig{}, err
+		return nil, err
 	}
 	if manifest.BuildID != buildID {
-		return seosite.AssetConfig{}, errors.New("runtime asset manifest build ID does not match server build ID")
+		return nil, errors.New("runtime asset manifest build ID does not match server build ID")
 	}
-	return manifest.Assets, nil
+	assets, err := browserassets.Parse(manifest.Assets)
+	if err != nil {
+		return nil, err
+	}
+	if assets.BuildID != buildID {
+		return nil, errors.New("browser asset manifest build ID does not match server build ID")
+	}
+	return &assets, nil
 }
 
 func staticFileExists(directory, requestPath string) bool {

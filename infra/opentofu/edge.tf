@@ -84,8 +84,54 @@ resource "aws_cloudfront_function" "route_selector" {
   })
 }
 
-data "aws_cloudfront_cache_policy" "origin_cache_control" {
-  name = "Managed-UseOriginCacheControlHeaders"
+resource "aws_cloudfront_cache_policy" "dynamic_origin_headers" {
+  name        = "${var.name}-dynamic-origin-headers"
+  comment     = "Caches only responses the Go origin marks public; keeps viewer variants isolated."
+  default_ttl = 0
+  max_ttl     = 31536000
+  min_ttl     = 0
+
+  parameters_in_cache_key_and_forwarded_to_origin {
+    enable_accept_encoding_brotli = true
+    enable_accept_encoding_gzip   = true
+
+    cookies_config {
+      cookie_behavior = "all"
+    }
+
+    headers_config {
+      header_behavior = "whitelist"
+
+      headers {
+        items = ["Authorization"]
+      }
+    }
+
+    query_strings_config {
+      query_string_behavior = "all"
+    }
+  }
+}
+
+data "aws_cloudfront_cache_policy" "caching_disabled" {
+  name = "Managed-CachingDisabled"
+}
+
+data "aws_cloudfront_cache_policy" "immutable_assets" {
+  name = "Managed-CachingOptimized"
+}
+
+resource "aws_cloudfront_response_headers_policy" "immutable_assets" {
+  name    = "${var.name}-immutable-assets"
+  comment = "Marks content-addressed GoBeyond browser assets immutable in browsers and shared caches."
+
+  custom_headers_config {
+    items {
+      header   = "Cache-Control"
+      override = true
+      value    = "public, max-age=31536000, immutable"
+    }
+  }
 }
 
 data "aws_cloudfront_origin_request_policy" "all_viewer" {
@@ -120,18 +166,82 @@ resource "aws_cloudfront_distribution" "this" {
   }
 
   default_cache_behavior {
-    target_origin_id         = local.dynamic_origin_id
-    viewer_protocol_policy   = "redirect-to-https"
-    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
-    cached_methods           = ["GET", "HEAD", "OPTIONS"]
-    compress                 = true
-    cache_policy_id          = data.aws_cloudfront_cache_policy.origin_cache_control.id
+    target_origin_id       = local.dynamic_origin_id
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+    cached_methods         = ["GET", "HEAD", "OPTIONS"]
+    compress               = true
+    # The origin decides whether a dynamic document or runtime payload is
+    # public. Keep all viewer variants in the cache key so an authenticated or
+    # query-specific response can never reuse an anonymous response.
+    cache_policy_id          = aws_cloudfront_cache_policy.dynamic_origin_headers.id
     origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
 
     function_association {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.route_selector.arn
     }
+  }
+
+  # Build-ID-addressed assets never need the Go origin or the route selector.
+  # They are the only objects this reference forces immutable at the browser.
+  ordered_cache_behavior {
+    path_pattern               = "/_gobeyond/assets/*"
+    target_origin_id           = local.static_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD", "OPTIONS"]
+    compress                   = true
+    cache_policy_id            = data.aws_cloudfront_cache_policy.immutable_assets.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.immutable_assets.id
+  }
+
+  # Build manifests are published with the build artifact and have the same
+  # immutable lifecycle as browser assets.
+  ordered_cache_behavior {
+    path_pattern               = "/_gobeyond/manifest/*"
+    target_origin_id           = local.static_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD", "OPTIONS"]
+    compress                   = true
+    cache_policy_id            = data.aws_cloudfront_cache_policy.immutable_assets.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.immutable_assets.id
+  }
+
+  # Mutations, arbitrary APIs, and health probes must never be retained at the
+  # edge, irrespective of an accidental origin header.
+  ordered_cache_behavior {
+    path_pattern             = "/_gobeyond/actions/*"
+    target_origin_id         = local.dynamic_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+    cached_methods           = ["GET", "HEAD", "OPTIONS"]
+    compress                 = true
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
+  ordered_cache_behavior {
+    path_pattern             = "/api/*"
+    target_origin_id         = local.dynamic_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+    cached_methods           = ["GET", "HEAD", "OPTIONS"]
+    compress                 = true
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
+  ordered_cache_behavior {
+    path_pattern             = "/__gobeyond/*"
+    target_origin_id         = local.dynamic_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS"]
+    cached_methods           = ["GET", "HEAD", "OPTIONS"]
+    compress                 = true
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
   }
 
   viewer_certificate {

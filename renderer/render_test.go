@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gobeyond-dev/gobeyond/renderplan"
+	"github.com/holbrookab/gobeyond/renderplan"
 )
 
 func TestRenderEscapingAttributesAndScriptTermination(t *testing.T) {

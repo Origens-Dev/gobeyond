@@ -6,22 +6,23 @@ import (
 	"net/http"
 	"strings"
 
-	gb "github.com/gobeyond-dev/gobeyond"
-	apitime "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/api/r_api_time_066a4b03"
-	actioncontract "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
-	generatedroutes "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes"
-	pageaccount "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_account_441bb226"
-	pagearticle "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_articles__slug_c2f99372"
-	pagecategory "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_category__page_05ecbf63"
-	pageenglish "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_en_articles__slug_2da8a82a"
-	pagefrench "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_fr_articles__slug_fee2939e"
-	pagelocation "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_locations__slug_730658f7"
-	productroute "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_products__slug_3e2e8eb9"
-	"github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/site"
-	gbmiddleware "github.com/gobeyond-dev/gobeyond/middleware"
-	"github.com/gobeyond-dev/gobeyond/renderplan"
-	"github.com/gobeyond-dev/gobeyond/router"
-	gbruntime "github.com/gobeyond-dev/gobeyond/runtime"
+	gb "github.com/holbrookab/gobeyond"
+	"github.com/holbrookab/gobeyond/browserassets"
+	apitime "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/api/r_api_time_066a4b03"
+	actioncontract "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	generatedroutes "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/routes"
+	pageaccount "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_account_441bb226"
+	pagearticle "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_articles__slug_c2f99372"
+	pagecategory "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_category__page_05ecbf63"
+	pageenglish "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_en_articles__slug_2da8a82a"
+	pagefrench "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_fr_articles__slug_fee2939e"
+	pagelocation "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_locations__slug_730658f7"
+	productroute "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_products__slug_3e2e8eb9"
+	"github.com/holbrookab/gobeyond/examples/seo-site/internal/site"
+	gbmiddleware "github.com/holbrookab/gobeyond/middleware"
+	"github.com/holbrookab/gobeyond/renderplan"
+	"github.com/holbrookab/gobeyond/router"
+	gbruntime "github.com/holbrookab/gobeyond/runtime"
 )
 
 const (
@@ -77,19 +78,26 @@ func New(buildID, publicOrigin string, plans map[string]*renderplan.Plan) (*Site
 // NewWithAssets creates the acceptance site with the browser assets emitted
 // by the same build. Tests may continue to use New when they do not bundle CSS.
 func NewWithAssets(buildID, publicOrigin string, plans map[string]*renderplan.Plan, assets AssetConfig) (*Site, error) {
-	return newWithStaticLoader(buildID, publicOrigin, plans, assets, func(*gb.PageContext) (gbruntime.LoadedPage, error) {
+	return newWithStaticLoader(buildID, publicOrigin, plans, nil, assets, func(*gb.PageContext) (gbruntime.LoadedPage, error) {
 		return *homePage(publicOrigin), nil
 	})
 }
 
-func NewWithStaticStore(buildID, publicOrigin string, plans map[string]*renderplan.Plan, assets AssetConfig, staticStore *gbruntime.StaticStore) (*Site, error) {
+// NewWithStaticStore uses route-aware browser assets when the build emitted a
+// runtime manifest. A nil manifest is the one-release compatibility path for
+// older builds and uses the legacy page-level asset fields.
+func NewWithStaticStore(buildID, publicOrigin string, plans map[string]*renderplan.Plan, assets *browserassets.Manifest, staticStore *gbruntime.StaticStore) (*Site, error) {
 	if staticStore == nil {
 		return nil, errors.New("SEO site requires packaged static data")
 	}
-	return newWithStaticLoader(buildID, publicOrigin, plans, assets, staticStore.Loader(HomeRouteID))
+	legacyAssets := AssetConfig{}
+	if assets == nil {
+		legacyAssets = AssetConfig{ClientScript: "/_gobeyond/assets/" + buildID + "/app.js", Styles: []string{}}
+	}
+	return newWithStaticLoader(buildID, publicOrigin, plans, assets, legacyAssets, staticStore.Loader(HomeRouteID))
 }
 
-func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderplan.Plan, assets AssetConfig, homeLoader gbruntime.PageLoader) (*Site, error) {
+func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderplan.Plan, browserAssets *browserassets.Manifest, legacyAssets AssetConfig, homeLoader gbruntime.PageLoader) (*Site, error) {
 	required := []string{
 		HomeRouteID, AccountRouteID, ArticleRouteID, CategoryRouteID,
 		EnglishArticleRouteID, FrenchArticleRouteID, LocationRouteID, ProductRouteID,
@@ -100,16 +108,17 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 		}
 	}
 	runtime, err := gbruntime.New(gbruntime.Config{
-		BuildID:      buildID,
-		PublicOrigin: publicOrigin,
+		BuildID:       buildID,
+		PublicOrigin:  publicOrigin,
+		BrowserAssets: browserAssets,
 		Pages: []gbruntime.PageRoute{
 			{
 				Route:        router.Route{ID: HomeRouteID, Pattern: "/", Mode: router.ModeStatic},
 				Plan:         plans[HomeRouteID],
 				Load:         homeLoader,
 				Indexable:    true,
-				ClientScript: assets.ClientScript,
-				Styles:       assets.Styles,
+				ClientScript: legacyAssets.ClientScript,
+				Styles:       legacyAssets.Styles,
 			},
 			{
 				Route: router.Route{ID: AccountRouteID, Pattern: "/account", Mode: router.ModeDynamic},
@@ -119,8 +128,8 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 					return pageaccount.Page(ctx, pageaccount.Params{})
 				},
 				Indexable:    false,
-				ClientScript: assets.ClientScript,
-				Styles:       assets.Styles,
+				ClientScript: legacyAssets.ClientScript,
+				Styles:       legacyAssets.Styles,
 			},
 			{
 				Route: router.Route{ID: ArticleRouteID, Pattern: "/articles/[slug]", Mode: router.ModeDynamic},
@@ -130,8 +139,8 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 					return pagearticle.Page(ctx, pagearticle.Params{Slug: ctx.Params["slug"]})
 				},
 				Indexable:    true,
-				ClientScript: assets.ClientScript,
-				Styles:       assets.Styles,
+				ClientScript: legacyAssets.ClientScript,
+				Styles:       legacyAssets.Styles,
 			},
 			{
 				Route: router.Route{ID: CategoryRouteID, Pattern: "/category/[page]", Mode: router.ModeDynamic},
@@ -141,8 +150,8 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 					return pagecategory.Page(ctx, pagecategory.Params{Page: ctx.Params["page"]})
 				},
 				Indexable:    true,
-				ClientScript: assets.ClientScript,
-				Styles:       assets.Styles,
+				ClientScript: legacyAssets.ClientScript,
+				Styles:       legacyAssets.Styles,
 			},
 			{
 				Route: router.Route{ID: EnglishArticleRouteID, Pattern: "/en/articles/[slug]", Mode: router.ModeDynamic},
@@ -152,8 +161,8 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 					return pageenglish.Page(ctx, pageenglish.Params{Slug: ctx.Params["slug"]})
 				},
 				Indexable:    true,
-				ClientScript: assets.ClientScript,
-				Styles:       assets.Styles,
+				ClientScript: legacyAssets.ClientScript,
+				Styles:       legacyAssets.Styles,
 			},
 			{
 				Route: router.Route{ID: FrenchArticleRouteID, Pattern: "/fr/articles/[slug]", Mode: router.ModeDynamic},
@@ -163,8 +172,8 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 					return pagefrench.Page(ctx, pagefrench.Params{Slug: ctx.Params["slug"]})
 				},
 				Indexable:    true,
-				ClientScript: assets.ClientScript,
-				Styles:       assets.Styles,
+				ClientScript: legacyAssets.ClientScript,
+				Styles:       legacyAssets.Styles,
 			},
 			{
 				Route: router.Route{ID: LocationRouteID, Pattern: "/locations/[slug]", Mode: router.ModeDynamic},
@@ -174,8 +183,8 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 					return pagelocation.Page(ctx, pagelocation.Params{Slug: ctx.Params["slug"]})
 				},
 				Indexable:    true,
-				ClientScript: assets.ClientScript,
-				Styles:       assets.Styles,
+				ClientScript: legacyAssets.ClientScript,
+				Styles:       legacyAssets.Styles,
 			},
 			{
 				Route: router.Route{ID: ProductRouteID, Pattern: "/products/[slug]", Mode: router.ModeDynamic},
@@ -185,8 +194,8 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 					return productroute.Page(ctx, productroute.Params{Slug: ctx.Params["slug"]})
 				},
 				Indexable:    true,
-				ClientScript: assets.ClientScript,
-				Styles:       assets.Styles,
+				ClientScript: legacyAssets.ClientScript,
+				Styles:       legacyAssets.Styles,
 			},
 		},
 		Actions: []gbruntime.Action{actioncontract.Register(productroute.AddToCart)},

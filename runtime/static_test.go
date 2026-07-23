@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	gb "github.com/gobeyond-dev/gobeyond"
-	"github.com/gobeyond-dev/gobeyond/renderplan"
+	gb "github.com/holbrookab/gobeyond"
+	"github.com/holbrookab/gobeyond/renderplan"
 )
 
 func TestStaticStoreLoadsPackagedPropsAndSafeHTML(t *testing.T) {

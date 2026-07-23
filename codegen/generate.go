@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultOutputDir      = "internal/gobeyondgen/contracts"
-	defaultSafeHTMLImport = "github.com/gobeyond-dev/gobeyond/renderplan"
+	defaultSafeHTMLImport = "github.com/holbrookab/gobeyond/renderplan"
 )
 
 type Options struct {
@@ -154,9 +154,9 @@ func generatePackage(packageName, identityName, identityValue string, roots []ro
 
 func (g *generator) addActionBoundary(action Action) {
 	g.imports["json"] = "encoding/json"
-	g.imports["gb"] = "github.com/gobeyond-dev/gobeyond"
-	g.imports["codegen"] = "github.com/gobeyond-dev/gobeyond/codegen"
-	g.imports["gbruntime"] = "github.com/gobeyond-dev/gobeyond/runtime"
+	g.imports["gb"] = "github.com/holbrookab/gobeyond"
+	g.imports["codegen"] = "github.com/holbrookab/gobeyond/codegen"
+	g.imports["gbruntime"] = "github.com/holbrookab/gobeyond/runtime"
 	g.declarations = append(g.declarations,
 		"var inputContract = "+valueContractLiteral(action.Input),
 		"var outputContract = "+valueContractLiteral(action.Output),

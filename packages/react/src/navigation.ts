@@ -22,7 +22,19 @@ export interface BrowserRoute {
   pattern: string;
 }
 
-export type BrowserRouteRegistration = ComponentType<any> | BrowserRoute;
+export type BrowserRouteModule =
+  | ComponentType<any>
+  | Readonly<{ default: ComponentType<any> }>;
+
+export interface LazyBrowserRoute {
+  load: () => Promise<BrowserRouteModule>;
+  pattern: string;
+}
+
+export type BrowserRouteRegistration =
+  | ComponentType<any>
+  | BrowserRoute
+  | LazyBrowserRoute;
 
 // The generated registry erases individual prop types only at the route
 // boundary. Each imported page and layout remains strongly typed beforehand.
@@ -68,8 +80,11 @@ export interface RuntimeNavigationPayload {
   result: RuntimeNavigationResult;
 }
 
-export interface MatchedBrowserRoute extends BrowserRoute {
+export interface MatchedBrowserRoute {
   routeId: string;
+  pattern: string;
+  component?: ComponentType<any>;
+  load?: LazyBrowserRoute["load"];
 }
 
 export type NavigationHistoryMode = "push" | "replace" | "pop";
@@ -84,6 +99,7 @@ export interface SoftNavigationController {
     target: string | URL,
     options?: NavigateOptions,
   ): Promise<RuntimeNavigationPayload | undefined>;
+  prefetch(target: string | URL): Promise<void>;
   destroy(): void;
 }
 
@@ -320,6 +336,18 @@ function routeDefinition(
       pattern: registration.pattern,
     };
   }
+  if (
+    isRecord(registration) &&
+    "load" in registration &&
+    typeof registration.load === "function" &&
+    typeof registration.pattern === "string"
+  ) {
+    return {
+      routeId,
+      load: registration.load as LazyBrowserRoute["load"],
+      pattern: registration.pattern,
+    };
+  }
   return undefined;
 }
 
@@ -331,6 +359,38 @@ export function routeComponent(
     return registration.component as ComponentType<any>;
   }
   return undefined;
+}
+
+const pendingRouteModules = new WeakMap<object, Promise<ComponentType<any>>>();
+
+/** Resolve an eager or lazy route, sharing only in-flight/successful imports. */
+export async function resolveRouteComponent(
+  registration: BrowserRouteRegistration | undefined,
+): Promise<ComponentType<any> | undefined> {
+  const eager = routeComponent(registration);
+  if (eager) return eager;
+  if (!isRecord(registration) || typeof registration.load !== "function") {
+    return undefined;
+  }
+  const key = registration as object;
+  const existing = pendingRouteModules.get(key);
+  if (existing) return existing;
+  const load = registration.load as LazyBrowserRoute["load"];
+  const promise = Promise.resolve()
+    .then(() => load())
+    .then((loaded) => {
+      const component = typeof loaded === "function" ? loaded : loaded.default;
+      if (typeof component !== "function") {
+        throw new Error("GoBeyond browser route module has no default component.");
+      }
+      return component;
+    })
+    .catch((error: unknown) => {
+      pendingRouteModules.delete(key);
+      throw error;
+    });
+  pendingRouteModules.set(key, promise);
+  return promise;
 }
 
 function pathSegments(path: string): string[] {
@@ -531,6 +591,23 @@ export function applyDocumentMetadata(
   }
 }
 
+function targetAnchor(
+  event: Event,
+  targetWindow: Window & typeof globalThis,
+): HTMLAnchorElement | undefined {
+  const target = event.target;
+  if (!(target instanceof targetWindow.Element)) return undefined;
+  const anchor = target.closest<HTMLAnchorElement>("a[href]");
+  if (
+    !anchor ||
+    anchor.hasAttribute("download") ||
+    (anchor.target !== "" && anchor.target.toLowerCase() !== "_self")
+  ) {
+    return undefined;
+  }
+  return anchor;
+}
+
 function eventAnchor(
   event: MouseEvent,
   targetWindow: Window & typeof globalThis,
@@ -545,17 +622,7 @@ function eventAnchor(
   ) {
     return undefined;
   }
-  const target = event.target;
-  if (!(target instanceof targetWindow.Element)) return undefined;
-  const anchor = target.closest<HTMLAnchorElement>("a[href]");
-  if (
-    !anchor ||
-    anchor.hasAttribute("download") ||
-    (anchor.target !== "" && anchor.target.toLowerCase() !== "_self")
-  ) {
-    return undefined;
-  }
-  return anchor;
+  return targetAnchor(event, targetWindow);
 }
 
 function historyMarker(
@@ -657,6 +724,7 @@ export function createSoftNavigation(
       async navigate() {
         return undefined;
       },
+      async prefetch() {},
       destroy() {},
     };
   }
@@ -719,21 +787,31 @@ export function createSoftNavigation(
     const runtimeURL = new URL(runtimePath, targetWindow.location.origin);
     runtimeURL.searchParams.set("path", url.pathname + url.search);
 
-    const response = await fetchWithBuildGuard(
-      runtimeURL,
-      {
-        method: "GET",
-        headers: { accept: "application/json" },
-        redirect: "manual",
-        signal: controller.signal,
-      },
-      {
-        buildId: options.buildId,
-        fetch: options.fetch,
-        environment: mismatchEnvironment,
-        onUpdateRequired,
-      },
+    const componentResult = resolveRouteComponent(options.routes[route.routeId]).then(
+      (component) => ({ component } as const),
+      (error: unknown) => ({ error } as const),
     );
+    let response: Response;
+    try {
+      response = await fetchWithBuildGuard(
+        runtimeURL,
+        {
+          method: "GET",
+          headers: { accept: "application/json" },
+          redirect: "manual",
+          signal: controller.signal,
+        },
+        {
+          buildId: options.buildId,
+          fetch: options.fetch,
+          environment: mismatchEnvironment,
+          onUpdateRequired,
+        },
+      );
+    } catch (error) {
+      controller.abort();
+      throw error;
+    }
     if (response.type === "opaqueredirect") {
       hardNavigate(url.href);
       return undefined;
@@ -783,13 +861,24 @@ export function createSoftNavigation(
       throw new Error("GoBeyond runtime result is missing metadata.");
     }
     if (active !== controller || destroyed) return undefined;
+    const resolved = await componentResult;
+    if ("error" in resolved) {
+      controller.abort();
+      throw resolved.error;
+    }
+    const component = resolved.component;
+    if (!component) {
+      controller.abort();
+      throw new Error(`No browser route registered for ${route.routeId}.`);
+    }
+    if (active !== controller || destroyed) return undefined;
 
     const mode = navigationOptions.history ?? "push";
     if (mode === "push") saveScroll();
     flushSync(() => {
       options.root.render(
         render(
-          route.component as ComponentType<Record<string, unknown>>,
+          component as ComponentType<Record<string, unknown>>,
           payload.result.props,
         ),
       );
@@ -842,6 +931,15 @@ export function createSoftNavigation(
     return payload;
   }
 
+  async function prefetch(target: string | URL): Promise<void> {
+    if (destroyed) return;
+    const url = new URL(target, targetWindow.location.href);
+    if (url.origin !== targetWindow.location.origin) return;
+    const route = matchBrowserRoute(url.pathname, options.routes);
+    if (!route) return;
+    await resolveRouteComponent(options.routes[route.routeId]);
+  }
+
   function onClick(event: MouseEvent): void {
     const anchor = eventAnchor(event, targetWindow);
     if (!anchor) return;
@@ -877,18 +975,31 @@ export function createSoftNavigation(
     });
   }
 
+  function onPrefetch(event: Event): void {
+    const anchor = targetAnchor(event, targetWindow);
+    if (!anchor) return;
+    void prefetch(anchor.href).catch(() => {
+      // Prefetch is opportunistic. A later navigation retries failed imports.
+    });
+  }
+
   options.document.addEventListener("click", onClick);
+  options.document.addEventListener("pointerover", onPrefetch);
+  options.document.addEventListener("focusin", onPrefetch);
   targetWindow.addEventListener("popstate", onPopState);
   targetWindow.addEventListener("scroll", saveScroll, { passive: true });
   targetWindow.addEventListener("pagehide", saveScroll);
 
   return {
     navigate,
+    prefetch,
     destroy() {
       if (destroyed) return;
       destroyed = true;
       active?.abort();
       options.document.removeEventListener("click", onClick);
+      options.document.removeEventListener("pointerover", onPrefetch);
+      options.document.removeEventListener("focusin", onPrefetch);
       targetWindow.removeEventListener("popstate", onPopState);
       targetWindow.removeEventListener("scroll", saveScroll);
       targetWindow.removeEventListener("pagehide", saveScroll);

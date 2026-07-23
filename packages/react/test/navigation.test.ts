@@ -8,10 +8,12 @@ import {
   BUILD_ID_HEADER,
   NAVIGATION_ANNOUNCER_ID,
   bootstrap,
+  bootstrapAsync,
   handleBuildMismatch,
   markBuildHealthy,
   matchBrowserRoute,
   parseRuntimeNavigationPayload,
+  resolveRouteComponent,
   renderUpdateRequired,
   type BuildMismatchEnvironment,
   type RuntimeNavigationPayload,
@@ -165,6 +167,110 @@ test("route matching gives static manifest routes priority over dynamic routes",
   assert.equal(matched?.routeId, "static");
 });
 
+test("lazy route imports share success and retry after failure", async () => {
+  let successfulCalls = 0;
+  const successful = {
+    pattern: "/products/[slug]",
+    load: async () => {
+      successfulCalls += 1;
+      return { default: Product };
+    },
+  };
+  const [first, second] = await Promise.all([
+    resolveRouteComponent(successful),
+    resolveRouteComponent(successful),
+  ]);
+  assert.equal(first, Product);
+  assert.equal(second, Product);
+  assert.equal(successfulCalls, 1);
+
+  let attempts = 0;
+  const retryable = {
+    pattern: "/about",
+    load: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("stale chunk");
+      return { default: About };
+    },
+  };
+  await assert.rejects(resolveRouteComponent(retryable), /stale chunk/);
+  assert.equal(await resolveRouteComponent(retryable), About);
+  assert.equal(attempts, 2);
+});
+
+test("bootstrapAsync hydrates a lazy initial route", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let imports = 0;
+  try {
+    let app: Awaited<ReturnType<typeof bootstrapAsync>>;
+    await act(async () => {
+      app = await bootstrapAsync({
+        routes: {
+          home: {
+            pattern: "/",
+            load: async () => {
+              imports += 1;
+              return { default: Home };
+            },
+          },
+        },
+        document: dom.window.document,
+        navigation: false,
+      });
+    });
+    assert.ok(app);
+    assert.equal(imports, 1);
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "Home");
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("delegated intent prefetch loads route code without route data", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let imports = 0;
+  let requests = 0;
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: {
+            pattern: "/products/[slug]",
+            load: async () => {
+              imports += 1;
+              return { default: Product };
+            },
+          },
+        },
+        document: dom.window.document,
+        fetch: async () => {
+          requests += 1;
+          return new Response(JSON.stringify(payload("product", { name: "Trail" }, "Trail")));
+        },
+        scrollTo() {},
+      });
+    });
+    const link = dom.window.document.querySelector("a");
+    assert.ok(link);
+    link.dispatchEvent(new dom.window.Event("pointerover", { bubbles: true }));
+    await waitFor(() => imports === 1);
+    assert.equal(requests, 0);
+    await app?.prefetch("/products/trail");
+    assert.equal(imports, 1);
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
 test("intercepts a same-origin anchor and updates route metadata and accessibility", async () => {
   const dom = documentFor();
   const restore = installDOM(dom);
@@ -293,7 +399,12 @@ test(
         app = bootstrap({
           routes: {
             home: { component: Home, pattern: "/" },
-            product: { component: Product, pattern: "/products/[slug]" },
+            product: {
+              pattern: "/products/[slug]",
+              load: async () => {
+                throw new Error("removed route chunk");
+              },
+            },
           },
           document: dom.window.document,
           fetch: request,

@@ -6,7 +6,7 @@ package shared
 import (
 	"errors"
 
-	gb "github.com/gobeyond-dev/gobeyond"
+	gb "github.com/holbrookab/gobeyond"
 )
 
 const PublicOriginValue = "gobeyond.public_origin"

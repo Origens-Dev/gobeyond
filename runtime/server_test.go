@@ -10,11 +10,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
-	gb "github.com/gobeyond-dev/gobeyond"
-	gbmiddleware "github.com/gobeyond-dev/gobeyond/middleware"
-	"github.com/gobeyond-dev/gobeyond/renderplan"
-	"github.com/gobeyond-dev/gobeyond/router"
+	gb "github.com/holbrookab/gobeyond"
+	"github.com/holbrookab/gobeyond/browserassets"
+	gbmiddleware "github.com/holbrookab/gobeyond/middleware"
+	"github.com/holbrookab/gobeyond/renderplan"
+	"github.com/holbrookab/gobeyond/router"
 )
 
 func testAction(id string, handler func(*gb.ActionContext, json.RawMessage) (any, error)) Action {
@@ -87,6 +89,40 @@ func TestDynamicDocumentIsSEOComplete(t *testing.T) {
 	server.ServeHTTP(privateRecorder, privateRequest)
 	if got := privateRecorder.Header().Get("Cache-Control"); got != "private, no-store" {
 		t.Fatalf("cookie-bearing response cache = %q", got)
+	}
+}
+
+func TestDocumentUsesRouteAwareBrowserAssets(t *testing.T) {
+	manifest := &browserassets.Manifest{
+		APIVersion: browserassets.APIVersionV1Alpha1,
+		BuildID:    "build-1",
+		Bootstrap:  browserassets.BrowserAssets{Bootstrap: "/assets/bootstrap.js", ModulePreloads: []string{"/assets/react.js"}, Styles: []string{"/assets/base.css"}},
+		Routes: map[string]browserassets.BrowserAssets{
+			"home": {Bootstrap: "/assets/home.js", ModulePreloads: []string{}, Styles: []string{"/assets/home.css"}},
+		},
+	}
+	server, err := New(Config{
+		BuildID: "build-1", PublicOrigin: "https://example.com", BrowserAssets: manifest,
+		Pages: []PageRoute{{
+			Route:        router.Route{ID: "home", Pattern: "/", Mode: router.ModeStatic},
+			Plan:         &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "home", Root: &renderplan.Element{Kind: "element", Tag: "main"}},
+			Static:       &LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}, Metadata: gb.Metadata{Lang: "en", Title: "Home"}},
+			ClientScript: "/assets/legacy.js", Styles: []string{"/assets/legacy.css"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/", nil))
+	body := recorder.Body.String()
+	for _, want := range []string{"/assets/bootstrap.js", "/assets/react.js", "/assets/home.js", "/assets/base.css", "/assets/home.css"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "legacy") {
+		t.Fatalf("route-aware assets must replace legacy assets: %s", body)
 	}
 }
 
@@ -289,6 +325,111 @@ func TestRuntimeDataAppliesMiddlewareToThePublicPath(t *testing.T) {
 	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRuntimeDataUsesDocumentCachePolicyAndPrivacyDowngrade(t *testing.T) {
+	page := PageRoute{
+		Route: router.Route{ID: "public", Pattern: "/public", Mode: router.ModeDynamic},
+		Plan:  &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "public", Root: &renderplan.Element{Kind: "element", Tag: "main"}},
+		Load: func(*gb.PageContext) (LoadedPage, error) {
+			return LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}, Metadata: gb.Metadata{Lang: "en", Title: "Public"}, Cache: gb.PublicRevalidate(time.Minute, 5*time.Minute, 24*time.Hour)}, nil
+		},
+	}
+	server, err := New(Config{BuildID: "build-1", PublicOrigin: "https://example.com", Pages: []PageRoute{page}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "public, max-age=0, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
+	for _, path := range []string{"/public", "/_gobeyond/runtime/build-1/public?path=%2Fpublic"} {
+		request := httptest.NewRequest(http.MethodGet, "https://example.com"+path, nil)
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, request)
+		if got := recorder.Header().Get("Cache-Control"); got != want {
+			t.Fatalf("%s cache = %q, want %q", path, got, want)
+		}
+
+		request = httptest.NewRequest(http.MethodGet, "https://example.com"+path, nil)
+		request.Header.Set("Cookie", "session=present")
+		recorder = httptest.NewRecorder()
+		server.ServeHTTP(recorder, request)
+		if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
+			t.Fatalf("%s private cache = %q", path, got)
+		}
+	}
+}
+
+func TestRequestResolvedPublicOrigin(t *testing.T) {
+	resolver := func(request *http.Request) (string, error) {
+		switch request.Host {
+		case "one.example.com", "two.example.com":
+			return "https://" + request.Host, nil
+		default:
+			return "", errors.New("unknown host")
+		}
+	}
+	server, err := New(Config{
+		BuildID:             "build-1",
+		ResolvePublicOrigin: resolver,
+		Pages: []PageRoute{{
+			Route: router.Route{ID: "home", Pattern: "/", Mode: router.ModeDynamic},
+			Plan:  &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "home", Root: &renderplan.Element{Kind: "element", Tag: "main"}},
+			Load: func(ctx *gb.PageContext) (LoadedPage, error) {
+				return LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}, Metadata: gb.Metadata{Lang: "en", Title: ctx.PublicOrigin}}, nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"one.example.com", "two.example.com"} {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://"+host+"/", nil))
+		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "<title>https://"+host+"</title>") {
+			t.Fatalf("host %s: status=%d body=%s", host, recorder.Code, recorder.Body.String())
+		}
+	}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://unknown.example.com/", nil))
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_host") {
+		t.Fatalf("unknown host: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestResolvedPublicOriginProtectsActions(t *testing.T) {
+	server, err := New(Config{
+		BuildID: "build-1",
+		ResolvePublicOrigin: func(request *http.Request) (string, error) {
+			if request.Host != "preview.example.com" {
+				return "", errors.New("unknown host")
+			}
+			return "https://preview.example.com", nil
+		},
+		Actions: []Action{testAction("save", func(ctx *gb.ActionContext, _ json.RawMessage) (any, error) {
+			if ctx.PublicOrigin != "https://preview.example.com" {
+				t.Fatalf("action public origin = %q", ctx.PublicOrigin)
+			}
+			return map[string]bool{"saved": true}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://preview.example.com/_gobeyond/actions/build-1/save", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "https://preview.example.com")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPublicOriginStrategyIsExclusive(t *testing.T) {
+	if _, err := New(Config{BuildID: "build-1"}); err == nil {
+		t.Fatal("expected missing origin strategy to fail")
+	}
+	if _, err := New(Config{BuildID: "build-1", PublicOrigin: "https://example.com", ResolvePublicOrigin: func(*http.Request) (string, error) { return "https://example.com", nil }}); err == nil {
+		t.Fatal("expected multiple origin strategies to fail")
 	}
 }
 

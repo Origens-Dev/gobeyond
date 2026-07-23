@@ -163,6 +163,7 @@ SSR compatibility.
 - [Architecture and runtime boundary](docs/architecture.md)
 - [Add a React page](docs/guides/add-page.md)
 - [Connect request-time Go data](docs/guides/connect-go-data.md)
+- [Configure fixed or request-resolved public origins](docs/guides/public-origin.md)
 - [Add a typed action](docs/guides/add-action.md)
 - [Add a Go API](docs/guides/add-api.md)
 - [Debug contracts and hydration](docs/guides/debug-contracts.md)

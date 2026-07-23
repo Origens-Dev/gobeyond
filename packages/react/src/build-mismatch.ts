@@ -3,6 +3,7 @@ export const BUILD_ERROR_HEADER = "x-gobeyond-error";
 export const BUILD_MISMATCH_CODE = "build_mismatch";
 
 const GUARD_PREFIX = "gobeyond:build-mismatch:";
+const ASSET_GUARD_PREFIX = "gobeyond:asset-load:";
 export const UPDATE_REQUIRED_ELEMENT_ID = "__gobeyond_update_required__";
 
 interface MismatchAttempt {
@@ -114,6 +115,10 @@ function mismatchKey(currentBuildId: string): string {
   return `${GUARD_PREFIX}${currentBuildId}`;
 }
 
+function assetKey(currentBuildId: string): string {
+  return `${ASSET_GUARD_PREFIX}${currentBuildId}`;
+}
+
 /** Reload at most once for a particular stale document build. */
 export function handleBuildMismatch(
   currentBuildId: string,
@@ -150,6 +155,28 @@ export function handleBuildMismatch(
   return error;
 }
 
+/** Reload once when an initial route chunk cannot be imported. */
+export function handleAssetLoadFailure(
+  currentBuildId: string,
+  options: BuildMismatchOptions = {},
+): BuildMismatchError {
+  const environment = options.environment ?? browserEnvironment();
+  const key = assetKey(currentBuildId);
+  if (environment.sessionStorage.getItem(key) === null) {
+    environment.sessionStorage.setItem(key, currentBuildId);
+    const error = new BuildMismatchError(currentBuildId, undefined, "reloading");
+    environment.location.reload();
+    return error;
+  }
+  const error = new BuildMismatchError(currentBuildId, undefined, "update-required");
+  if (options.onUpdateRequired) {
+    options.onUpdateRequired(error);
+  } else if (typeof document !== "undefined") {
+    renderUpdateRequired(error);
+  }
+  return error;
+}
+
 /**
  * Clear mismatch guards only after hydration reaches a different build.
  *
@@ -166,6 +193,10 @@ export function markBuildHealthy(
   const keys: string[] = [];
   for (let index = 0; index < environment.sessionStorage.length; index += 1) {
     const key = environment.sessionStorage.key(index);
+    if (key === assetKey(currentBuildId)) {
+      keys.push(key);
+      continue;
+    }
     if (!key?.startsWith(GUARD_PREFIX)) continue;
     const value = environment.sessionStorage.getItem(key);
     if (value === null) continue;

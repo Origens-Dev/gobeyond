@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"strings"
 
-	gb "github.com/gobeyond-dev/gobeyond"
-	contract "github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_account_441bb226"
-	"github.com/gobeyond-dev/gobeyond/examples/seo-site/internal/site"
-	gbruntime "github.com/gobeyond-dev/gobeyond/runtime"
+	gb "github.com/holbrookab/gobeyond"
+	contract "github.com/holbrookab/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_account_441bb226"
+	"github.com/holbrookab/gobeyond/examples/seo-site/internal/site"
+	gbruntime "github.com/holbrookab/gobeyond/runtime"
 )
 
 type Params struct{}

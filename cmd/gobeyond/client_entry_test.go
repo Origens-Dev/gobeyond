@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gobeyond-dev/gobeyond/internal/project"
+	"github.com/holbrookab/gobeyond/internal/project"
 )
 
 func TestGenerateClientEntryIncludesManifestPatterns(t *testing.T) {
 	website := t.TempDir()
-	path, err := generateClientEntry(
+	input, err := generateClientEntry(
 		website,
 		[]compilerRouteModules{{
 			RouteID:     "r_products",
@@ -23,19 +23,34 @@ func TestGenerateClientEntryIncludesManifestPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != filepath.Join(website, ".gobeyond", "client-entry.tsx") {
-		t.Fatalf("path = %q", path)
+	if input.EntryFile != filepath.Join(website, ".gobeyond", "client-entry.tsx") {
+		t.Fatalf("path = %q", input.EntryFile)
 	}
-	source, err := os.ReadFile(path)
+	source, err := os.ReadFile(input.EntryFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
-		`createElement(Layout0_0 as ComponentType<any>, props,`,
-		`"r_products": { component: Route0, pattern: "/products/[slug]" }`,
+		`import { bootstrapAsync } from '@gobeyond/react/browser'`,
+		`"r_products": { load: () => import("./routes/`,
+		`pattern: "/products/[slug]" }`,
 	} {
 		if !strings.Contains(string(source), expected) {
 			t.Fatalf("generated client entry is missing %q:\n%s", expected, source)
+		}
+	}
+	routeSource, err := os.ReadFile(input.RouteEntries["r_products"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`import Page from "../../app/products/[slug]/page.js"`,
+		`import Layout0 from "../../app/layout.js"`,
+		`createElement(Layout0 as ComponentType<any>, props, createElement(Page as ComponentType<any>, props))`,
+		`export default Route`,
+	} {
+		if !strings.Contains(string(routeSource), expected) {
+			t.Fatalf("generated route module is missing %q:\n%s", expected, routeSource)
 		}
 	}
 }

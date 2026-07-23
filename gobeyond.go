@@ -33,7 +33,9 @@ const (
 type CachePolicy struct {
 	Mode                 CacheMode `json:"mode"`
 	MaxAge               int       `json:"maxAge,omitempty"`
+	SharedMaxAge         int       `json:"sharedMaxAge,omitempty"`
 	StaleWhileRevalidate int       `json:"staleWhileRevalidate,omitempty"`
+	StaleIfError         int       `json:"staleIfError,omitempty"`
 }
 
 func (p CachePolicy) HeaderValue() string {
@@ -41,10 +43,35 @@ func (p CachePolicy) HeaderValue() string {
 		return "private, no-store"
 	}
 	value := "public, max-age=" + itoaNonNegative(p.MaxAge)
+	if p.SharedMaxAge > 0 {
+		value += ", s-maxage=" + itoaNonNegative(p.SharedMaxAge)
+	}
 	if p.StaleWhileRevalidate > 0 {
 		value += ", stale-while-revalidate=" + itoaNonNegative(p.StaleWhileRevalidate)
 	}
+	if p.StaleIfError > 0 {
+		value += ", stale-if-error=" + itoaNonNegative(p.StaleIfError)
+	}
 	return value
+}
+
+// PublicRevalidate returns a public policy that keeps browser responses stale
+// while allowing shared caches to retain and asynchronously refresh them.
+// Non-positive durations disable their corresponding directive.
+func PublicRevalidate(fresh, stale, staleIfError time.Duration) CachePolicy {
+	return CachePolicy{
+		Mode:                 CachePublic,
+		SharedMaxAge:         durationSeconds(fresh),
+		StaleWhileRevalidate: durationSeconds(stale),
+		StaleIfError:         durationSeconds(staleIfError),
+	}
+}
+
+func durationSeconds(value time.Duration) int {
+	if value <= 0 {
+		return 0
+	}
+	return int(value / time.Second)
 }
 
 type Alternate struct {
@@ -143,9 +170,11 @@ func validateAbsoluteURL(value, label string) error {
 type PageContext struct {
 	Context context.Context
 	Request *http.Request
-	Params  map[string]string
-	Values  map[string]any
-	BuildID string
+	// PublicOrigin is the absolute origin resolved for this request.
+	PublicOrigin string
+	Params       map[string]string
+	Values       map[string]any
+	BuildID      string
 }
 
 type PageResult[T any] struct {
@@ -193,11 +222,12 @@ func Redirect[T any](location string, permanent bool) PageResult[T] {
 }
 
 type ActionContext struct {
-	Context context.Context
-	Request *http.Request
-	Params  map[string]string
-	Values  map[string]any
-	BuildID string
+	Context      context.Context
+	Request      *http.Request
+	PublicOrigin string
+	Params       map[string]string
+	Values       map[string]any
+	BuildID      string
 }
 
 type ActionResult[T any] struct {
@@ -208,11 +238,12 @@ type ActionResult[T any] struct {
 }
 
 type RequestContext struct {
-	Context context.Context
-	Request *http.Request
-	Params  map[string]string
-	Values  map[string]any
-	BuildID string
+	Context      context.Context
+	Request      *http.Request
+	PublicOrigin string
+	Params       map[string]string
+	Values       map[string]any
+	BuildID      string
 }
 
 type Response struct {

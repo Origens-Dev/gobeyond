@@ -17,14 +17,15 @@ import (
 	"strings"
 	"time"
 
-	gb "github.com/gobeyond-dev/gobeyond"
-	"github.com/gobeyond-dev/gobeyond/document"
-	"github.com/gobeyond-dev/gobeyond/internal/jsvalue"
-	gbmiddleware "github.com/gobeyond-dev/gobeyond/middleware"
-	"github.com/gobeyond-dev/gobeyond/renderer"
-	"github.com/gobeyond-dev/gobeyond/renderplan"
-	"github.com/gobeyond-dev/gobeyond/router"
-	"github.com/gobeyond-dev/gobeyond/security"
+	gb "github.com/holbrookab/gobeyond"
+	"github.com/holbrookab/gobeyond/browserassets"
+	"github.com/holbrookab/gobeyond/document"
+	"github.com/holbrookab/gobeyond/internal/jsvalue"
+	gbmiddleware "github.com/holbrookab/gobeyond/middleware"
+	"github.com/holbrookab/gobeyond/renderer"
+	"github.com/holbrookab/gobeyond/renderplan"
+	"github.com/holbrookab/gobeyond/router"
+	"github.com/holbrookab/gobeyond/security"
 )
 
 const maxRewrites = 8
@@ -106,18 +107,25 @@ type APIRoute struct {
 	Methods map[string]gb.Handler
 }
 
+// PublicOriginResolver resolves the canonical absolute origin for a request.
+// It is useful behind trusted reverse proxies and custom-domain front doors.
+// Resolvers must reject hosts they do not recognize.
+type PublicOriginResolver func(*http.Request) (string, error)
+
 type Config struct {
-	BuildID       string
-	PublicOrigin  string
-	AllowedHosts  []string
-	Pages         []PageRoute
-	Actions       []Action
-	APIs          []APIRoute
-	Middleware    []gbmiddleware.Rule
-	CSRF          *security.CSRF
-	Logger        *slog.Logger
-	Deadlines     gb.DeadlinePolicy
-	MaxHeaderSize int
+	BuildID             string
+	PublicOrigin        string
+	ResolvePublicOrigin PublicOriginResolver
+	AllowedHosts        []string
+	BrowserAssets       *browserassets.Manifest
+	Pages               []PageRoute
+	Actions             []Action
+	APIs                []APIRoute
+	Middleware          []gbmiddleware.Rule
+	CSRF                *security.CSRF
+	Logger              *slog.Logger
+	Deadlines           gb.DeadlinePolicy
+	MaxHeaderSize       int
 }
 
 type Server struct {
@@ -135,15 +143,18 @@ func New(config Config) (*Server, error) {
 	if config.BuildID == "" {
 		return nil, errors.New("runtime build ID is required")
 	}
-	if config.PublicOrigin == "" {
-		return nil, errors.New("runtime public origin is required")
+	if (config.PublicOrigin == "") == (config.ResolvePublicOrigin == nil) {
+		return nil, errors.New("runtime requires exactly one public origin strategy")
 	}
-	publicOrigin, err := url.Parse(config.PublicOrigin)
-	if err != nil || publicOrigin.Scheme == "" || publicOrigin.Host == "" {
-		return nil, errors.New("runtime public origin must be an absolute URL")
-	}
-	if len(config.AllowedHosts) == 0 {
-		config.AllowedHosts = []string{publicOrigin.Host}
+	if config.PublicOrigin != "" {
+		publicOrigin, err := parsePublicOrigin(config.PublicOrigin)
+		if err != nil {
+			return nil, err
+		}
+		config.PublicOrigin = publicOrigin.String()
+		if len(config.AllowedHosts) == 0 {
+			config.AllowedHosts = []string{publicOrigin.Host}
+		}
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
@@ -160,6 +171,14 @@ func New(config Config) (*Server, error) {
 	if config.Deadlines.API <= 0 {
 		config.Deadlines.API = 15 * time.Second
 	}
+	if config.BrowserAssets != nil {
+		if err := config.BrowserAssets.Validate(); err != nil {
+			return nil, err
+		}
+		if config.BrowserAssets.BuildID != config.BuildID {
+			return nil, errors.New("browser asset manifest build ID mismatch")
+		}
+	}
 	pageRoutes := make([]router.Route, len(config.Pages))
 	pages := make(map[string]PageRoute, len(config.Pages))
 	for i, page := range config.Pages {
@@ -171,6 +190,11 @@ func New(config Config) (*Server, error) {
 		}
 		if page.Static == nil && page.Load == nil {
 			return nil, fmt.Errorf("page %s requires static data or a loader", page.Route.ID)
+		}
+		if config.BrowserAssets != nil {
+			if _, err := config.BrowserAssets.ForRoute(page.Route.ID); err != nil {
+				return nil, err
+			}
 		}
 		pageRoutes[i] = page.Route
 		pages[page.Route.ID] = page
@@ -252,13 +276,6 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		return
 	}
-	if len(s.config.AllowedHosts) > 0 {
-		if err := security.ValidateHost(request, s.config.AllowedHosts); err != nil {
-			s.writeError(writer, http.StatusBadRequest, "invalid_host", requestID)
-			return
-		}
-	}
-	writer.Header().Set("X-GoBeyond-Request-ID", requestID)
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			s.logger.Error("request panic", "request_id", requestID)
@@ -266,6 +283,19 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		s.logger.Info("request complete", "request_id", requestID, "method", request.Method, "path", request.URL.Path, "duration_ms", time.Since(started).Milliseconds())
 	}()
+	if len(s.config.AllowedHosts) > 0 {
+		if err := security.ValidateHost(request, s.config.AllowedHosts); err != nil {
+			s.writeError(writer, http.StatusBadRequest, "invalid_host", requestID)
+			return
+		}
+	}
+	publicOrigin, err := s.resolvePublicOrigin(request)
+	if err != nil {
+		s.writeError(writer, http.StatusBadRequest, "invalid_host", requestID)
+		return
+	}
+	request = request.WithContext(context.WithValue(request.Context(), publicOriginContextKey{}, publicOrigin))
+	writer.Header().Set("X-GoBeyond-Request-ID", requestID)
 
 	switch {
 	case strings.HasPrefix(request.URL.Path, "/_gobeyond/runtime/"):
@@ -335,11 +365,12 @@ func (s *Server) serveDocument(writer http.ResponseWriter, request *http.Request
 	for rewrites := 0; rewrites <= maxRewrites; rewrites++ {
 		_, params, _ := s.pageTable.Resolve(current.URL.Path)
 		ctx := &gb.RequestContext{
-			Context: current.Context(),
-			Request: current,
-			Params:  params,
-			Values:  map[string]any{"request_id": requestID, privateRequestValue: privateRequest},
-			BuildID: s.config.BuildID,
+			Context:      current.Context(),
+			Request:      current,
+			PublicOrigin: publicOriginFromContext(current.Context()),
+			Params:       params,
+			Values:       map[string]any{"request_id": requestID, privateRequestValue: privateRequest},
+			BuildID:      s.config.BuildID,
 		}
 		response, err := s.documentPipe(ctx)
 		if err != nil {
@@ -403,17 +434,33 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	}
 	s.logger.Info("page rendered", "request_id", ctx.Values["request_id"], "build_id", s.config.BuildID, "route_id", route.ID, "loader_ms", loadDuration.Milliseconds(), "render_ms", renderDuration.Milliseconds())
 	var output bytes.Buffer
-	styles := make([]document.Asset, len(page.Styles))
-	for i, style := range page.Styles {
+	clientScript := page.ClientScript
+	styleURLs := page.Styles
+	moduleURLs := []string(nil)
+	if s.config.BrowserAssets != nil {
+		assets, assetErr := s.config.BrowserAssets.ForRoute(route.ID)
+		if assetErr != nil {
+			return gb.Response{}, assetErr
+		}
+		clientScript = assets.Bootstrap
+		styleURLs = assets.Styles
+		moduleURLs = assets.ModulePreloads
+	}
+	styles := make([]document.Asset, len(styleURLs))
+	for i, style := range styleURLs {
 		styles[i] = document.Asset{URL: style}
 	}
+	modulePreloads := make([]document.Asset, len(moduleURLs))
+	for i, module := range moduleURLs {
+		modulePreloads[i] = document.Asset{URL: module}
+	}
 	scripts := []document.Asset{}
-	if page.ClientScript != "" {
-		scripts = append(scripts, document.Asset{URL: page.ClientScript})
+	if clientScript != "" {
+		scripts = append(scripts, document.Asset{URL: clientScript})
 	}
 	indexable := page.Indexable && loaded.Kind != gb.ResultNotFound
 	if err := document.Render(&output, document.Input{
-		PublicOrigin: s.config.PublicOrigin,
+		PublicOrigin: ctx.PublicOrigin,
 		Indexable:    indexable,
 		Metadata:     loaded.Metadata,
 		Body:         document.BodyHTML(body),
@@ -422,17 +469,15 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 			RouteID: route.ID,
 			Props:   loaded.Props,
 		},
-		Styles:  styles,
-		Scripts: scripts,
+		Styles:         styles,
+		ModulePreloads: modulePreloads,
+		Scripts:        scripts,
 	}); err != nil {
 		return gb.Response{}, err
 	}
 	headers := cloneHeader(loaded.Headers)
 	headers.Set("Content-Type", "text/html; charset=utf-8")
-	headers.Set("Cache-Control", loaded.Cache.HeaderValue())
-	if loaded.Cache.Mode == gb.CachePublic && (ctx.Values[privateRequestValue] == true || ctx.Request.Header.Get("Authorization") != "" || ctx.Request.Header.Get("Cookie") != "" || len(headers.Values("Set-Cookie")) > 0) {
-		headers.Set("Cache-Control", gb.CachePolicy{Mode: gb.CachePrivateNoStore}.HeaderValue())
-	}
+	headers.Set("Cache-Control", responseCacheHeader(loaded.Cache, ctx.Request, ctx.Values, headers))
 	headers.Set("X-GoBeyond-Build", s.config.BuildID)
 	return gb.Response{Status: loaded.Status, Headers: headers, Body: output.Bytes()}, nil
 }
@@ -444,11 +489,12 @@ func (s *Server) loadPage(parent context.Context, request *http.Request, params 
 	ctx, cancel := context.WithTimeout(parent, s.config.Deadlines.Loader)
 	defer cancel()
 	return page.Load(&gb.PageContext{
-		Context: ctx,
-		Request: request.WithContext(ctx),
-		Params:  params,
-		Values:  values,
-		BuildID: s.config.BuildID,
+		Context:      ctx,
+		Request:      request.WithContext(ctx),
+		PublicOrigin: publicOriginFromContext(request.Context()),
+		Params:       params,
+		Values:       values,
+		BuildID:      s.config.BuildID,
 	})
 }
 
@@ -495,12 +541,12 @@ func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request,
 		if status == 0 {
 			status = http.StatusOK
 		}
-		return jsonResponse(status, map[string]any{
+		return jsonPageResponse(status, map[string]any{
 			"apiVersion": gb.RenderAPIVersion,
 			"buildId":    s.config.BuildID,
 			"routeId":    route.ID,
 			"result":     loaded,
-		})
+		}, loaded, ctx)
 	})
 	if err != nil {
 		s.writeError(writer, http.StatusInternalServerError, "internal_error", requestID)
@@ -533,12 +579,13 @@ func (s *Server) serveAction(writer http.ResponseWriter, request *http.Request, 
 		s.writeError(writer, http.StatusNotFound, "not_found", requestID)
 		return
 	}
-	if err := security.ValidateSameOrigin(request, s.config.PublicOrigin); err != nil {
+	publicOrigin := publicOriginFromContext(request.Context())
+	if err := security.ValidateSameOrigin(request, publicOrigin); err != nil {
 		s.writeError(writer, http.StatusForbidden, "origin_failed", requestID)
 		return
 	}
 	if s.config.CSRF != nil {
-		if err := s.config.CSRF.Verify(request, s.config.PublicOrigin); err != nil {
+		if err := s.config.CSRF.Verify(request, publicOrigin); err != nil {
 			s.writeError(writer, http.StatusForbidden, "csrf_failed", requestID)
 			return
 		}
@@ -553,7 +600,7 @@ func (s *Server) serveAction(writer http.ResponseWriter, request *http.Request, 
 	response, err := s.applyMiddleware(request, requestID, nil, func(ctx *gb.RequestContext) (gb.Response, error) {
 		actionContext, cancel := context.WithTimeout(ctx.Context, s.config.Deadlines.Action)
 		defer cancel()
-		result, actionErr := action.execute(&gb.ActionContext{Context: actionContext, Request: ctx.Request.WithContext(actionContext), Values: ctx.Values, BuildID: s.config.BuildID}, json.RawMessage(raw))
+		result, actionErr := action.execute(&gb.ActionContext{Context: actionContext, Request: ctx.Request.WithContext(actionContext), PublicOrigin: ctx.PublicOrigin, Values: ctx.Values, BuildID: s.config.BuildID}, json.RawMessage(raw))
 		if actionErr != nil {
 			return gb.Response{}, actionErr
 		}
@@ -610,11 +657,12 @@ func (s *Server) applyMiddleware(request *http.Request, requestID string, params
 		return gb.Response{}, err
 	}
 	return pipe(&gb.RequestContext{
-		Context: request.Context(),
-		Request: request,
-		Params:  params,
-		Values:  map[string]any{"request_id": requestID},
-		BuildID: s.config.BuildID,
+		Context:      request.Context(),
+		Request:      request,
+		PublicOrigin: publicOriginFromContext(request.Context()),
+		Params:       params,
+		Values:       map[string]any{"request_id": requestID, privateRequestValue: request.Header.Get("Authorization") != "" || request.Header.Get("Cookie") != ""},
+		BuildID:      s.config.BuildID,
 	})
 }
 
@@ -629,6 +677,25 @@ func jsonResponse(status int, value any) (gb.Response, error) {
 		Headers: http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"private, no-store"}},
 		Body:    body,
 	}, nil
+}
+
+func jsonPageResponse(status int, value any, loaded LoadedPage, ctx *gb.RequestContext) (gb.Response, error) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return gb.Response{}, err
+	}
+	body = append(body, '\n')
+	headers := cloneHeader(loaded.Headers)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Cache-Control", responseCacheHeader(loaded.Cache, ctx.Request, ctx.Values, headers))
+	return gb.Response{Status: status, Headers: headers, Body: body}, nil
+}
+
+func responseCacheHeader(policy gb.CachePolicy, request *http.Request, values map[string]any, headers http.Header) string {
+	if policy.Mode == gb.CachePublic && (values[privateRequestValue] == true || request.Header.Get("Authorization") != "" || request.Header.Get("Cookie") != "" || len(headers.Values("Set-Cookie")) > 0) {
+		return (gb.CachePolicy{Mode: gb.CachePrivateNoStore}).HeaderValue()
+	}
+	return policy.HeaderValue()
 }
 
 func (s *Server) writeResponse(writer http.ResponseWriter, response gb.Response) {
@@ -689,4 +756,35 @@ func validRedirectTarget(target string) bool {
 		return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
 	}
 	return strings.HasPrefix(parsed.Path, "/") && !strings.HasPrefix(parsed.Path, "//")
+}
+
+type publicOriginContextKey struct{}
+
+func (s *Server) resolvePublicOrigin(request *http.Request) (string, error) {
+	if s.config.ResolvePublicOrigin == nil {
+		return s.config.PublicOrigin, nil
+	}
+	value, err := s.config.ResolvePublicOrigin(request)
+	if err != nil {
+		return "", err
+	}
+	origin, err := parsePublicOrigin(value)
+	if err != nil {
+		return "", err
+	}
+	return origin.String(), nil
+}
+
+func parsePublicOrigin(value string) (*url.URL, error) {
+	origin, err := url.Parse(value)
+	if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+		return nil, errors.New("runtime public origin must be an absolute HTTP(S) origin without credentials, path, query, or fragment")
+	}
+	origin.Path = ""
+	return origin, nil
+}
+
+func publicOriginFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(publicOriginContextKey{}).(string)
+	return value
 }

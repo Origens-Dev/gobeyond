@@ -59,7 +59,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(gitignore, /^\.env\.\*\.local$/m)
 
   const goMod = await readFile(join(destination, 'go.mod'), 'utf8')
-  assert.match(goMod, /github\.com\/gobeyond-dev\/gobeyond v0\.1\.0-alpha\.0/)
+  assert.match(goMod, /github\.com\/holbrookab\/gobeyond v0\.1\.0-alpha\.0/)
 
   const dockerfile = await readFile(join(destination, 'Dockerfile'), 'utf8')
   assert.match(dockerfile, /FROM scratch/)
@@ -114,7 +114,7 @@ test('local workspace integration generates contracts and type-checks the starte
   await createProject(destination, { projectName: 'starter-integration' })
   await linkWorkspacePackages(destination)
 
-  await run('go', ['mod', 'edit', '-replace', `github.com/gobeyond-dev/gobeyond=${workspaceRoot}`], destination)
+  await run('go', ['mod', 'edit', '-replace', `github.com/holbrookab/gobeyond=${workspaceRoot}`], destination)
   await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'generate'], destination)
   await run('go', ['mod', 'tidy'], destination)
   await run(join(nodeModules, '.bin', 'tsc'), ['-p', 'tsconfig.json', '--noEmit'], destination)

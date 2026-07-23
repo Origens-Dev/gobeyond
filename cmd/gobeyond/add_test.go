@@ -201,7 +201,7 @@ func newAddTestProject(t *testing.T) string {
 		t.Fatal(err)
 	}
 	repositoryRoot := filepath.Clean(filepath.Join(workingDirectory, "..", ".."))
-	writeAddTestFile(t, filepath.Join(root, "go.mod"), "module example.com/add-test\n\ngo 1.24.0\n\nrequire github.com/gobeyond-dev/gobeyond v0.0.0\n\nreplace github.com/gobeyond-dev/gobeyond => "+repositoryRoot+"\n")
+	writeAddTestFile(t, filepath.Join(root, "go.mod"), "module example.com/add-test\n\ngo 1.24.0\n\nrequire github.com/holbrookab/gobeyond v0.0.0\n\nreplace github.com/holbrookab/gobeyond => "+repositoryRoot+"\n")
 	return root
 }
 

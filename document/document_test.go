@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	gb "github.com/gobeyond-dev/gobeyond"
+	gb "github.com/holbrookab/gobeyond"
 )
 
 func TestRenderCompleteSEODocument(t *testing.T) {
@@ -40,7 +40,8 @@ func TestRenderCompleteSEODocument(t *testing.T) {
 			RouteID: "product",
 			Props:   map[string]any{"name": "</script>"},
 		},
-		Scripts: []Asset{{URL: "https://cdn.example.com/app.js"}},
+		Scripts:        []Asset{{URL: "https://cdn.example.com/app.js"}},
+		ModulePreloads: []Asset{{URL: "https://cdn.example.com/product.js"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +55,7 @@ func TestRenderCompleteSEODocument(t *testing.T) {
 		"application/ld+json",
 		"<main><h1>Widget</h1></main>",
 		"__GOBEYOND_DATA__",
+		`rel="modulepreload" href="https://cdn.example.com/product.js"`,
 	} {
 		if !strings.Contains(document, expected) {
 			t.Fatalf("document missing %q: %s", expected, document)

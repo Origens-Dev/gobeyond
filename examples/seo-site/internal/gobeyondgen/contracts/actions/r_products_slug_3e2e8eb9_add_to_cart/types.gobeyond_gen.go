@@ -5,9 +5,9 @@ package r_products_slug_3e2e8eb9_add_to_cart
 
 import (
 	"encoding/json"
-	gb "github.com/gobeyond-dev/gobeyond"
-	"github.com/gobeyond-dev/gobeyond/codegen"
-	gbruntime "github.com/gobeyond-dev/gobeyond/runtime"
+	gb "github.com/holbrookab/gobeyond"
+	"github.com/holbrookab/gobeyond/codegen"
+	gbruntime "github.com/holbrookab/gobeyond/runtime"
 )
 
 const ActionID = "r_products__slug_3e2e8eb9:addToCart"
