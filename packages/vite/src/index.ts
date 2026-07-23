@@ -83,6 +83,7 @@ export function transformClientBoundaries(
 
   const replacements: Array<{ start: number; end: number; text: string }> = []
   let needsClientOnly = false
+  let needsCreateElement = false
   let needsDeferredRoot = false
   for (const boundary of matching) {
     if (boundary.target === 'callSite') {
@@ -90,12 +91,19 @@ export function transformClientBoundaries(
       if (!isExpectedCallSite(selected, boundary.component)) {
         throw staleBoundaryError(boundary)
       }
+      const jsxCallSite = isJSXCallSite(selected)
       replacements.push({
         start: boundary.start,
         end: boundary.end,
-        text: `__gbCreateElement(__gbClientOnly, null, ${selected})`,
+        // A bare JavaScript call inserted between JSX tags is parsed as text.
+        // Keep JSX call sites as JSX so this replacement is valid both as a
+        // direct child and in an existing expression/return position.
+        text: jsxCallSite
+          ? `<__gbClientOnly>{${selected}}</__gbClientOnly>`
+          : `__gbCreateElement(__gbClientOnly, null, ${selected})`,
       })
       needsClientOnly = true
+      needsCreateElement ||= !jsxCallSite
       continue
     }
     const rootReplacement = deferredRootReplacement(code, boundary)
@@ -114,7 +122,7 @@ export function transformClientBoundaries(
   }
 
   const imports = [
-    needsClientOnly
+    needsCreateElement
       ? `import { createElement as __gbCreateElement } from 'react';`
       : '',
     needsClientOnly || needsDeferredRoot
@@ -192,6 +200,10 @@ function isExpectedCallSite(selected: string, component: string): boolean {
   const escaped = escapeRegExp(component)
   return new RegExp(`^<\\s*${escaped}(?:[\\s/>])`).test(selected) ||
     new RegExp(`(?:jsx|jsxs|jsxDEV|createElement)\\s*\\(\\s*${escaped}(?:\\s*[,)]|$)`).test(selected)
+}
+
+function isJSXCallSite(selected: string): boolean {
+  return /^\s*</.test(selected)
 }
 
 function directivePrologueEnd(code: string): number {
