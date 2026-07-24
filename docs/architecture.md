@@ -125,3 +125,17 @@ images, alternates, JSON-LD, and body props before response headers are
 committed. Canonicals use configured public origin, never request Host. Private
 or authenticated output is `noindex` and `private, no-store`; cookie-bearing
 responses cannot be stored in a public cache.
+
+Social previews cross the indexing boundary: whenever metadata includes a
+social image, its URL must be absolute HTTPS even if the result is `noindex`.
+Open Graph can include a structured primary image with dimensions, alt text,
+and media type. Browser icon metadata links generated favicon and Apple touch
+assets from the static origin. `robots.txt` determines whether a crawler may
+fetch the document and image; meta robots directives determine whether the
+document should be indexed. These controls are related but not interchangeable.
+
+The build derives 16- and 32-pixel favicons plus a 180-pixel Apple touch icon
+from `app/icon.png`. Social images remain authored files under `public/` and
+are copied without transformation. Runtime image optimization (`/_gobeyond/image`,
+portable `imageSrc()`) is outside this SEO boundary; social previews must not
+use it. See [Runtime images](guides/images.md).

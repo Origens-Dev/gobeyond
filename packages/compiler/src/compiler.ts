@@ -54,7 +54,7 @@ function standaloneContext(): CompilationContext {
   }
 }
 
-const helperNames = new Set(['string', 'lower', 'upper', 'join', 'url'])
+const helperNames = new Set(['string', 'lower', 'upper', 'join', 'url', 'imageSrc'])
 type PortableIntrinsicDefinition = {
   name: string
   stability: 'pure' | 'render-snapshot'
@@ -2082,7 +2082,7 @@ export class SourceCompiler {
         }
         return {
           kind: 'helper',
-          name: helperName as 'string' | 'lower' | 'upper' | 'join' | 'url',
+          name: helperName as 'string' | 'lower' | 'upper' | 'join' | 'url' | 'imageSrc',
           arguments: args as PlanExpression[],
         }
       }

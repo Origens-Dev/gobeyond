@@ -278,6 +278,41 @@ func evalHelper(expr *renderplan.Helper, env environment, path string) (any, err
 			return nil, evaluation(path, err.Error())
 		}
 		return url.QueryEscape(value), nil
+	case "imageSrc":
+		if err := require(2); err != nil {
+			return nil, err
+		}
+		source, ok := args[0].(string)
+		if !ok {
+			return nil, evaluation(path, "imageSrc source must be a string")
+		}
+		options, ok := args[1].(map[string]any)
+		if !ok {
+			return nil, evaluation(path, "imageSrc options must be an object")
+		}
+		width, err := scalarString(options["w"])
+		if err != nil {
+			return nil, evaluation(path, "imageSrc options.w must be scalar")
+		}
+		quality := "75"
+		if configured, exists := options["q"]; exists {
+			quality, err = scalarString(configured)
+			if err != nil {
+				return nil, evaluation(path, "imageSrc options.q must be scalar")
+			}
+		}
+		result := "/_gobeyond/image?url=" + url.QueryEscape(source) +
+			"&w=" + url.QueryEscape(width) + "&q=" + url.QueryEscape(quality)
+		if configured, exists := options["f"]; exists {
+			format, ok := configured.(string)
+			if !ok {
+				return nil, evaluation(path, "imageSrc options.f must be a string")
+			}
+			if format != "" {
+				result += "&f=" + url.QueryEscape(format)
+			}
+		}
+		return result, nil
 	case "join":
 		if err := require(2); err != nil {
 			return nil, err

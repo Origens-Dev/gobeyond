@@ -1,3 +1,11 @@
+export interface OpenGraphImageMetadata {
+  url: string;
+  width?: number;
+  height?: number;
+  alt?: string;
+  type?: string;
+}
+
 export interface OpenGraphMetadata {
   type?: "article" | "product" | "profile" | "website";
   title?: string;
@@ -5,6 +13,8 @@ export interface OpenGraphMetadata {
   url?: string;
   siteName?: string;
   locale?: string;
+  /** Preferred primary image. `images` remains available for compatibility. */
+  image?: OpenGraphImageMetadata;
   images?: readonly string[];
 }
 
@@ -12,7 +22,14 @@ export interface TwitterMetadata {
   card: "summary" | "summary_large_image";
   title?: string;
   description?: string;
+  site?: string;
+  imageAlt?: string;
   images?: readonly string[];
+}
+
+export interface IconMetadata {
+  icon?: string;
+  appleTouch?: string;
 }
 
 export interface AlternateLanguage {
@@ -29,6 +46,7 @@ export interface RouteMetadata {
   alternates?: readonly AlternateLanguage[];
   openGraph?: OpenGraphMetadata;
   twitter?: TwitterMetadata;
+  icons?: IconMetadata;
 }
 
 type JsonPrimitive = string | number | boolean | null;

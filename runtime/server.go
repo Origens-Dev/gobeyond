@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/browserassets"
 	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/document"
+	"github.com/Origens-Dev/gobeyond/imageopt"
 	"github.com/Origens-Dev/gobeyond/internal/jsvalue"
 	gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
 	"github.com/Origens-Dev/gobeyond/renderer"
@@ -127,6 +129,7 @@ type Config struct {
 	Logger              *slog.Logger
 	Deadlines           gb.DeadlinePolicy
 	MaxHeaderSize       int
+	ImageLoader         imageopt.Loader
 }
 
 type Server struct {
@@ -137,6 +140,7 @@ type Server struct {
 	apis         map[string]APIRoute
 	apiTable     *router.Table
 	documentPipe gb.Handler
+	imageHandler http.Handler
 	logger       *slog.Logger
 }
 
@@ -159,6 +163,11 @@ func New(config Config) (*Server, error) {
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
+	}
+	if config.ImageLoader == nil {
+		if staticDirectory := os.Getenv("GOBEYOND_STATIC_DIR"); staticDirectory != "" {
+			config.ImageLoader = imageopt.DiskLoader{Root: staticDirectory}
+		}
 	}
 	if config.Deadlines.Loader <= 0 {
 		config.Deadlines.Loader = 10 * time.Second
@@ -231,13 +240,14 @@ func New(config Config) (*Server, error) {
 		return nil, err
 	}
 	server := &Server{
-		config:    config,
-		pages:     pages,
-		pageTable: pageTable,
-		actions:   actions,
-		apis:      apis,
-		apiTable:  apiTable,
-		logger:    config.Logger,
+		config:       config,
+		pages:        pages,
+		pageTable:    pageTable,
+		actions:      actions,
+		apis:         apis,
+		apiTable:     apiTable,
+		logger:       config.Logger,
+		imageHandler: imageopt.Handler(config.ImageLoader),
 	}
 	pipe, err := gbmiddleware.Chain(config.Middleware, server.documentHandler)
 	if err != nil {
@@ -299,6 +309,8 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("X-GoBeyond-Request-ID", requestID)
 
 	switch {
+	case request.URL.Path == imageopt.Route:
+		s.imageHandler.ServeHTTP(writer, request)
 	case strings.HasPrefix(request.URL.Path, buildpaths.BuildsPrefix):
 		switch kind, _ := buildpaths.BuildPathKind(request.URL.Path); kind {
 		case buildpaths.KindRuntime:

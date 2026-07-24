@@ -11,7 +11,9 @@ import {
 } from "./build-mismatch.js";
 import type {
   AlternateLanguage,
+  IconMetadata,
   JsonValue,
+  OpenGraphImageMetadata,
   OpenGraphMetadata,
   TwitterMetadata,
 } from "./seo.js";
@@ -54,6 +56,7 @@ export interface RuntimeMetadata {
   twitter?: Omit<TwitterMetadata, "card"> & {
     card?: TwitterMetadata["card"];
   };
+  icons?: IconMetadata;
   jsonLd?: readonly Readonly<Record<string, JsonValue>>[];
 }
 
@@ -175,6 +178,29 @@ function optionalStrings(
   return value as string[];
 }
 
+function parseOpenGraphImage(value: unknown): OpenGraphImageMetadata | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new Error("metadata.openGraph.image must be an object.");
+  }
+  const url = requiredString(value, "url", "metadata.openGraph.image");
+  const width = value.width;
+  const height = value.height;
+  if (width !== undefined && (typeof width !== "number" || width < 0)) {
+    throw new Error("metadata.openGraph.image.width must be a non-negative number.");
+  }
+  if (height !== undefined && (typeof height !== "number" || height < 0)) {
+    throw new Error("metadata.openGraph.image.height must be a non-negative number.");
+  }
+  return {
+    url,
+    width,
+    height,
+    alt: optionalString(value, "alt", "metadata.openGraph.image"),
+    type: optionalString(value, "type", "metadata.openGraph.image"),
+  };
+}
+
 function parseOpenGraph(value: unknown): OpenGraphMetadata | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) {
@@ -197,6 +223,7 @@ function parseOpenGraph(value: unknown): OpenGraphMetadata | undefined {
     url: optionalString(value, "url", "metadata.openGraph"),
     siteName: optionalString(value, "siteName", "metadata.openGraph"),
     locale: optionalString(value, "locale", "metadata.openGraph"),
+    image: parseOpenGraphImage(value.image),
     images: optionalStrings(value, "images", "metadata.openGraph"),
   };
   return Object.values(result).every((item) => item === undefined)
@@ -217,6 +244,8 @@ function parseTwitter(value: unknown): RuntimeMetadata["twitter"] {
     card,
     title: optionalString(value, "title", "metadata.twitter"),
     description: optionalString(value, "description", "metadata.twitter"),
+    site: optionalString(value, "site", "metadata.twitter"),
+    imageAlt: optionalString(value, "imageAlt", "metadata.twitter"),
     images: optionalStrings(value, "images", "metadata.twitter"),
   };
   return Object.values(result).every((item) => item === undefined)
@@ -255,6 +284,17 @@ function parseMetadata(value: unknown): RuntimeMetadata | undefined {
     jsonLd = jsonLdValue as Readonly<Record<string, JsonValue>>[];
   }
 
+  let icons: IconMetadata | undefined;
+  if (value.icons !== undefined) {
+    if (!isRecord(value.icons)) {
+      throw new Error("metadata.icons must be an object.");
+    }
+    icons = {
+      icon: optionalString(value.icons, "icon", "metadata.icons"),
+      appleTouch: optionalString(value.icons, "appleTouch", "metadata.icons"),
+    };
+  }
+
   return {
     lang: requiredString(value, "lang", "GoBeyond runtime metadata"),
     title: requiredString(value, "title", "GoBeyond runtime metadata"),
@@ -264,6 +304,7 @@ function parseMetadata(value: unknown): RuntimeMetadata | undefined {
     alternates,
     openGraph: parseOpenGraph(value.openGraph),
     twitter: parseTwitter(value.twitter),
+    icons,
     jsonLd,
   };
 }
@@ -526,6 +567,26 @@ export function applyDocumentMetadata(
       element.setAttribute("href", value);
     },
   );
+  replaceSingleton(
+    targetDocument,
+    'link[rel="icon"]',
+    () => targetDocument.createElement("link"),
+    metadata.icons?.icon,
+    (element, value) => {
+      element.setAttribute("rel", "icon");
+      element.setAttribute("href", value);
+    },
+  );
+  replaceSingleton(
+    targetDocument,
+    'link[rel="apple-touch-icon"]',
+    () => targetDocument.createElement("link"),
+    metadata.icons?.appleTouch,
+    (element, value) => {
+      element.setAttribute("rel", "apple-touch-icon");
+      element.setAttribute("href", value);
+    },
+  );
 
   const openGraph = metadata.openGraph;
   replaceMetaGroup(targetDocument, "property", "og:type", openGraph?.type ? [openGraph.type] : []);
@@ -554,7 +615,36 @@ export function applyDocumentMetadata(
     "og:locale",
     openGraph?.locale ? [openGraph.locale] : [],
   );
-  replaceMetaGroup(targetDocument, "property", "og:image", openGraph?.images ?? []);
+  replaceMetaGroup(
+    targetDocument,
+    "property",
+    "og:image",
+    [...(openGraph?.image ? [openGraph.image.url] : []), ...(openGraph?.images ?? [])],
+  );
+  replaceMetaGroup(
+    targetDocument,
+    "property",
+    "og:image:width",
+    openGraph?.image?.width ? [String(openGraph.image.width)] : [],
+  );
+  replaceMetaGroup(
+    targetDocument,
+    "property",
+    "og:image:height",
+    openGraph?.image?.height ? [String(openGraph.image.height)] : [],
+  );
+  replaceMetaGroup(
+    targetDocument,
+    "property",
+    "og:image:alt",
+    openGraph?.image?.alt ? [openGraph.image.alt] : [],
+  );
+  replaceMetaGroup(
+    targetDocument,
+    "property",
+    "og:image:type",
+    openGraph?.image?.type ? [openGraph.image.type] : [],
+  );
 
   const twitter = metadata.twitter;
   replaceMetaGroup(targetDocument, "name", "twitter:card", twitter?.card ? [twitter.card] : []);
@@ -565,7 +655,14 @@ export function applyDocumentMetadata(
     "twitter:description",
     twitter?.description ? [twitter.description] : [],
   );
+  replaceMetaGroup(targetDocument, "name", "twitter:site", twitter?.site ? [twitter.site] : []);
   replaceMetaGroup(targetDocument, "name", "twitter:image", twitter?.images ?? []);
+  replaceMetaGroup(
+    targetDocument,
+    "name",
+    "twitter:image:alt",
+    twitter?.imageAlt ? [twitter.imageAlt] : [],
+  );
 
   targetDocument.head
     .querySelectorAll('link[rel="alternate"][hreflang]')

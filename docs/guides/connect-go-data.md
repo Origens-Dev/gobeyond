@@ -28,6 +28,12 @@ Missing content must return a real `404`; redirects must preserve their
 temporary/permanent status. Use the configured public origin for canonicals,
 not request headers.
 
+For request-time Open Graph images, derive an absolute HTTPS URL from
+`ctx.PublicOrigin` and provide known dimensions. Add generated favicon and
+Apple touch paths through `gb.Metadata.Icons`. See
+[Icons and social sharing](icons-and-social.md) and
+[Configure the public origin](public-origin.md).
+
 Cookies, authorization, or personalization make a response private and
 `no-store`. Do not vary an indexable body by authentication state. Run
 `pnpm generate --check`, `pnpm test`, then inspect the generated document with

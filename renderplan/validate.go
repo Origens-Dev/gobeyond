@@ -184,7 +184,7 @@ func validateExpression(expr Expression, path string, depth int) error {
 		if e == nil || e.Kind != "helper" {
 			return invalid(path+".kind", "helper kind must be helper")
 		}
-		if !oneOf(e.Name, "string", "lower", "upper", "join", "url", "style") {
+		if !oneOf(e.Name, "string", "lower", "upper", "join", "url", "imageSrc", "style") {
 			return invalid(path+".name", "unsupported helper")
 		}
 		for i, arg := range e.Arguments {

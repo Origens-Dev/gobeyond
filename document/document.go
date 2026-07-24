@@ -8,6 +8,7 @@ import (
 	"errors"
 	"html"
 	"io"
+	"strconv"
 	"strings"
 
 	gb "github.com/Origens-Dev/gobeyond"
@@ -68,16 +69,29 @@ func Render(writer io.Writer, input Input) error {
 	for _, alternate := range input.Metadata.Alternates {
 		writeLink(&output, "alternate", alternate.Language, alternate.URL)
 	}
+	writeLink(&output, "icon", "", input.Metadata.Icons.Icon)
+	writeLink(&output, "apple-touch-icon", "", input.Metadata.Icons.AppleTouch)
 	writePropertyMeta(&output, "og:type", input.Metadata.OpenGraph.Type)
 	writePropertyMeta(&output, "og:title", input.Metadata.OpenGraph.Title)
 	writePropertyMeta(&output, "og:description", input.Metadata.OpenGraph.Description)
 	writePropertyMeta(&output, "og:url", input.Metadata.OpenGraph.URL)
+	writePropertyMeta(&output, "og:site_name", input.Metadata.OpenGraph.SiteName)
+	writePropertyMeta(&output, "og:locale", input.Metadata.OpenGraph.Locale)
+	if image := input.Metadata.OpenGraph.Image; image != nil {
+		writePropertyMeta(&output, "og:image", image.URL)
+		writePropertyMetaInt(&output, "og:image:width", image.Width)
+		writePropertyMetaInt(&output, "og:image:height", image.Height)
+		writePropertyMeta(&output, "og:image:alt", image.Alt)
+		writePropertyMeta(&output, "og:image:type", image.Type)
+	}
 	for _, image := range input.Metadata.OpenGraph.Images {
 		writePropertyMeta(&output, "og:image", image)
 	}
 	writeNamedMeta(&output, "twitter:card", input.Metadata.Twitter.Card)
 	writeNamedMeta(&output, "twitter:title", input.Metadata.Twitter.Title)
 	writeNamedMeta(&output, "twitter:description", input.Metadata.Twitter.Description)
+	writeNamedMeta(&output, "twitter:site", input.Metadata.Twitter.Site)
+	writeNamedMeta(&output, "twitter:image:alt", input.Metadata.Twitter.ImageAlt)
 	for _, image := range input.Metadata.Twitter.Images {
 		writeNamedMeta(&output, "twitter:image", image)
 	}
@@ -162,6 +176,13 @@ func writePropertyMeta(output *bytes.Buffer, property, content string) {
 	output.WriteString("\" content=\"")
 	output.WriteString(attribute(content))
 	output.WriteString("\">")
+}
+
+func writePropertyMetaInt(output *bytes.Buffer, property string, content int) {
+	if content <= 0 {
+		return
+	}
+	writePropertyMeta(output, property, strconv.Itoa(content))
 }
 
 func writeLink(output *bytes.Buffer, rel, language, href string) {

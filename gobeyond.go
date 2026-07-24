@@ -79,19 +79,39 @@ type Alternate struct {
 	URL      string `json:"url"`
 }
 
+type OpenGraphImage struct {
+	URL    string `json:"url"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Alt    string `json:"alt,omitempty"`
+	Type   string `json:"type,omitempty"`
+}
+
 type OpenGraph struct {
-	Type        string   `json:"type,omitempty"`
-	Title       string   `json:"title,omitempty"`
-	Description string   `json:"description,omitempty"`
-	URL         string   `json:"url,omitempty"`
-	Images      []string `json:"images,omitempty"`
+	Type        string          `json:"type,omitempty"`
+	Title       string          `json:"title,omitempty"`
+	Description string          `json:"description,omitempty"`
+	URL         string          `json:"url,omitempty"`
+	SiteName    string          `json:"siteName,omitempty"`
+	Locale      string          `json:"locale,omitempty"`
+	Image       *OpenGraphImage `json:"image,omitempty"`
+	// Images is retained for compatibility. Prefer Image when dimensions and
+	// descriptive metadata are available.
+	Images []string `json:"images,omitempty"`
 }
 
 type Twitter struct {
 	Card        string   `json:"card,omitempty"`
 	Title       string   `json:"title,omitempty"`
 	Description string   `json:"description,omitempty"`
+	Site        string   `json:"site,omitempty"`
+	ImageAlt    string   `json:"imageAlt,omitempty"`
 	Images      []string `json:"images,omitempty"`
+}
+
+type Icons struct {
+	Icon       string `json:"icon,omitempty"`
+	AppleTouch string `json:"appleTouch,omitempty"`
 }
 
 // JSONLD is serialized by the document renderer with script-safe escaping.
@@ -106,6 +126,7 @@ type Metadata struct {
 	Robots      string      `json:"robots,omitempty"`
 	OpenGraph   OpenGraph   `json:"openGraph,omitempty"`
 	Twitter     Twitter     `json:"twitter,omitempty"`
+	Icons       Icons       `json:"icons,omitempty"`
 	Alternates  []Alternate `json:"alternates,omitempty"`
 	JSONLD      []JSONLD    `json:"jsonLd,omitempty"`
 }
@@ -116,6 +137,16 @@ func (m Metadata) Validate(publicOrigin string, indexable bool) error {
 	}
 	if strings.TrimSpace(m.Title) == "" {
 		return errors.New("metadata title is required")
+	}
+	for _, image := range m.socialImageURLs() {
+		if err := validateAbsoluteHTTPSURL(image); err != nil {
+			return err
+		}
+	}
+	if image := m.OpenGraph.Image; image != nil {
+		if image.Width < 0 || image.Height < 0 {
+			return errors.New("social image dimensions must be non-negative")
+		}
 	}
 	if !indexable {
 		return nil
@@ -137,7 +168,7 @@ func (m Metadata) Validate(publicOrigin string, indexable bool) error {
 	if canonical.Scheme != origin.Scheme || canonical.Host != origin.Host {
 		return errors.New("canonical URL must use the configured public origin")
 	}
-	if m.OpenGraph.Type == "" || m.OpenGraph.Title == "" || m.OpenGraph.Description == "" || m.OpenGraph.URL == "" || len(m.OpenGraph.Images) == 0 {
+	if m.OpenGraph.Type == "" || m.OpenGraph.Title == "" || m.OpenGraph.Description == "" || m.OpenGraph.URL == "" || !m.hasOpenGraphImage() {
 		return errors.New("indexable metadata requires complete Open Graph fields and an image")
 	}
 	if err := validateAbsoluteURL(m.OpenGraph.URL, "Open Graph URL"); err != nil {
@@ -146,15 +177,32 @@ func (m Metadata) Validate(publicOrigin string, indexable bool) error {
 	if m.Twitter.Card == "" || m.Twitter.Title == "" || m.Twitter.Description == "" || len(m.Twitter.Images) == 0 {
 		return errors.New("indexable metadata requires complete Twitter fields and an image")
 	}
-	for _, image := range append(append([]string(nil), m.OpenGraph.Images...), m.Twitter.Images...) {
-		if err := validateAbsoluteURL(image, "social image URL"); err != nil {
-			return err
-		}
-	}
 	for _, alternate := range m.Alternates {
 		if alternate.Language == "" || validateAbsoluteURL(alternate.URL, "alternate URL") != nil {
 			return errors.New("metadata alternates require a language and absolute URL")
 		}
+	}
+	return nil
+}
+
+func (m Metadata) hasOpenGraphImage() bool {
+	return m.OpenGraph.Image != nil && m.OpenGraph.Image.URL != "" || len(m.OpenGraph.Images) > 0
+}
+
+func (m Metadata) socialImageURLs() []string {
+	images := make([]string, 0, len(m.OpenGraph.Images)+len(m.Twitter.Images)+1)
+	if m.OpenGraph.Image != nil && m.OpenGraph.Image.URL != "" {
+		images = append(images, m.OpenGraph.Image.URL)
+	}
+	images = append(images, m.OpenGraph.Images...)
+	images = append(images, m.Twitter.Images...)
+	return images
+}
+
+func validateAbsoluteHTTPSURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.Scheme != "https" {
+		return errors.New("social image URL must be an absolute HTTPS URL")
 	}
 	return nil
 }

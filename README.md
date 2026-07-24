@@ -114,6 +114,10 @@ manifest, so dynamic Go documents link the same stylesheet. Files under
 `public/` are copied unchanged and listed as `staticAssetPaths` in the deploy
 route trie for CDN origin routing.
 
+If `app/icon.png` is present, the build also generates 16- and 32-pixel
+favicons plus a 180-pixel Apple touch icon in `dist/static` and lists them for
+static-origin routing. Social images remain authored files under `public/`.
+
 ## Environment variables and CSS tooling
 
 `gobeyond dev` loads `.env`, `.env.development`, `.env.local`, then
@@ -155,8 +159,10 @@ Go document and the hydrated React tree.
 
 The alpha intentionally defers arbitrary render helpers, `useContext`,
 `useId`, `useReducer`, `useMemo`, Suspense, streaming, generalized third-party
-render adapters, ISR, runtime image optimization, and exact arbitrary React
-SSR compatibility.
+render adapters, ISR, WebP image output, production S3-backed image loading
+with an applied CloudFront image-cache policy, and exact arbitrary React SSR
+compatibility. Local and preview servers can use `imageSrc()` with
+`GOBEYOND_STATIC_DIR`; see [Runtime images](docs/guides/images.md).
 
 ## Documentation
 
@@ -164,6 +170,8 @@ SSR compatibility.
 - [Add a React page](docs/guides/add-page.md)
 - [Connect request-time Go data](docs/guides/connect-go-data.md)
 - [Configure fixed or request-resolved public origins](docs/guides/public-origin.md)
+- [Configure icons and social sharing](docs/guides/icons-and-social.md)
+- [Optimize runtime images](docs/guides/images.md)
 - [Add a typed action](docs/guides/add-action.md)
 - [Add a Go API](docs/guides/add-api.md)
 - [Debug contracts and hydration](docs/guides/debug-contracts.md)

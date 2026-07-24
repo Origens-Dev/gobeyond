@@ -478,6 +478,29 @@ test('preserves inline style source order in the render plan', () => {
   })
 })
 
+test('compiles imageSrc as a portable helper', () => {
+  const result = compileSource({
+    routeId: 'image-source',
+    sourceText: `export default function Page(props: { source: string }) {
+      return <img src={imageSrc(props.source, { w: 640, q: 82, f: 'jpeg' })} alt="" />
+    }`,
+  })
+  assert.equal(
+    result.ok,
+    true,
+    !result.ok ? JSON.stringify(result.diagnostics) : '',
+  )
+  if (!result.ok || result.plan.root.kind !== 'element') return
+  assert.deepEqual(result.plan.root.attributes?.find(({ name }) => name === 'src')?.value, {
+    kind: 'helper',
+    name: 'imageSrc',
+    arguments: [
+      { kind: 'path', path: ['source'] },
+      { kind: 'literal', value: { w: 640, q: 82, f: 'jpeg' } },
+    ],
+  })
+})
+
 test('recursively compiles relative default and named project components', async (t) => {
   const projectRoot = await fixtureProject(t, {
     'app/page.tsx': `
@@ -921,8 +944,16 @@ test('executes literal static props and metadata in build-only Node modules', as
         return {
           lang: 'en', title: props.title, description: 'Static description',
           canonical: 'https://example.com/', robots: 'index, follow',
-          openGraph: { type: 'website', title: props.title, description: 'Static description', url: 'https://example.com/', images: [image] },
-          twitter: { card: 'summary_large_image', title: props.title, description: 'Static description', images: [image] },
+          openGraph: {
+            type: 'website', title: props.title, description: 'Static description',
+            url: 'https://example.com/', siteName: 'Example', locale: 'en_US',
+            image: { url: image, width: 1200, height: 630, alt: 'Example card', type: 'image/png' },
+          },
+          twitter: {
+            card: 'summary_large_image', title: props.title, description: 'Static description',
+            site: '@example', imageAlt: 'Example card', images: [image],
+          },
+          icons: { icon: '/favicon-32x32.png', appleTouch: '/apple-touch-icon.png' },
           jsonLd: [{ '@context': 'https://schema.org', '@type': 'WebSite', name: props.title }],
         }
       }
@@ -959,13 +990,27 @@ test('executes literal static props and metadata in build-only Node modules', as
               title: 'Built by Node',
               description: 'Static description',
               url: 'https://example.com/',
-              images: ['https://example.com/social.png'],
+              siteName: 'Example',
+              locale: 'en_US',
+              image: {
+                url: 'https://example.com/social.png',
+                width: 1200,
+                height: 630,
+                alt: 'Example card',
+                type: 'image/png',
+              },
             },
             twitter: {
               card: 'summary_large_image',
               title: 'Built by Node',
               description: 'Static description',
+              site: '@example',
+              imageAlt: 'Example card',
               images: ['https://example.com/social.png'],
+            },
+            icons: {
+              icon: '/favicon-32x32.png',
+              appleTouch: '/apple-touch-icon.png',
             },
             jsonLd: [
               {
@@ -979,6 +1024,42 @@ test('executes literal static props and metadata in build-only Node modules', as
       ],
     },
   ])
+})
+
+test('rejects non-HTTPS static social images', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `export default function Page() { return <h1>Home</h1> }`,
+    'app/page.schema.ts': `
+      import { definePage, schema } from '@go-beyond/schema'
+      export const page = definePage({ props: schema.object({}) })
+    `,
+    'app/page.metadata.ts': `
+      export function metadata() {
+        const image = 'http://example.com/social.png'
+        return {
+          lang: 'en', title: 'Home', description: 'Home',
+          canonical: 'https://example.com/', robots: 'index, follow',
+          openGraph: {
+            type: 'website', title: 'Home', description: 'Home',
+            url: 'https://example.com/', image: { url: image, width: 1200, height: 630 },
+          },
+          twitter: {
+            card: 'summary_large_image', title: 'Home', description: 'Home', images: [image],
+          },
+        }
+      }
+    `,
+  })
+  const result = await compileProject({
+    projectRoot,
+    routes: [{ routeId: 'root', entryFile: 'app/page.tsx', kind: 'static' }],
+  })
+  assert.equal(result.ok, false)
+  if (!result.ok) {
+    assert.ok(result.diagnostics.some(
+      (entry) => entry.code === 'GB1245' && entry.message.includes('absolute HTTPS URL'),
+    ))
+  }
 })
 
 test('generates and validates parameterized static route entries', async (t) => {

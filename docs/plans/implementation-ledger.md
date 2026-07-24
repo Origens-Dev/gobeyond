@@ -49,6 +49,17 @@ progress. The compatibility surface remains alpha and frozen at
   metadata/history/scroll/focus reconciliation, and guarded reload behavior.
 - Content-derived build IDs plus startup-loaded static props and metadata for
   middleware-promoted static documents and browser data navigation.
+- Structured Open Graph image metadata, Twitter image descriptions, and
+  browser icon links, with build-time 16/32 favicon and 180-pixel Apple touch
+  generation from `app/icon.png`.
+- Runtime image optimization's completed scope is the
+  `GET /_gobeyond/image` route and a disk loader behind
+  `GOBEYOND_STATIC_DIR` for same-site JPEG/PNG resize/re-encode. WebP output is
+  deferred. The S3 loader and platform OpenTofu for cross-account `GetObject`
+  and CloudFront caching are coded
+  ([ADR 002](https://github.com/Origens-Dev/gobeyond-internal/blob/main/docs/adr/002-image-optimizer-design-lock.md)),
+  but production S3 optimization is not complete until that infrastructure is
+  applied.
 - Functional, idempotent `gobeyond add page|dynamic|action|api` scaffolding
   with safe refusal rather than overwriting engineer-owned files.
 - Eight-route SEO site for articles, products, pagination, locations,
@@ -80,8 +91,9 @@ OpenTofu validation is separate and requires the `tofu` binary:
 
 ## Known alpha limits
 
-- No Suspense, streaming, ISR, runtime image optimization, parallel routes, or
-  intercepted routes.
+- No Suspense, streaming, ISR, WebP image output, production S3 image
+  optimization with applied IAM/Lambda/CloudFront configuration, parallel
+  routes, or intercepted routes.
 - No general third-party server-render metadata; unsupported package rendering
   requires a reported package-authored or project-owned `use client` boundary.
   Explicit `ClientOnly` fallbacks are optional.

@@ -21,3 +21,25 @@ export function url(value: string): string {
       `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
     );
 }
+
+export type ImageFormat = "jpeg" | "png";
+
+export interface ImageOptions {
+  w: number;
+  q?: number;
+  f?: ImageFormat;
+}
+
+/**
+ * Build a same-site GoBeyond runtime image URL.
+ *
+ * The source must be an absolute path on the current site, such as
+ * `/brand/logo.png`.
+ */
+export function imageSrc(
+  source: string,
+  options: ImageOptions,
+): string {
+  const query = `url=${url(source)}&w=${url(String(options.w))}&q=${url(String(options.q ?? 75))}`;
+  return `/_gobeyond/image?${query}${options.f ? `&f=${url(options.f)}` : ""}`;
+}

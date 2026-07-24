@@ -182,6 +182,10 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := copyTree(filepath.Join(projectRoot, "public"), staticDir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	generatedIconAssets, err := generateAppIcons(projectRoot, staticDir)
+	if err != nil {
+		return err
+	}
 	clientEntry, err := generateClientEntry(projectRoot, compiled.RouteModules, manifest.Routes)
 	if err != nil {
 		return err
@@ -219,6 +223,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	); err != nil {
 		return err
 	}
+	publicAssets = mergeAssetPaths(publicAssets, generatedIconAssets)
 	browserAssets, err := collectBrowserAssets(staticDir, manifest.BuildID, clientEntry)
 	if err != nil {
 		return err

@@ -29,6 +29,29 @@ func TestMetadataValidation(t *testing.T) {
 	}
 }
 
+func TestMetadataValidationRequiresHTTPSForPrivateSocialImages(t *testing.T) {
+	metadata := Metadata{
+		Lang:  "en",
+		Title: "Sign in",
+		OpenGraph: OpenGraph{
+			Image: &OpenGraphImage{URL: "http://example.com/social.png", Width: 1200, Height: 630},
+		},
+	}
+	if err := metadata.Validate("https://example.com", false); err == nil {
+		t.Fatal("expected an HTTP social image on a private page to fail")
+	}
+
+	metadata.OpenGraph.Image.URL = "https://example.com/social.png"
+	if err := metadata.Validate("https://example.com", false); err != nil {
+		t.Fatalf("expected absolute HTTPS social image to pass: %v", err)
+	}
+
+	metadata.OpenGraph.Image.URL = "/social.png"
+	if err := metadata.Validate("https://example.com", false); err == nil {
+		t.Fatal("expected a relative social image on a private page to fail")
+	}
+}
+
 func TestCachePolicy(t *testing.T) {
 	if got := (CachePolicy{}).HeaderValue(); got != "private, no-store" {
 		t.Fatalf("unexpected private policy: %s", got)

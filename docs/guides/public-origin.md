@@ -42,6 +42,14 @@ resolved value is available as `ctx.PublicOrigin` to page, action, API, and
 middleware code; request-time metadata should use that value when constructing
 absolute canonical URLs or social-image URLs.
 
+Social-image URLs must be absolute HTTPS even for non-indexable routes. Include
+the image's known width and height in structured Open Graph metadata so sharing
+crawlers do not need to infer its layout. Icon metadata may use root-relative
+paths because browsers resolve `<link rel="icon">` against the current public
+origin; the build generates those files from `app/icon.png`. See
+[Icons and social sharing](icons-and-social.md) for the complete metadata and
+deployment checklist.
+
 This is an origin-selection extension point, not a tenant registry or an
 application cache. A hosted multi-site control plane belongs outside the
 public framework.

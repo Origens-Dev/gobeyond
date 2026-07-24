@@ -56,6 +56,15 @@ function payload(
           title,
           description: `${title} social description`,
           url: `https://example.gobeyond.dev/${routeId}`,
+          siteName: "GoBeyond Example",
+          locale: "en_US",
+          image: {
+            url: "https://example.gobeyond.dev/social-primary.png",
+            width: 1200,
+            height: 630,
+            alt: `${title} social card`,
+            type: "image/png",
+          },
           images: [
             "https://example.gobeyond.dev/social-one.png",
             "https://example.gobeyond.dev/social-two.png",
@@ -65,7 +74,13 @@ function payload(
           card: "summary_large_image",
           title,
           description: `${title} tweet`,
+          site: "@gobeyond",
+          imageAlt: `${title} social card`,
           images: ["https://example.gobeyond.dev/twitter.png"],
+        },
+        icons: {
+          icon: "/favicon-32x32.png",
+          appleTouch: "/apple-touch-icon.png",
         },
         alternates: [
           { language: "fr", url: `https://example.gobeyond.dev/fr/${routeId}` },
@@ -332,8 +347,20 @@ test("intercepts a same-origin anchor and updates route metadata and accessibili
       dom.window.document.querySelector('meta[name="robots"]')?.getAttribute("content"),
       "index, follow",
     );
-    assert.equal(dom.window.document.querySelectorAll('meta[property="og:image"]').length, 2);
+    assert.equal(dom.window.document.querySelectorAll('meta[property="og:image"]').length, 3);
+    assert.equal(
+      dom.window.document.querySelector('meta[property="og:image:width"]')?.getAttribute("content"),
+      "1200",
+    );
+    assert.equal(
+      dom.window.document.querySelector('meta[name="twitter:image:alt"]')?.getAttribute("content"),
+      "Trail <Pack> social card",
+    );
     assert.equal(dom.window.document.querySelectorAll('meta[name="twitter:image"]').length, 1);
+    assert.equal(
+      dom.window.document.querySelector('link[rel="icon"]')?.getAttribute("href"),
+      "/favicon-32x32.png",
+    );
     assert.equal(
       dom.window.document.querySelectorAll('script[type="application/ld+json"]')
         .length,

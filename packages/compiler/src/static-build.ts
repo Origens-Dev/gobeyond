@@ -381,7 +381,7 @@ function validateSchema(schema: ValueSchema, value: unknown, path: string): stri
 function validateMetadata(metadata: Record<string, unknown>): string | undefined {
   const allowed = new Set([
     'lang', 'title', 'description', 'canonical', 'robots',
-    'openGraph', 'twitter', 'alternates', 'jsonLd',
+    'openGraph', 'twitter', 'icons', 'alternates', 'jsonLd',
   ])
   for (const name of Object.keys(metadata)) {
     if (!allowed.has(name)) return `unknown field ${JSON.stringify(name)}.`
@@ -398,6 +398,19 @@ function validateMetadata(metadata: Record<string, unknown>): string | undefined
   if (openGraphIssue) return openGraphIssue
   const twitterIssue = validateSocialMetadata(metadata.twitter, 'twitter', false)
   if (twitterIssue) return twitterIssue
+  if (metadata.icons !== undefined) {
+    if (!isPlainObject(metadata.icons)) return 'icons must be an object.'
+    const allowedIconFields = new Set(['icon', 'appleTouch'])
+    for (const field of Object.keys(metadata.icons)) {
+      if (!allowedIconFields.has(field)) return `unknown field ${JSON.stringify(`icons.${field}`)}.`
+    }
+    for (const field of allowedIconFields) {
+      const value = metadata.icons[field]
+      if (value !== undefined && (typeof value !== 'string' || value.trim() === '')) {
+        return `icons.${field} must be a non-empty string.`
+      }
+    }
+  }
   if (metadata.alternates !== undefined) {
     if (!Array.isArray(metadata.alternates)) return 'alternates must be an array.'
     for (let index = 0; index < metadata.alternates.length; index += 1) {
@@ -426,6 +439,12 @@ function validateSocialMetadata(
   requireURL: boolean,
 ): string | undefined {
   if (!isPlainObject(value)) return `${name} must be an object.`
+  const allowed = name === 'openGraph'
+    ? new Set(['type', 'title', 'description', 'url', 'siteName', 'locale', 'image', 'images'])
+    : new Set(['card', 'title', 'description', 'site', 'imageAlt', 'images'])
+  for (const field of Object.keys(value)) {
+    if (!allowed.has(field)) return `unknown field ${JSON.stringify(`${name}.${field}`)}.`
+  }
   const requiredStrings = requireURL
     ? ['type', 'title', 'description', 'url']
     : ['card', 'title', 'description']
@@ -434,13 +453,52 @@ function validateSocialMetadata(
       return `${name}.${field} must be a non-empty string.`
     }
   }
+  const optionalStrings = requireURL ? ['siteName', 'locale'] : ['site', 'imageAlt']
+  for (const field of optionalStrings) {
+    const detail = value[field]
+    if (detail !== undefined && (typeof detail !== 'string' || detail.trim() === '')) {
+      return `${name}.${field} must be a non-empty string.`
+    }
+  }
   if (requireURL && !isAbsoluteHTTPURL(value.url as string)) {
     return `${name}.url must be an absolute HTTP(S) URL.`
   }
+  if (requireURL && value.image !== undefined) {
+    if (!isPlainObject(value.image)) return `${name}.image must be an object.`
+    const allowedImageFields = new Set(['url', 'width', 'height', 'alt', 'type'])
+    for (const field of Object.keys(value.image)) {
+      if (!allowedImageFields.has(field)) {
+        return `unknown field ${JSON.stringify(`${name}.image.${field}`)}.`
+      }
+    }
+    if (typeof value.image.url !== 'string' || !isAbsoluteHTTPSURL(value.image.url)) {
+      return `${name}.image.url must be an absolute HTTPS URL.`
+    }
+    for (const field of ['width', 'height']) {
+      const dimension = value.image[field]
+      if (dimension !== undefined && (!Number.isInteger(dimension as number) || (dimension as number) <= 0)) {
+        return `${name}.image.${field} must be a positive integer.`
+      }
+    }
+    for (const field of ['alt', 'type']) {
+      const detail = value.image[field]
+      if (detail !== undefined && (typeof detail !== 'string' || detail.trim() === '')) {
+        return `${name}.image.${field} must be a non-empty string.`
+      }
+    }
+  }
   if (
-    !Array.isArray(value.images) || value.images.length === 0 ||
-    !value.images.every((image) => typeof image === 'string' && isAbsoluteHTTPURL(image))
-  ) return `${name}.images must contain absolute HTTP(S) URLs.`
+    value.images !== undefined && (
+      !Array.isArray(value.images) || value.images.length === 0 ||
+      !value.images.every((image) => typeof image === 'string' && isAbsoluteHTTPSURL(image))
+    )
+  ) return `${name}.images must contain absolute HTTPS URLs.`
+  if (name === 'openGraph' && value.image === undefined && value.images === undefined) {
+    return `${name} must contain an image.`
+  }
+  if (name === 'twitter' && value.images === undefined) {
+    return `${name}.images must contain absolute HTTPS URLs.`
+  }
   return undefined
 }
 
@@ -448,6 +506,13 @@ function isAbsoluteHTTPURL(value: string): boolean {
   try {
     const parsed = new URL(value)
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host !== ''
+  } catch { return false }
+}
+
+function isAbsoluteHTTPSURL(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'https:' && parsed.host !== ''
   } catch { return false }
 }
 

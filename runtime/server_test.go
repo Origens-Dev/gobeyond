@@ -4,9 +4,13 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,10 +18,39 @@ import (
 
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/browserassets"
+	"github.com/Origens-Dev/gobeyond/imageopt"
 	gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
 	"github.com/Origens-Dev/gobeyond/renderplan"
 	"github.com/Origens-Dev/gobeyond/router"
 )
+
+func TestImageOptimizerIsSiblingRuntimeRoute(t *testing.T) {
+	staticDirectory := t.TempDir()
+	file, err := os.Create(filepath.Join(staticDirectory, "brand.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(file, image.NewRGBA(image.Rect(0, 0, 80, 40))); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		ImageLoader:  imageopt.DiskLoader{Root: staticDirectory},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/_gobeyond/image?url=%2Fbrand.png&w=32", nil))
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("status=%d type=%q body=%s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+	}
+}
 
 func testAction(id string, handler func(*gb.ActionContext, json.RawMessage) (any, error)) Action {
 	return RegisterAction(
