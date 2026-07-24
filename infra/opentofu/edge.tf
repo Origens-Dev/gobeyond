@@ -2,7 +2,11 @@ locals {
   static_origin_id  = "gobeyond-static-s3"
   dynamic_origin_id = "gobeyond-private-alb"
   static_paths      = distinct(concat(var.static_route_paths, var.public_asset_paths))
-  static_prefixes   = distinct(concat(var.static_route_prefixes, ["/_gobeyond/assets/", "/_gobeyond/static/", "/_gobeyond/manifest/"]))
+  # Route-selector decides S3 vs origin for default behavior. Build-scoped
+  # static artifacts under /_gobeyond/builds/<id>/{assets,manifest.json,static}
+  # are detected in route-selector.js.tftpl; ordered cache behaviors below also
+  # pin those prefixes (and actions) to the right origin.
+  static_prefixes = distinct(var.static_route_prefixes)
 }
 
 resource "aws_s3_bucket" "static" {
@@ -183,10 +187,33 @@ resource "aws_cloudfront_distribution" "this" {
     }
   }
 
+  # Soft-nav and actions must hit Go before any builds S3 behavior.
+  ordered_cache_behavior {
+    path_pattern             = "/_gobeyond/builds/*/runtime/*"
+    target_origin_id         = local.dynamic_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+    cached_methods           = ["GET", "HEAD", "OPTIONS"]
+    compress                 = true
+    cache_policy_id          = aws_cloudfront_cache_policy.dynamic_origin_headers.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
+  ordered_cache_behavior {
+    path_pattern             = "/_gobeyond/builds/*/actions/*"
+    target_origin_id         = local.dynamic_origin_id
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+    cached_methods           = ["GET", "HEAD", "OPTIONS"]
+    compress                 = true
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
   # Build-ID-addressed assets never need the Go origin or the route selector.
   # They are the only objects this reference forces immutable at the browser.
   ordered_cache_behavior {
-    path_pattern               = "/_gobeyond/assets/*"
+    path_pattern               = "/_gobeyond/builds/*/assets/*"
     target_origin_id           = local.static_origin_id
     viewer_protocol_policy     = "redirect-to-https"
     allowed_methods            = ["GET", "HEAD", "OPTIONS"]
@@ -199,7 +226,7 @@ resource "aws_cloudfront_distribution" "this" {
   # Build manifests are published with the build artifact and have the same
   # immutable lifecycle as browser assets.
   ordered_cache_behavior {
-    path_pattern               = "/_gobeyond/manifest/*"
+    path_pattern               = "/_gobeyond/builds/*/manifest.json"
     target_origin_id           = local.static_origin_id
     viewer_protocol_policy     = "redirect-to-https"
     allowed_methods            = ["GET", "HEAD", "OPTIONS"]
@@ -209,17 +236,16 @@ resource "aws_cloudfront_distribution" "this" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.immutable_assets.id
   }
 
-  # Mutations, arbitrary APIs, and health probes must never be retained at the
-  # edge, irrespective of an accidental origin header.
+  # Packaged static route data is content-addressed by build ID.
   ordered_cache_behavior {
-    path_pattern             = "/_gobeyond/actions/*"
-    target_origin_id         = local.dynamic_origin_id
-    viewer_protocol_policy   = "redirect-to-https"
-    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
-    cached_methods           = ["GET", "HEAD", "OPTIONS"]
-    compress                 = true
-    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
-    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    path_pattern               = "/_gobeyond/builds/*/static/*"
+    target_origin_id           = local.static_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD", "OPTIONS"]
+    compress                   = true
+    cache_policy_id            = data.aws_cloudfront_cache_policy.immutable_assets.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.immutable_assets.id
   }
 
   ordered_cache_behavior {

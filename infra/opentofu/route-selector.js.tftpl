@@ -4,9 +4,25 @@ const staticOriginId = ${jsonencode(static_origin_id)};
 const dynamicOriginId = ${jsonencode(dynamic_origin_id)};
 const staticPaths = ${static_paths};
 const staticPrefixes = ${static_prefixes};
+const buildsPrefix = '/_gobeyond/builds/';
+
+function isGoBeyondStaticArtifact(uri) {
+  // Mirror buildpaths.IsStaticArtifact: only assets, manifest.json, and
+  // packaged static route data are S3-backed. runtime/ and actions/ stay
+  // on the dynamic origin.
+  if (!uri.startsWith(buildsPrefix)) return false;
+  const rest = uri.slice(buildsPrefix.length);
+  const slash = rest.indexOf('/');
+  if (slash === -1) return false;
+  const after = rest.slice(slash + 1);
+  const kindSlash = after.indexOf('/');
+  const kind = kindSlash === -1 ? after : after.slice(0, kindSlash);
+  return kind === 'assets' || kind === 'manifest.json' || kind === 'static';
+}
 
 function isStaticPath(uri) {
   if (staticPaths.indexOf(uri) !== -1) return true;
+  if (isGoBeyondStaticArtifact(uri)) return true;
   for (let index = 0; index < staticPrefixes.length; index += 1) {
     if (uri.startsWith(staticPrefixes[index])) return true;
   }

@@ -81,7 +81,7 @@ func TestViteHonorsProjectPostCSSAndDoesNotExposeUnprefixedSecret(t *testing.T) 
 	if err := buildBrowserAssets(workspaceRoot(t), root, staticDir, "test", filepath.Join(root, "entry.js"), environment, "production"); err != nil {
 		t.Fatal(err)
 	}
-	assets := readTree(t, filepath.Join(staticDir, "_gobeyond", "assets", "test"))
+	assets := readTree(t, filepath.Join(staticDir, "_gobeyond", "builds", "test", "assets"))
 	if !strings.Contains(assets, "processed") {
 		t.Fatal("Vite did not apply the project PostCSS config")
 	}

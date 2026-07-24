@@ -24,7 +24,7 @@ export function AddToCart({ productName }: AddToCartProps) {
           try {
             const actionId = `${routeId}:addToCart`;
             const response = await fetchWithBuildGuard(
-              `/_gobeyond/actions/${buildId}/${encodeURIComponent(actionId)}`,
+              `/_gobeyond/builds/${buildId}/actions/${encodeURIComponent(actionId)}`,
               {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },

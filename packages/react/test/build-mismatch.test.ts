@@ -141,7 +141,7 @@ test("build-aware fetch sends the build and never replays a mismatched action", 
 
   await assert.rejects(
     fetchWithBuildGuard(
-      "/_gobeyond/actions/build-old/save",
+      "/_gobeyond/builds/build-old/actions/save",
       { method: "POST", body: "{}" },
       { buildId: "build-old", fetch: request, environment: env.value },
     ),

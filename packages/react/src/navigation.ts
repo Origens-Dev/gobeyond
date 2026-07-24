@@ -787,7 +787,7 @@ export function createSoftNavigation(
     const controller = new AbortController();
     active = controller;
     const runtimePath =
-      `/_gobeyond/runtime/${encodeURIComponent(options.buildId)}/` +
+      `/_gobeyond/builds/${encodeURIComponent(options.buildId)}/runtime/` +
       encodeURIComponent(route.routeId);
     const runtimeURL = new URL(runtimePath, targetWindow.location.origin);
     runtimeURL.searchParams.set("path", url.pathname + url.search);

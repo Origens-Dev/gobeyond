@@ -8,6 +8,7 @@ import (
 
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/browserassets"
+	"github.com/Origens-Dev/gobeyond/buildpaths"
 	apitime "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/api/r_api_time_066a4b03"
 	actioncontract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
 	generatedroutes "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes"
@@ -70,7 +71,7 @@ func (s *Site) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 func New(buildID, publicOrigin string, plans map[string]*renderplan.Plan) (*Site, error) {
 	return NewWithAssets(buildID, publicOrigin, plans, AssetConfig{
-		ClientScript: "/_gobeyond/assets/" + buildID + "/app.js",
+		ClientScript: buildpaths.AssetURL(buildID, "app.js"),
 		Styles:       []string{},
 	})
 }
@@ -92,7 +93,7 @@ func NewWithStaticStore(buildID, publicOrigin string, plans map[string]*renderpl
 	}
 	legacyAssets := AssetConfig{}
 	if assets == nil {
-		legacyAssets = AssetConfig{ClientScript: "/_gobeyond/assets/" + buildID + "/app.js", Styles: []string{}}
+		legacyAssets = AssetConfig{ClientScript: buildpaths.AssetURL(buildID, "app.js"), Styles: []string{}}
 	}
 	return newWithStaticLoader(buildID, publicOrigin, plans, assets, legacyAssets, staticStore.Loader(HomeRouteID))
 }

@@ -317,7 +317,7 @@ test("intercepts a same-origin anchor and updates route metadata and accessibili
     });
 
     assert.equal(requests.length, 1);
-    assert.equal(requests[0].pathname, "/_gobeyond/runtime/build-test/product");
+    assert.equal(requests[0].pathname, "/_gobeyond/builds/build-test/runtime/product");
     assert.equal(requests[0].searchParams.get("path"), "/products/trail?view=full");
     assert.equal(dom.window.location.pathname, "/products/trail");
     assert.equal(dom.window.location.search, "?view=full");

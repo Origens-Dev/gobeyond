@@ -27,7 +27,7 @@ The selector is deliberately data-free in the MVP: `static_route_paths`, `static
 
 CloudFront's origin-selection helper can select a configured VPC origin, so the ALB remains private. The function is edge JavaScript, not a Node application runtime.
 
-Dynamic documents and `/_gobeyond/runtime/*` data use the origin's cache headers. A page using `gb.PublicRevalidate(60*time.Second, 5*time.Minute, 24*time.Hour)` is therefore stored by CloudFront while browsers revalidate each navigation. The dynamic cache key includes all cookies, query strings, and `Authorization`; the Go runtime also downgrades cookie, authorization, `Set-Cookie`, and middleware-private responses to `private, no-store`. This is intentionally conservative for a public single-site reference. It avoids cross-visitor reuse without introducing an application cache.
+Dynamic documents and `/_gobeyond/builds/*/runtime/*` data use the origin's cache headers. A page using `gb.PublicRevalidate(60*time.Second, 5*time.Minute, 24*time.Hour)` is therefore stored by CloudFront while browsers revalidate each navigation. The dynamic cache key includes all cookies, query strings, and `Authorization`; the Go runtime also downgrades cookie, authorization, `Set-Cookie`, and middleware-private responses to `private, no-store`. This is intentionally conservative for a public single-site reference. It avoids cross-visitor reuse without introducing an application cache.
 
 ## Validate
 
@@ -54,7 +54,7 @@ The MVP favors safe reload over seamless old-runtime continuity:
 4. Update `static_route_paths`/`static_route_prefixes` from the generated route trie and apply the CloudFront configuration.
 5. Switch DNS/aliases only after both origins serve the same release.
 
-The Go runtime rejects an incompatible `/_gobeyond/runtime/<build-id>/...` or action request with `409 {"error":"build_mismatch","reload":true}`. Browser clients reload once and never automatically replay an action. This reference retains old S3 versions for the configured static retention window, but it does **not** route old browser runtime/action requests to a former ECS target. That is intentionally deferred beyond the MVP.
+The Go runtime rejects an incompatible `/_gobeyond/builds/<build-id>/runtime/...` or action request with `409 {"error":"build_mismatch","reload":true}`. Browser clients reload once and never automatically replay an action. This reference retains old S3 versions for the configured static retention window, but it does **not** route old browser runtime/action requests to a former ECS target. That is intentionally deferred beyond the MVP.
 
 ## Required application behavior
 

@@ -65,7 +65,7 @@ func TestFinalizedBuildIDIncludesClientBoundaries(t *testing.T) {
 
 func TestCollectBrowserAssetsUsesExactEmittedPaths(t *testing.T) {
 	root := t.TempDir()
-	assetRoot := filepath.Join(root, "_gobeyond", "assets", "build-1")
+	assetRoot := filepath.Join(root, "_gobeyond", "builds", "build-1", "assets")
 	writeAssetTestFile(t, filepath.Join(assetRoot, "app.js"), "export {}")
 	writeAssetTestFile(t, filepath.Join(assetRoot, "assets", "site-z9.css"), "body{}")
 	writeAssetTestFile(t, filepath.Join(assetRoot, "assets", "theme-a1.css"), ":root{}")
@@ -74,12 +74,12 @@ func TestCollectBrowserAssetsUsesExactEmittedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if assets.ClientScript != "/_gobeyond/assets/build-1/app.js" {
+	if assets.ClientScript != "/_gobeyond/builds/build-1/assets/app.js" {
 		t.Fatalf("client script = %q", assets.ClientScript)
 	}
 	want := []string{
-		"/_gobeyond/assets/build-1/assets/site-z9.css",
-		"/_gobeyond/assets/build-1/assets/theme-a1.css",
+		"/_gobeyond/builds/build-1/assets/assets/site-z9.css",
+		"/_gobeyond/builds/build-1/assets/assets/theme-a1.css",
 	}
 	if !reflect.DeepEqual(assets.Styles, want) {
 		t.Fatalf("styles = %#v, want %#v", assets.Styles, want)
@@ -88,7 +88,7 @@ func TestCollectBrowserAssetsUsesExactEmittedPaths(t *testing.T) {
 
 func TestCollectBrowserAssetsProjectsRouteAwareViteManifest(t *testing.T) {
 	root := t.TempDir()
-	assetRoot := filepath.Join(root, "_gobeyond", "assets", "build-1")
+	assetRoot := filepath.Join(root, "_gobeyond", "builds", "build-1", "assets")
 	entry := filepath.Join(t.TempDir(), ".gobeyond", "client-entry.tsx")
 	route := filepath.Join(filepath.Dir(entry), "routes", "home.tsx")
 	writeAssetTestFile(t, filepath.Join(assetRoot, "app.js"), "export {}")
@@ -119,19 +119,19 @@ func TestCollectBrowserAssetsProjectsRouteAwareViteManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if routeAssets.Bootstrap != "/_gobeyond/assets/build-1/app.js" {
+	if routeAssets.Bootstrap != "/_gobeyond/builds/build-1/assets/app.js" {
 		t.Fatalf("bootstrap = %q", routeAssets.Bootstrap)
 	}
 	wantPreloads := []string{
-		"/_gobeyond/assets/build-1/chunks/home-a1.js",
-		"/_gobeyond/assets/build-1/chunks/shared-b1.js",
+		"/_gobeyond/builds/build-1/assets/chunks/home-a1.js",
+		"/_gobeyond/builds/build-1/assets/chunks/shared-b1.js",
 	}
 	if !reflect.DeepEqual(routeAssets.ModulePreloads, wantPreloads) {
 		t.Fatalf("preloads = %#v, want %#v", routeAssets.ModulePreloads, wantPreloads)
 	}
 	wantStyles := []string{
-		"/_gobeyond/assets/build-1/assets/base.css",
-		"/_gobeyond/assets/build-1/assets/home.css",
+		"/_gobeyond/builds/build-1/assets/assets/base.css",
+		"/_gobeyond/builds/build-1/assets/assets/home.css",
 	}
 	if !reflect.DeepEqual(routeAssets.Styles, wantStyles) {
 		t.Fatalf("styles = %#v, want %#v", routeAssets.Styles, wantStyles)
@@ -148,7 +148,7 @@ func TestViteBuildUsesVersionedAssetBase(t *testing.T) {
 		"--mode",
 		"production",
 		"--base",
-		"/_gobeyond/assets/build-1/",
+		"/_gobeyond/builds/build-1/assets/",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected Vite arguments:\nwant %#v\n got %#v", want, got)

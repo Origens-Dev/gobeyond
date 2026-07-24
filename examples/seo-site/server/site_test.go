@@ -38,8 +38,8 @@ func TestLiveNoJavaScriptSEOArticle(t *testing.T) {
 
 func TestDynamicDocumentsLinkExactBuildStyles(t *testing.T) {
 	assets := AssetConfig{
-		ClientScript: "/_gobeyond/assets/test-build/app.js",
-		Styles:       []string{"/_gobeyond/assets/test-build/assets/site-a1b2.css"},
+		ClientScript: "/_gobeyond/builds/test-build/assets/app.js",
+		Styles:       []string{"/_gobeyond/builds/test-build/assets/assets/site-a1b2.css"},
 	}
 	server, err := NewWithAssets("test-build", "https://example.com", testPlans(), assets)
 	if err != nil {
@@ -51,8 +51,8 @@ func TestDynamicDocumentsLinkExactBuildStyles(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	for _, expected := range []string{
-		`<link rel="stylesheet" href="/_gobeyond/assets/test-build/assets/site-a1b2.css">`,
-		`<script type="module" src="/_gobeyond/assets/test-build/app.js"></script>`,
+		`<link rel="stylesheet" href="/_gobeyond/builds/test-build/assets/assets/site-a1b2.css">`,
+		`<script type="module" src="/_gobeyond/builds/test-build/assets/app.js"></script>`,
 	} {
 		if !strings.Contains(recorder.Body.String(), expected) {
 			t.Fatalf("dynamic document missing %q", expected)
@@ -165,7 +165,7 @@ func TestLiveTypedActionContract(t *testing.T) {
 	}
 	request := httptest.NewRequest(
 		http.MethodPost,
-		"https://example.com/_gobeyond/actions/test-build/"+actioncontract.ActionID,
+		"https://example.com/_gobeyond/builds/test-build/actions/"+actioncontract.ActionID,
 		strings.NewReader(`{"productSlug":"trail-pack","quantity":2}`),
 	)
 	request.Header.Set("Content-Type", "application/json")
@@ -208,7 +208,7 @@ func TestLiveActionRejectsInvalidInputBeforeHandler(t *testing.T) {
 		{name: "concatenated JSON", body: `{"productSlug":"trail-pack","quantity":2}{}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/actions/test-build/"+actioncontract.ActionID, strings.NewReader(test.body))
+			request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/test-build/actions/"+actioncontract.ActionID, strings.NewReader(test.body))
 			request.Header.Set("Origin", "https://example.com")
 			recorder := httptest.NewRecorder()
 			server.ServeHTTP(recorder, request)
@@ -221,7 +221,7 @@ func TestLiveActionRejectsInvalidInputBeforeHandler(t *testing.T) {
 		t.Fatalf("invalid inputs executed the handler %d times", calls)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/actions/test-build/"+actioncontract.ActionID, strings.NewReader(`{"productSlug":"trail-pack","quantity":2}`))
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/test-build/actions/"+actioncontract.ActionID, strings.NewReader(`{"productSlug":"trail-pack","quantity":2}`))
 	request.Header.Set("Origin", "https://example.com")
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, request)
@@ -241,7 +241,7 @@ func TestLiveActionRejectsInvalidOutputBeforeDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/actions/test-build/"+actioncontract.ActionID, strings.NewReader(`{"productSlug":"trail-pack","quantity":2}`))
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/test-build/actions/"+actioncontract.ActionID, strings.NewReader(`{"productSlug":"trail-pack","quantity":2}`))
 	request.Header.Set("Origin", "https://example.com")
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, request)

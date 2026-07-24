@@ -24,6 +24,7 @@ import (
 
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/browserassets"
+	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/codegen"
 	"github.com/Origens-Dev/gobeyond/document"
 	"github.com/Origens-Dev/gobeyond/internal/project"
@@ -267,10 +268,11 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		"valueContract":     codegen.APIVersionV1Alpha1,
 		"compilerProject":   "gobeyond.compiler-project/v1alpha1",
 		"productionRuntime": "go",
+		"assetLayout":       buildpaths.AssetLayout,
 	}); err != nil {
 		return err
 	}
-	if err := writeJSONFile(filepath.Join(staticDir, "_gobeyond", "manifest", manifest.BuildID+".json"), map[string]any{
+	if err := writeJSONFile(buildpaths.ManifestPath(staticDir, manifest.BuildID), map[string]any{
 		"apiVersion":  "gobeyond.browser-manifest/v1alpha1",
 		"buildId":     manifest.BuildID,
 		"react":       "19.2.8",
@@ -439,7 +441,7 @@ type viteManifestChunk struct {
 }
 
 func collectBrowserAssets(staticDir, buildID string, input browserBuildInput) (browserBuildAssets, error) {
-	assetRoot := filepath.Join(staticDir, "_gobeyond", "assets", buildID)
+	assetRoot := buildpaths.AssetsDir(staticDir, buildID)
 	assets := browserBuildAssets{Styles: []string{}}
 	if _, err := os.Stat(assetRoot); errors.Is(err, os.ErrNotExist) {
 		return assets, nil
@@ -447,7 +449,7 @@ func collectBrowserAssets(staticDir, buildID string, input browserBuildInput) (b
 		return assets, err
 	}
 	if _, err := os.Stat(filepath.Join(assetRoot, "app.js")); err == nil {
-		assets.ClientScript = "/_gobeyond/assets/" + buildID + "/app.js"
+		assets.ClientScript = buildpaths.AssetURL(buildID, "app.js")
 	}
 	viteManifestPath := filepath.Join(assetRoot, ".vite", "manifest.json")
 	viteSource, manifestErr := os.ReadFile(viteManifestPath)
@@ -479,7 +481,7 @@ func collectBrowserAssets(staticDir, buildID string, input browserBuildInput) (b
 		if err != nil {
 			return err
 		}
-		style := "/_gobeyond/assets/" + buildID + "/" + filepath.ToSlash(relative)
+		style := buildpaths.AssetURL(buildID, relative)
 		if !containsString(assets.Styles, style) {
 			assets.Styles = append(assets.Styles, style)
 		}
@@ -573,7 +575,7 @@ func viteChunkAssets(buildID string, manifest map[string]viteManifestChunk, root
 }
 
 func browserAssetURL(buildID, file string) string {
-	return "/_gobeyond/assets/" + buildID + "/" + strings.TrimPrefix(filepath.ToSlash(file), "/")
+	return buildpaths.AssetURL(buildID, file)
 }
 
 func uniqueSortedStrings(values []string) []string {
@@ -786,7 +788,7 @@ func renderStaticDocuments(staticDir, planDir, buildID string, routes []project.
 				return err
 			}
 		}
-		if err := writeJSONFile(filepath.Join(staticDir, "_gobeyond", "static", buildID, staticRoute.RouteID), staticRoute); err != nil {
+		if err := writeJSONFile(buildpaths.StaticRoutePath(staticDir, buildID, staticRoute.RouteID), staticRoute); err != nil {
 			return err
 		}
 	}
@@ -1240,7 +1242,7 @@ func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, e
 	command.Dir = website
 	command.Env = withEnvironment(environment,
 		"GOBEYOND_BUILD_ID="+buildID,
-		"GOBEYOND_STATIC_OUT="+filepath.Join(staticDir, "_gobeyond", "assets", buildID),
+		"GOBEYOND_STATIC_OUT="+buildpaths.AssetsDir(staticDir, buildID),
 		"GOBEYOND_CLIENT_ENTRY="+clientEntry,
 		"GOBEYOND_CLIENT_BOUNDARIES="+filepath.Join(website, ".gobeyond", "client-boundaries.json"),
 		"GOBEYOND_MODE="+mode,
@@ -1259,7 +1261,7 @@ func viteBuildArguments(config, buildID, mode string) []string {
 		"--mode",
 		mode,
 		"--base",
-		"/_gobeyond/assets/" + buildID + "/",
+		buildpaths.AssetBaseURL(buildID) + "/",
 	}
 }
 

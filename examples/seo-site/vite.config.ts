@@ -5,7 +5,7 @@ const buildID = process.env.GOBEYOND_BUILD_ID ?? "development";
 const clientEntry = process.env.GOBEYOND_CLIENT_ENTRY ?? "client.tsx";
 const outDir =
   process.env.GOBEYOND_STATIC_OUT ??
-  `../../dist/static/_gobeyond/assets/${buildID}`;
+  `../../dist/static/_gobeyond/builds/${buildID}/assets`;
 
 export default defineConfig({
   plugins: [react()],

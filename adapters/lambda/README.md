@@ -42,7 +42,7 @@ root (place plans next to `bootstrap` or adjust env).
 ## Edge split
 
 The CDN should send hashed assets, `robots.txt`, public files, and prebuilt
-route HTML to object storage. Soft-nav (`/_gobeyond/runtime/*`), actions,
+route HTML to object storage. Soft-nav (`/_gobeyond/builds/*/runtime/*`), actions,
 APIs, and dynamic documents should reach this Function URL (`AWS_IAM`) through
 your authenticated origin path (for example a reverse proxy that SigV4-signs
 requests).

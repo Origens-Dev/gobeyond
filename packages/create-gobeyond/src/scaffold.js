@@ -143,8 +143,9 @@ function projectFiles(projectName, { tailwind }) {
       .replace('BuildID: routes.BuildID, PublicOrigin: origin,', 'BuildID: routes.BuildID, PublicOrigin: origin, BrowserAssets: browserAssets,')
       .replaceAll('ClientScript: assetURL(routes.BuildID)', 'ClientScript: legacyClientScript, Styles: legacyStyles')
       .replace('  assets := http.StripPrefix("/_gobeyond/assets/", http.FileServer(http.Dir(filepath.Join(directory, "_gobeyond", "assets"))))', '  files := http.FileServer(http.Dir(directory))')
-      .replace('if strings.HasPrefix(request.URL.Path, "/_gobeyond/assets/") { assets.ServeHTTP(writer, request); return }', 'if strings.HasPrefix(request.URL.Path, "/_gobeyond/") || staticFileExists(directory, request.URL.Path) { files.ServeHTTP(writer, request); return }')
+      .replace('if strings.HasPrefix(request.URL.Path, "/_gobeyond/assets/") { assets.ServeHTTP(writer, request); return }', 'if buildpaths.IsStaticArtifact(request.URL.Path) || staticFileExists(directory, request.URL.Path) { files.ServeHTTP(writer, request); return }')
       .replace('func assetURL(buildID string) string { return "/_gobeyond/assets/" + buildID + "/app.js" }', runtimeAssetHelpers())
+      .replace('browserassets "github.com/Origens-Dev/gobeyond/browserassets"\n  gbruntime', 'browserassets "github.com/Origens-Dev/gobeyond/browserassets"\n  "github.com/Origens-Dev/gobeyond/buildpaths"\n  gbruntime')
       .replaceAll('/social/home.jpg', '/social/home.svg'),
   }
 }
@@ -185,7 +186,7 @@ function runtimeAssetHelpers() {
 
 func legacyBrowserAssets(buildID string, manifest *browserassets.Manifest) (string, []string) {
   if manifest != nil { return "", nil }
-  return "/_gobeyond/assets/" + buildID + "/app.js", []string{}
+  return buildpaths.AssetURL(buildID, "app.js"), []string{}
 }
 
 func staticFileExists(directory, requestPath string) bool {
@@ -237,7 +238,7 @@ function starterReadme(projectName) {
 }
 
 function viteConfig() {
-  return `import react from '@vitejs/plugin-react'\nimport { defineConfig } from 'vite'\n\nconst buildID = process.env.GOBEYOND_BUILD_ID ?? 'development'\nconst clientEntry = process.env.GOBEYOND_CLIENT_ENTRY ?? 'client.tsx'\nconst outDir = process.env.GOBEYOND_STATIC_OUT ?? \`dist/static/_gobeyond/assets/\${buildID}\`\n\nexport default defineConfig({\n  plugins: [react()],\n  publicDir: false,\n  build: {\n    outDir,\n    emptyOutDir: false,\n    sourcemap: true,\n    rollupOptions: {\n      input: clientEntry,\n      output: {\n        entryFileNames: 'app.js',\n        chunkFileNames: 'chunks/[name]-[hash].js',\n        assetFileNames: 'assets/[name]-[hash][extname]',\n      },\n    },\n  },\n})\n`
+  return `import react from '@vitejs/plugin-react'\nimport { defineConfig } from 'vite'\n\nconst buildID = process.env.GOBEYOND_BUILD_ID ?? 'development'\nconst clientEntry = process.env.GOBEYOND_CLIENT_ENTRY ?? 'client.tsx'\nconst outDir = process.env.GOBEYOND_STATIC_OUT ?? \`dist/static/_gobeyond/builds/\${buildID}/assets\`\n\nexport default defineConfig({\n  plugins: [react()],\n  publicDir: false,\n  build: {\n    outDir,\n    emptyOutDir: false,\n    sourcemap: true,\n    rollupOptions: {\n      input: clientEntry,\n      output: {\n        entryFileNames: 'app.js',\n        chunkFileNames: 'chunks/[name]-[hash].js',\n        assetFileNames: 'assets/[name]-[hash][extname]',\n      },\n    },\n  },\n})\n`
 }
 
 function clientEntry() {

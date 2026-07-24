@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Origens-Dev/gobeyond/browserassets"
+	"github.com/Origens-Dev/gobeyond/buildpaths"
 	seosite "github.com/Origens-Dev/gobeyond/examples/seo-site/server"
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
@@ -55,9 +56,7 @@ func main() {
 	if staticDirectory := os.Getenv("GOBEYOND_STATIC_DIR"); staticDirectory != "" {
 		files := http.FileServer(http.Dir(staticDirectory))
 		siteHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			if strings.HasPrefix(request.URL.Path, "/_gobeyond/assets/") ||
-				strings.HasPrefix(request.URL.Path, "/_gobeyond/static/") ||
-				strings.HasPrefix(request.URL.Path, "/_gobeyond/manifest/") ||
+			if buildpaths.IsStaticArtifact(request.URL.Path) ||
 				staticFileExists(staticDirectory, request.URL.Path) {
 				files.ServeHTTP(writer, request)
 				return

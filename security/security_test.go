@@ -26,7 +26,7 @@ func TestCSRFVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/actions/build/save", nil)
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/build/actions/save", nil)
 	request.Header.Set("Origin", "https://example.com")
 	request.Header.Set(CSRFHeader, token)
 	request.AddCookie(csrf.Cookie(token))

@@ -19,6 +19,7 @@ import (
 
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/browserassets"
+	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/document"
 	"github.com/Origens-Dev/gobeyond/internal/jsvalue"
 	gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
@@ -298,10 +299,15 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("X-GoBeyond-Request-ID", requestID)
 
 	switch {
-	case strings.HasPrefix(request.URL.Path, "/_gobeyond/runtime/"):
-		s.serveRuntime(writer, request, requestID)
-	case strings.HasPrefix(request.URL.Path, "/_gobeyond/actions/"):
-		s.serveAction(writer, request, requestID)
+	case strings.HasPrefix(request.URL.Path, buildpaths.BuildsPrefix):
+		switch kind, _ := buildpaths.BuildPathKind(request.URL.Path); kind {
+		case buildpaths.KindRuntime:
+			s.serveRuntime(writer, request, requestID)
+		case buildpaths.KindActions:
+			s.serveAction(writer, request, requestID)
+		default:
+			s.writeError(writer, http.StatusNotFound, "not_found", requestID)
+		}
 	case strings.HasPrefix(request.URL.Path, "/api/"):
 		s.serveAPI(writer, request, requestID)
 	default:
@@ -499,16 +505,16 @@ func (s *Server) loadPage(parent context.Context, request *http.Request, params 
 }
 
 func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request, requestID string) {
-	parts := strings.Split(strings.TrimPrefix(request.URL.Path, "/_gobeyond/runtime/"), "/")
-	if len(parts) != 2 {
+	buildID, routeID, ok := buildpaths.ParseRuntimePath(request.URL.Path)
+	if !ok {
 		s.writeError(writer, http.StatusNotFound, "not_found", requestID)
 		return
 	}
-	if parts[0] != s.config.BuildID {
+	if buildID != s.config.BuildID {
 		s.writeBuildMismatch(writer, requestID)
 		return
 	}
-	page, exists := s.pages[parts[1]]
+	page, exists := s.pages[routeID]
 	if !exists {
 		s.writeError(writer, http.StatusNotFound, "not_found", requestID)
 		return
@@ -565,16 +571,16 @@ func (s *Server) serveAction(writer http.ResponseWriter, request *http.Request, 
 		s.writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed", requestID)
 		return
 	}
-	parts := strings.Split(strings.TrimPrefix(request.URL.Path, "/_gobeyond/actions/"), "/")
-	if len(parts) != 2 {
+	buildID, actionID, ok := buildpaths.ParseActionPath(request.URL.Path)
+	if !ok {
 		s.writeError(writer, http.StatusNotFound, "not_found", requestID)
 		return
 	}
-	if parts[0] != s.config.BuildID {
+	if buildID != s.config.BuildID {
 		s.writeBuildMismatch(writer, requestID)
 		return
 	}
-	action, exists := s.actions[parts[1]]
+	action, exists := s.actions[actionID]
 	if !exists {
 		s.writeError(writer, http.StatusNotFound, "not_found", requestID)
 		return

@@ -140,7 +140,7 @@ func TestBuildMismatchRejectsActionBeforeExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/actions/old-build/save", strings.NewReader(`{}`)))
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/old-build/actions/save", strings.NewReader(`{}`)))
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "build_mismatch") {
 		t.Fatalf("unexpected mismatch response: %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -162,7 +162,7 @@ func TestActionRejectsCrossOriginBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/actions/build-1/save", strings.NewReader(`{}`))
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/build-1/actions/save", strings.NewReader(`{}`))
 	request.Header.Set("Origin", "https://attacker.example")
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, request)
@@ -260,7 +260,7 @@ func TestMiddlewareAppliesToAPIsAndActions(t *testing.T) {
 		})},
 		Middleware: []gbmiddleware.Rule{{
 			Name:   "auth",
-			Config: gb.MiddlewareConfig{Patterns: []string{"/api/[...path]", "/_gobeyond/actions/[...path]"}},
+			Config: gb.MiddlewareConfig{Patterns: []string{"/api/[...path]", "/_gobeyond/builds/[buildId]/actions/[...path]"}},
 			Middleware: func(next gb.Handler) gb.Handler {
 				return func(ctx *gb.RequestContext) (gb.Response, error) {
 					if ctx.Request.Header.Get("Authorization") == "" {
@@ -276,7 +276,7 @@ func TestMiddlewareAppliesToAPIsAndActions(t *testing.T) {
 	}
 	requests := []*http.Request{
 		httptest.NewRequest(http.MethodGet, "https://example.com/api/private", nil),
-		httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/actions/build-1/save", strings.NewReader(`{}`)),
+		httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/build-1/actions/save", strings.NewReader(`{}`)),
 	}
 	requests[1].Header.Set("Origin", "https://example.com")
 	for _, request := range requests {
@@ -320,7 +320,7 @@ func TestRuntimeDataAppliesMiddlewareToThePublicPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "https://example.com/_gobeyond/runtime/build-1/private?path=%2Fprivate%2Freport", nil)
+	request := httptest.NewRequest(http.MethodGet, "https://example.com/_gobeyond/builds/build-1/runtime/private?path=%2Fprivate%2Freport", nil)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
@@ -341,7 +341,7 @@ func TestRuntimeDataUsesDocumentCachePolicyAndPrivacyDowngrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "public, max-age=0, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
-	for _, path := range []string{"/public", "/_gobeyond/runtime/build-1/public?path=%2Fpublic"} {
+	for _, path := range []string{"/public", "/_gobeyond/builds/build-1/runtime/public?path=%2Fpublic"} {
 		request := httptest.NewRequest(http.MethodGet, "https://example.com"+path, nil)
 		recorder := httptest.NewRecorder()
 		server.ServeHTTP(recorder, request)
@@ -415,7 +415,7 @@ func TestResolvedPublicOriginProtectsActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "https://preview.example.com/_gobeyond/actions/build-1/save", strings.NewReader(`{}`))
+	request := httptest.NewRequest(http.MethodPost, "https://preview.example.com/_gobeyond/builds/build-1/actions/save", strings.NewReader(`{}`))
 	request.Header.Set("Origin", "https://preview.example.com")
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, request)
