@@ -59,7 +59,7 @@ variable "create_nat_gateway" {
 variable "create_cache" {
   description = "Create a private ElastiCache Serverless cache using Valkey for shared GoBeyond cache data."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "cache_kms_key_arn" {

@@ -36,7 +36,7 @@ Dynamic documents and `/_gobeyond/builds/*/runtime/*` data use the origin's cach
 
 ## Optional cache and edge invalidation
 
-The optional shared cache is disabled by default. Set `create_cache = true` to create an ElastiCache Serverless Valkey endpoint in the private subnets. Its security group accepts port 6379 only from the ECS task security group; Serverless requires TLS and exposes no public endpoint. At-rest encryption uses the AWS-owned key unless `cache_kms_key_arn` names a customer-managed KMS key.
+The optional shared cache is enabled by default. This creates an ElastiCache Serverless Valkey endpoint in the private subnets. Its security group accepts port 6379 only from the ECS task security group; Serverless requires TLS and exposes no public endpoint. At-rest encryption uses the AWS-owned key unless `cache_kms_key_arn` names a customer-managed KMS key.
 
 When enabled, the task receives `GOBEYOND_CACHE_ENDPOINT`, `GOBEYOND_CACHE_PORT`, and `GOBEYOND_CACHE_KEY_PREFIX`. The prefix uses `name` unless `cache_key_prefix` is set explicitly.
 
@@ -44,7 +44,7 @@ CloudFront invalidation is also disabled by default. Set `enable_edge_invalidati
 
 New optional variables:
 
-- `create_cache` (`false`): create the private Serverless Valkey cache.
+- `create_cache` (`true`): create the private Serverless Valkey cache.
 - `cache_kms_key_arn` (`null`): use this customer-managed key for cache data at rest; `null` uses the AWS-owned key.
 - `cache_key_prefix` (`null`, effectively `name`): override the deployment-unique cache-key prefix.
 - `enable_edge_invalidation` (`false`): grant the task role distribution-scoped invalidation permission and inject the distribution ID.
