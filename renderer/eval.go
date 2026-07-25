@@ -33,6 +33,8 @@ func evaluate(expr renderplan.Expression, env environment, path string) (any, er
 		return e.Value, nil
 	case *renderplan.Path:
 		return evalPath(e, env, path)
+	case *renderplan.IndexExpr:
+		return evalIndex(e, env, path)
 	case *renderplan.Binary:
 		return evalBinary(e, env, path)
 	case *renderplan.Unary:
@@ -94,6 +96,98 @@ func evalPath(expr *renderplan.Path, env environment, path string) (any, error) 
 		}
 	}
 	return value, nil
+}
+
+func evalIndex(expr *renderplan.IndexExpr, env environment, path string) (any, error) {
+	object, err := evaluate(expr.Object, env, path+".object")
+	if err != nil {
+		return nil, err
+	}
+	index, err := evaluate(expr.Index, env, path+".index")
+	if err != nil {
+		return nil, err
+	}
+	return softLookup(object, index, path)
+}
+
+// softLookup resolves object[index]. Missing keys and out-of-range / negative
+// indexes return nil (null) to match React undefined rendering. Static path
+// lookups continue to error on missing properties via lookup.
+func softLookup(object, index any, path string) (any, error) {
+	if object == nil {
+		return nil, evaluation(path, "cannot read a property from null")
+	}
+	rv := reflect.ValueOf(object)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil, evaluation(path, "cannot read a property from null")
+		}
+		rv = rv.Elem()
+	}
+	if number, ok := numberValue(index); ok {
+		if rv.Kind() != reflect.Array && rv.Kind() != reflect.Slice {
+			// Numeric indexes on objects use the string form, matching JS.
+			return softProperty(rv, formatJSNumber(number, 64), path)
+		}
+		if number != float64(int(number)) {
+			return nil, nil
+		}
+		i := int(number)
+		if i < 0 || i >= rv.Len() {
+			return nil, nil
+		}
+		return rv.Index(i).Interface(), nil
+	}
+	key, err := scalarString(index)
+	if err != nil {
+		return nil, evaluation(path+".index", "index must be a number or scalar string")
+	}
+	if rv.Kind() == reflect.Array || rv.Kind() == reflect.Slice {
+		if i, err := strconv.Atoi(key); err == nil && strconv.Itoa(i) == key {
+			if i < 0 || i >= rv.Len() {
+				return nil, nil
+			}
+			return rv.Index(i).Interface(), nil
+		}
+		return nil, nil
+	}
+	return softProperty(rv, key, path)
+}
+
+func softProperty(rv reflect.Value, name, path string) (any, error) {
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, evaluation(path, "object map must use string keys")
+		}
+		result := rv.MapIndex(reflect.ValueOf(name).Convert(rv.Type().Key()))
+		if !result.IsValid() {
+			return nil, nil
+		}
+		return result.Interface(), nil
+	case reflect.Struct:
+		typeOf := rv.Type()
+		for i := 0; i < rv.NumField(); i++ {
+			field := typeOf.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			fieldName := field.Name
+			if tag := field.Tag.Get("json"); tag != "" {
+				if parsed := strings.Split(tag, ",")[0]; parsed == "-" {
+					continue
+				} else if parsed != "" {
+					fieldName = parsed
+				}
+			}
+			if fieldName == name {
+				return rv.Field(i).Interface(), nil
+			}
+		}
+		return nil, nil
+	default:
+		return nil, evaluation(path, "property segment requires an object")
+	}
 }
 
 func lookup(value any, segment renderplan.PathSegment) (any, error) {

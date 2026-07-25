@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { createDiagnostic, PortableCompileError } from './diagnostics.js'
 import {
   dateIntrinsicName,
+  isProtectedApiModule,
   isProtectedHookName,
   isProtectedReactModule,
   type ProtectedHookName,
@@ -29,10 +30,34 @@ type CompiledProperty = {
   value?: PlanExpression
   node?: PlanNode
 }
-type Component =
+type FunctionComponent =
   | ts.FunctionDeclaration
   | ts.ArrowFunction
   | ts.FunctionExpression
+
+/** Presentational class component: render() + this.props (+ optional baked state). */
+type ClassComponent = {
+  kind: 'class'
+  declaration: ts.ClassDeclaration
+  renderMethod: ts.MethodDeclaration
+  /** Portable initial this.state.* bindings (B8 Phase 2). */
+  initialState: Map<string, PlanExpression>
+}
+
+type Component = FunctionComponent | ClassComponent
+
+function isClassComponent(component: Component): component is ClassComponent {
+  return (
+    typeof component === 'object' &&
+    component !== null &&
+    'kind' in component &&
+    (component as ClassComponent).kind === 'class'
+  )
+}
+
+function componentAstNode(component: Component): ts.Node {
+  return isClassComponent(component) ? component.declaration : component
+}
 
 export type ComponentImport =
   | {
@@ -182,8 +207,8 @@ export class SourceCompiler {
   readonly starExports: SourceCompiler[] = []
   readonly nodeScopes: NodeEnvironment[] = []
   readonly namespaceScopes: Array<'html' | 'svg'> = ['html']
-  readonly forwardedRefComponents = new Set<Component>()
-  /** Local names bound to protected React exports. */
+  readonly forwardedRefComponents = new Set<FunctionComponent>()
+  /** Local names bound to protected React / @go-beyond/react exports. */
   private readonly reactHookLocals = new Map<string, ProtectedHookName>()
   /** Local names bound to the React module namespace/default. */
   private readonly reactNamespaceLocals = new Set<string>()
@@ -203,8 +228,13 @@ export class SourceCompiler {
     string,
     'const' | 'let' | 'var'
   >()
-  /** Function component → portable defaultProps literal fields. */
+  /** Function or class component → portable defaultProps literal fields. */
   private readonly defaultProps = new Map<Component, Map<string, PlanExpression>>()
+  /** Class components keyed by declaration for defaultProps assignment. */
+  private readonly classComponentsByDecl = new Map<
+    ts.ClassDeclaration,
+    ClassComponent
+  >()
   /** Per-component JSX locals eligible for limited cloneElement. */
   private readonly jsxElementScopes: Array<Map<string, ts.Expression>> = []
   /** Per-component object literals eligible for style={local}. */
@@ -482,13 +512,13 @@ export class SourceCompiler {
     const root = this.isClientModule
       ? this.compileAtClientBoundary(
           name,
-          component,
+          componentAstNode(component),
           this,
           'component',
           () => this.compileComponent(name, component, new Map(), true),
         )
       : this.compileComponent(name, component, new Map(), true)
-    if (root) this.validateHydrationTree(root, component)
+    if (root) this.validateHydrationTree(root, componentAstNode(component))
     if (!root || this.diagnostics.length > 0) return undefined
     return { apiVersion: RENDER_PLAN_API_VERSION, routeId, root }
   }
@@ -533,13 +563,13 @@ export class SourceCompiler {
     const root = this.isClientModule
       ? this.compileAtClientBoundary(
           name,
-          component,
+          componentAstNode(component),
           this,
           'component',
           compile,
         )
       : compile()
-    if (root) this.validateHydrationTree(root, component)
+    if (root) this.validateHydrationTree(root, componentAstNode(component))
     if (!root || this.diagnostics.length > 0) return undefined
     return { apiVersion: RENDER_PLAN_API_VERSION, routeId, root }
   }
@@ -629,7 +659,26 @@ export class SourceCompiler {
         continue
       }
       if (ts.isClassDeclaration(statement)) {
-        if (this.hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+        const classComponent = this.classComponentFromDeclaration(statement)
+        if (classComponent) {
+          const name =
+            statement.name?.text ??
+            (this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
+              ? 'default'
+              : undefined)
+          if (name) {
+            this.components.set(name, classComponent)
+            this.classComponentsByDecl.set(statement, classComponent)
+            if (this.hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+              this.exportedComponents.add(name)
+              this.knownExports.add(
+                this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
+                  ? 'default'
+                  : name,
+              )
+            }
+          }
+        } else if (this.hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
           this.knownExports.add(
             this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
               ? 'default'
@@ -740,6 +789,12 @@ export class SourceCompiler {
         return statement
       }
       if (
+        ts.isClassDeclaration(statement) &&
+        this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
+      ) {
+        return this.components.get('default') ?? this.components.get(statement.name?.text ?? '')
+      }
+      if (
         ts.isExportAssignment(statement) &&
         !statement.isExportEquals
       ) {
@@ -752,9 +807,13 @@ export class SourceCompiler {
     return this.components.get('default')
   }
 
-  private componentFromExpression(expression: ts.Expression): Component | undefined {
+  private componentFromExpression(expression: ts.Expression): FunctionComponent | undefined {
     expression = this.unwrapExpression(expression)
-    if (ts.isIdentifier(expression)) return this.components.get(expression.text)
+    if (ts.isIdentifier(expression)) {
+      const component = this.components.get(expression.text)
+      if (component && !isClassComponent(component)) return component
+      return undefined
+    }
     if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
       return expression
     }
@@ -776,6 +835,368 @@ export class SourceCompiler {
     return component
   }
 
+  private classComponentFromDeclaration(
+    declaration: ts.ClassDeclaration,
+  ): ClassComponent | undefined {
+    if (!this.extendsReactComponent(declaration)) return undefined
+    let renderMethod: ts.MethodDeclaration | undefined
+    for (const member of declaration.members) {
+      if (
+        ts.isMethodDeclaration(member) &&
+        !member.modifiers?.some(
+          (modifier) =>
+            modifier.kind === ts.SyntaxKind.StaticKeyword ||
+            modifier.kind === ts.SyntaxKind.AbstractKeyword,
+        ) &&
+        member.name &&
+        ts.isIdentifier(member.name) &&
+        member.name.text === 'render'
+      ) {
+        renderMethod = member
+        break
+      }
+    }
+    if (!renderMethod) return undefined
+
+    // Static defaultProps = { … }
+    for (const member of declaration.members) {
+      if (
+        !ts.isPropertyDeclaration(member) ||
+        !member.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+        ) ||
+        !member.name ||
+        !ts.isIdentifier(member.name) ||
+        member.name.text !== 'defaultProps' ||
+        !member.initializer
+      ) {
+        continue
+      }
+      const right = this.unwrapExpression(member.initializer)
+      if (!ts.isObjectLiteralExpression(right)) {
+        this.report(
+          member.initializer,
+          'GB1018',
+          'defaultProps must be an object literal of portable values.',
+        )
+        continue
+      }
+      const defaults = new Map<string, PlanExpression>()
+      let ok = true
+      for (const property of right.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+          ok = false
+          break
+        }
+        const propName = this.propertyNameText(property.name)
+        const value = this.compileExpression(property.initializer, new Map())
+        if (propName === undefined || !value) {
+          ok = false
+          break
+        }
+        defaults.set(propName, value)
+      }
+      if (ok) {
+        // Stored after ClassComponent is constructed below.
+        ;(declaration as ts.ClassDeclaration & {
+          __gbDefaultProps?: Map<string, PlanExpression>
+        }).__gbDefaultProps = defaults
+      }
+    }
+
+    const initialState = this.bakeClassInitialState(declaration)
+    const classComponent: ClassComponent = {
+      kind: 'class',
+      declaration,
+      renderMethod,
+      initialState,
+    }
+    const pendingDefaults = (
+      declaration as ts.ClassDeclaration & {
+        __gbDefaultProps?: Map<string, PlanExpression>
+      }
+    ).__gbDefaultProps
+    if (pendingDefaults) this.defaultProps.set(classComponent, pendingDefaults)
+    return classComponent
+  }
+
+  private extendsReactComponent(declaration: ts.ClassDeclaration): boolean {
+    const heritage = declaration.heritageClauses?.find(
+      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+    )
+    if (!heritage || heritage.types.length === 0) return false
+    const expression = heritage.types[0]!.expression
+    const text = expression.getText(this.sourceFile)
+    if (
+      text === 'Component' ||
+      text === 'PureComponent' ||
+      text === 'React.Component' ||
+      text === 'React.PureComponent'
+    ) {
+      return true
+    }
+    if (!this.checker) return false
+    const type = this.checker.getTypeAtLocation(expression)
+    const symbol = type.getSymbol() ?? type.aliasSymbol
+    const name = symbol?.getName()
+    return name === 'Component' || name === 'PureComponent'
+  }
+
+  /**
+   * B8 Phase 2: bake portable `state = {…}` fields or a simple constructor
+   * `this.state = {…}` after `super(props)` (+ optional method bindings).
+   */
+  private bakeClassInitialState(
+    declaration: ts.ClassDeclaration,
+  ): Map<string, PlanExpression> {
+    const state = new Map<string, PlanExpression>()
+    for (const member of declaration.members) {
+      if (
+        ts.isPropertyDeclaration(member) &&
+        member.name &&
+        ts.isIdentifier(member.name) &&
+        member.name.text === 'state' &&
+        member.initializer &&
+        !member.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+        )
+      ) {
+        const value = this.compileExpression(member.initializer, new Map())
+        if (value?.kind === 'literal' && value.value && typeof value.value === 'object') {
+          for (const [key, entry] of Object.entries(
+            value.value as Record<string, unknown>,
+          )) {
+            state.set(key, { kind: 'literal', value: entry })
+          }
+        } else if (ts.isObjectLiteralExpression(this.unwrapExpression(member.initializer))) {
+          const object = this.unwrapExpression(member.initializer) as ts.ObjectLiteralExpression
+          for (const property of object.properties) {
+            if (!ts.isPropertyAssignment(property)) {
+              this.report(
+                property,
+                'GB1099',
+                'Portable class state fields must be portable object literals.',
+                'Use state = { key: literal } or a constructor this.state = { … } with portable values.',
+              )
+              return new Map()
+            }
+            const key = this.propertyNameText(property.name)
+            const compiled = this.compileExpression(property.initializer, new Map())
+            if (key === undefined || !compiled) return new Map()
+            state.set(key, compiled)
+          }
+        } else {
+          this.report(
+            member.initializer,
+            'GB1099',
+            'Portable class state initializers must be portable object literals.',
+          )
+          return new Map()
+        }
+      }
+    }
+    for (const member of declaration.members) {
+      if (!ts.isConstructorDeclaration(member) || !member.body) continue
+      const baked = this.bakeConstructorState(member)
+      if (baked === undefined) {
+        // Unproven constructor — fatal for portable class with state intent.
+        return new Map()
+      }
+      for (const [key, value] of baked) state.set(key, value)
+    }
+    return state
+  }
+
+  /**
+   * Accept: super(props); optional this.method = this.method.bind(this);
+   * one this.state = { portable }; reject anything else.
+   * Returns undefined when the constructor is unproven (caller must fail).
+   */
+  private bakeConstructorState(
+    constructor: ts.ConstructorDeclaration,
+  ): Map<string, PlanExpression> | undefined {
+    if (!constructor.body) return new Map()
+    const state = new Map<string, PlanExpression>()
+    let sawSuper = false
+    let sawState = false
+    for (const statement of constructor.body.statements) {
+      if (
+        ts.isExpressionStatement(statement) &&
+        ts.isCallExpression(statement.expression) &&
+        statement.expression.expression.kind === ts.SyntaxKind.SuperKeyword
+      ) {
+        sawSuper = true
+        continue
+      }
+      // this.fn = this.fn.bind(this) — harmless for first paint
+      if (
+        ts.isExpressionStatement(statement) &&
+        ts.isBinaryExpression(statement.expression) &&
+        statement.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(statement.expression.left) &&
+        statement.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        ts.isCallExpression(statement.expression.right)
+      ) {
+        const call = statement.expression.right
+        if (
+          ts.isPropertyAccessExpression(call.expression) &&
+          call.expression.name.text === 'bind' &&
+          call.arguments.length === 1 &&
+          call.arguments[0]!.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+          continue
+        }
+      }
+      if (
+        ts.isExpressionStatement(statement) &&
+        ts.isBinaryExpression(statement.expression) &&
+        statement.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(statement.expression.left) &&
+        statement.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+        statement.expression.left.name.text === 'state'
+      ) {
+        if (sawState) {
+          this.report(
+            statement,
+            'GB1099',
+            'Portable class constructors may assign this.state at most once.',
+          )
+          return undefined
+        }
+        sawState = true
+        const right = this.unwrapExpression(statement.expression.right)
+        if (!ts.isObjectLiteralExpression(right)) {
+          this.report(
+            statement.expression.right,
+            'GB1099',
+            'Portable this.state assignment must be a portable object literal.',
+            'Do not call window, mutate, or use unproven control flow in the constructor.',
+          )
+          return undefined
+        }
+        for (const property of right.properties) {
+          if (!ts.isPropertyAssignment(property)) {
+            this.report(
+              property,
+              'GB1099',
+              'Portable this.state only supports portable data properties.',
+            )
+            return undefined
+          }
+          const key = this.propertyNameText(property.name)
+          const compiled = this.compileExpression(property.initializer, new Map())
+          if (key === undefined || !compiled) return undefined
+          state.set(key, compiled)
+        }
+        continue
+      }
+      this.report(
+        statement,
+        'GB1099',
+        'Portable class constructors may only call super(props), bind methods, and assign one portable this.state = {…}.',
+        'Move window / arbitrary calls / mutation / control flow out of the constructor, or keep the class behind ClientOnly.',
+      )
+      return undefined
+    }
+    if (constructor.body.statements.length > 0 && !sawSuper) {
+      this.report(
+        constructor,
+        'GB1099',
+        'Portable class constructors must call super(props) before other statements.',
+      )
+      return undefined
+    }
+    return state
+  }
+
+  private assertPortableClassShape(component: ClassComponent): boolean {
+    const lifecycleNames = new Set([
+      'componentDidMount',
+      'componentDidUpdate',
+      'componentWillUnmount',
+      'shouldComponentUpdate',
+      'getSnapshotBeforeUpdate',
+      'componentDidCatch',
+      'getDerivedStateFromProps',
+      'getDerivedStateFromError',
+      'UNSAFE_componentWillMount',
+      'UNSAFE_componentWillReceiveProps',
+      'UNSAFE_componentWillUpdate',
+    ])
+    let ok = true
+    for (const member of component.declaration.members) {
+      if (
+        ts.isMethodDeclaration(member) &&
+        member.name &&
+        ts.isIdentifier(member.name) &&
+        lifecycleNames.has(member.name.text)
+      ) {
+        // Lifecycle methods are allowed to exist for browser hydrate; they must
+        // not be referenced from render. Presence alone is OK for Phase 2.
+        continue
+      }
+      if (
+        ts.isPropertyDeclaration(member) &&
+        member.name &&
+        ts.isIdentifier(member.name) &&
+        member.name.text !== 'state' &&
+        member.name.text !== 'defaultProps' &&
+        !member.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+        ) &&
+        member.initializer &&
+        this.renderReferencesInstanceField(component.renderMethod, member.name.text)
+      ) {
+        this.report(
+          member,
+          'GB1099',
+          `Class instance field ${member.name.text} used in render() is not portable.`,
+          'Bake initial values via state = {…} / constructor this.state, or keep browser-only fields behind ClientOnly.',
+        )
+        ok = false
+      }
+    }
+    // Scan render for this.setState / this.state without bake / this.context
+    const renderText = component.renderMethod.getText(this.sourceFile)
+    if (/\bthis\.setState\b/.test(renderText)) {
+      this.report(
+        component.renderMethod,
+        'GB1099',
+        'Class render() uses this.setState, which cannot execute in the Go plan.',
+        'Keep setState in lifecycle/event handlers; first paint must read baked this.state or props.',
+      )
+      ok = false
+    }
+    if (/\bthis\.context\b/.test(renderText)) {
+      this.report(
+        component.renderMethod,
+        'GB1099',
+        'this.context in class render() is not portable.',
+        'Use a function component with useContext, or pass values as props.',
+      )
+      ok = false
+    }
+    if (/\bwindow\b/.test(renderText)) {
+        this.report(
+          component.renderMethod,
+          'GB1088',
+          'Class render() uses window, which cannot execute in the Go plan.',
+          'Wrap the browser-only subtree in ClientOnly so the rest of the class can stay portable.',
+        )
+      ok = false
+    }
+    // this.state.x without a baked binding fails at expression compile time.
+    return ok
+  }
+
+  private renderReferencesInstanceField(
+    render: ts.MethodDeclaration,
+    fieldName: string,
+  ): boolean {
+    const text = render.getText(this.sourceFile)
+    return new RegExp(`\\bthis\\.${fieldName}\\b`).test(text)
+  }
+
   private hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
     return !!ts
       .getModifiers(node as ts.HasModifiers)
@@ -783,6 +1204,9 @@ export class SourceCompiler {
   }
 
   private componentDisplayName(component: Component): string {
+    if (isClassComponent(component)) {
+      return component.declaration.name?.text ?? 'default'
+    }
     if (component.name && ts.isIdentifier(component.name))
       return component.name.text
     for (const [name, candidate] of this.components) {
@@ -798,6 +1222,15 @@ export class SourceCompiler {
     rootComponent = false,
     suppliedNodes: NodeEnvironment = new Map(),
   ): PlanNode | undefined {
+    if (isClassComponent(component)) {
+      return this.compileClassComponent(
+        name,
+        component,
+        suppliedProps,
+        rootComponent,
+        suppliedNodes,
+      )
+    }
     const stackKey = `${this.fileName}#${name}`
     const existing = this.context.componentStack.findIndex(
       (entry) => entry.key === stackKey,
@@ -882,49 +1315,254 @@ export class SourceCompiler {
         return this.compileNodeExpression(componentBody, environment)
       }
 
-      let returnExpression: ts.Expression | undefined
-      for (const statement of componentBody.statements) {
-        if (ts.isReturnStatement(statement)) {
-          if (!statement.expression) {
+      return this.compileComponentBody(component, componentBody, environment)
+    } finally {
+      this.nodeScopes.pop()
+      this.styleObjectScopes.pop()
+      this.jsxElementScopes.pop()
+      this.context.componentStack.pop()
+      this.rejectUseIdFrames.pop()
+    }
+  }
+
+  /**
+   * Compile a function/class render body, desugaring statement-level if /
+   * early-return into nested conditional plan nodes (B2).
+   */
+  private compileComponentBody(
+    owner: ts.Node,
+    body: ts.Block,
+    environment: ExpressionEnvironment,
+  ): PlanNode | undefined {
+    return this.compileBodyStatements(
+      owner,
+      [...body.statements],
+      environment,
+      'component',
+    )
+  }
+
+  private compileBodyStatements(
+    owner: ts.Node,
+    statements: ts.Statement[],
+    environment: ExpressionEnvironment,
+    mode: 'component' | 'map',
+  ): PlanNode | undefined {
+    const workingEnv = environment
+    for (let index = 0; index < statements.length; index += 1) {
+      const statement = statements[index]!
+      if (ts.isReturnStatement(statement)) {
+        if (!statement.expression) {
+          this.report(
+            statement,
+            mode === 'map' ? 'GB1063' : 'GB1012',
+            mode === 'map'
+              ? 'Portable .map callbacks must return one JSX expression.'
+              : 'A portable component must return markup.',
+          )
+          return undefined
+        }
+        if (this.isReactEmptyExpression(statement.expression)) {
+          return { kind: 'fragment', children: [] }
+        }
+        return this.compileNodeExpression(statement.expression, workingEnv)
+      }
+      if (ts.isVariableStatement(statement)) {
+        this.compileVariableStatement(statement, workingEnv)
+        continue
+      }
+      if (
+        ts.isExpressionStatement(statement) &&
+        ts.isCallExpression(statement.expression) &&
+        ts.isIdentifier(statement.expression.expression) &&
+        statement.expression.expression.text === 'useEffect'
+      ) {
+        continue
+      }
+      if (ts.isIfStatement(statement)) {
+        this.context.conditionalHookDepth += 1
+        let test: PlanExpression | undefined
+        let consequent: PlanNode | undefined
+        let alternate: PlanNode | undefined
+        try {
+          test = this.compileExpression(statement.expression, workingEnv)
+          if (!test) return undefined
+          const thenStatements = ts.isBlock(statement.thenStatement)
+            ? [...statement.thenStatement.statements]
+            : [statement.thenStatement]
+          // Early return in then: if (cond) return A; → cond ? A : <rest>
+          const thenReturn = this.singleReturnExpression(thenStatements)
+          const rest = statements.slice(index + 1)
+          if (thenReturn && !statement.elseStatement) {
+            consequent = this.isReactEmptyExpression(thenReturn)
+              ? { kind: 'fragment', children: [] }
+              : this.compileNodeExpression(thenReturn, workingEnv)
+            alternate =
+              rest.length > 0
+                ? this.compileBodyStatements(owner, rest, workingEnv, mode)
+                : { kind: 'fragment', children: [] }
+            if (!consequent) return undefined
+            return {
+              kind: 'conditional',
+              test,
+              consequent,
+              ...(alternate ? { alternate } : {}),
+            }
+          }
+          consequent = this.compileBodyStatements(
+            owner,
+            thenStatements,
+            workingEnv,
+            mode,
+          )
+          if (statement.elseStatement) {
+            const elseStatements = ts.isBlock(statement.elseStatement)
+              ? [...statement.elseStatement.statements]
+              : [statement.elseStatement]
+            alternate = this.compileBodyStatements(
+              owner,
+              elseStatements,
+              workingEnv,
+              mode,
+            )
+          } else if (rest.length > 0) {
+            // if (cond) { … } without return — fall through is not portable
+            // unless then is itself a return-only block already handled.
             this.report(
               statement,
-              'GB1012',
-              'A portable component must return markup.',
+              'GB1013',
+              'Portable if statements must early-return or cover both branches; fall-through after if is not supported.',
+              'Use if (cond) return <A>; return <B>, or if/else returns.',
             )
-          } else {
-            returnExpression = statement.expression
+            return undefined
           }
-          continue
+        } finally {
+          this.context.conditionalHookDepth -= 1
         }
-        if (ts.isVariableStatement(statement)) {
-          this.compileVariableStatement(statement, environment)
-          continue
+        if (!consequent) return undefined
+        if (alternate === undefined && !statement.elseStatement) {
+          // if (cond) return A already returned above; bare if without rest
+          return consequent
         }
-        if (
-          ts.isExpressionStatement(statement) &&
-          ts.isCallExpression(statement.expression) &&
-          ts.isIdentifier(statement.expression.expression) &&
-          statement.expression.expression.text === 'useEffect'
-        ) {
-          // Effects run after hydration and cannot contribute server markup.
-          continue
+        return {
+          kind: 'conditional',
+          test: test!,
+          consequent,
+          ...(alternate ? { alternate } : {}),
         }
-        this.report(
-          statement,
-          'GB1013',
-          `Unsupported statement in portable component: ${ts.SyntaxKind[statement.kind]}.`,
-          'Precompute render data in Go, use a portable const expression, or isolate browser behavior in an event/effect/ClientOnly boundary.',
-        )
       }
-      if (!returnExpression) {
+      this.report(
+        statement,
+        mode === 'map' ? 'GB1063' : 'GB1013',
+        mode === 'map'
+          ? 'Portable .map callbacks may only contain local bindings, early-return guards, and a JSX return.'
+          : `Unsupported statement in portable component: ${ts.SyntaxKind[statement.kind]}.`,
+        mode === 'map'
+          ? 'Keep .map bodies to portable const bindings and return JSX (optional if-guard).'
+          : 'Precompute render data in Go, use a portable const expression, isolate browser behavior in ClientOnly, or use if/early-return guards.',
+      )
+      return undefined
+    }
+    this.report(
+      owner,
+      mode === 'map' ? 'GB1063' : 'GB1014',
+      mode === 'map'
+        ? 'Portable .map callbacks must return one JSX expression.'
+        : 'Portable component has no markup return.',
+    )
+    return undefined
+  }
+
+  private singleReturnExpression(
+    statements: ts.Statement[],
+  ): ts.Expression | undefined {
+    if (statements.length !== 1) return undefined
+    const only = statements[0]!
+    if (!ts.isReturnStatement(only) || !only.expression) return undefined
+    return only.expression
+  }
+
+  private compileClassComponent(
+    name: string,
+    component: ClassComponent,
+    suppliedProps: ExpressionEnvironment,
+    rootComponent: boolean,
+    suppliedNodes: NodeEnvironment,
+  ): PlanNode | undefined {
+    const stackKey = `${this.fileName}#${name}`
+    const existing = this.context.componentStack.findIndex(
+      (entry) => entry.key === stackKey,
+    )
+    if (existing !== -1) {
+      const cycle = [
+        ...this.context.componentStack
+          .slice(existing)
+          .map((entry) => entry.display),
+        `${this.fileName}:${name}`,
+      ]
+      this.report(
+        component.declaration,
+        'GB1010',
+        `Recursive component rendering is not portable (${cycle.join(' -> ')}).`,
+        'Move recursive data traversal into a keyed array map or precompute the tree in Go.',
+      )
+      return undefined
+    }
+    if (!this.assertPortableClassShape(component)) return undefined
+
+    this.context.componentStack.push({
+      key: stackKey,
+      display: `${this.fileName}:${name}`,
+    })
+    this.rejectUseIdFrames.push(this.eachKeyStack.length > 0)
+    this.styleObjectScopes.push(new Map())
+    this.jsxElementScopes.push(new Map())
+    const nodeEnvironment = new Map<string, PlanNode>()
+    for (const [propName, node] of suppliedNodes) {
+      nodeEnvironment.set(`this.props.${propName}`, node)
+    }
+    this.nodeScopes.push(nodeEnvironment)
+    try {
+      const environment = new Map<string, PlanExpression>(this.moduleConstants)
+      const effectiveProps = new Map(suppliedProps)
+      const defaults = this.defaultProps.get(component)
+      if (defaults) {
+        for (const [propName, value] of defaults) {
+          if (!effectiveProps.has(propName)) effectiveProps.set(propName, value)
+        }
+      }
+      // this.props → path root (or nested supplied props)
+      if (rootComponent) {
+        environment.set('this.props', { kind: 'path', path: [] })
+      } else {
+        for (const [propName, expression] of effectiveProps) {
+          environment.set(`this.props.${propName}`, expression)
+        }
+        // children node may be in suppliedNodes; expression path for children text
+        if (effectiveProps.has('children')) {
+          environment.set(
+            'this.props.children',
+            effectiveProps.get('children')!,
+          )
+        }
+      }
+      for (const [stateName, value] of component.initialState) {
+        environment.set(`this.state.${stateName}`, value)
+      }
+      const renderBody = component.renderMethod.body
+      if (!renderBody || !ts.isBlock(renderBody)) {
         this.report(
-          component,
-          'GB1014',
-          'Portable component has no markup return.',
+          component.renderMethod,
+          'GB1012',
+          'A portable class render() must have a block body.',
         )
         return undefined
       }
-      return this.compileNodeExpression(returnExpression, environment)
+      return this.compileComponentBody(
+        component.renderMethod,
+        renderBody,
+        environment,
+      )
     } finally {
       this.nodeScopes.pop()
       this.styleObjectScopes.pop()
@@ -1120,6 +1758,39 @@ export class SourceCompiler {
         )
         continue
       }
+      if (
+        ts.isCallExpression(declaration.initializer) &&
+        this.isProtectedHookCall(declaration.initializer, 'useRef') &&
+        ts.isIdentifier(declaration.name)
+      ) {
+        if (!this.assertUnconditionalHook(declaration.initializer, 'useRef')) {
+          continue
+        }
+        this.compileUseRef(declaration, environment)
+        continue
+      }
+      if (
+        ts.isCallExpression(declaration.initializer) &&
+        (this.isProtectedHookCall(declaration.initializer, 'usePathname') ||
+          this.isProtectedHookCall(declaration.initializer, 'useRoute')) &&
+        ts.isIdentifier(declaration.name)
+      ) {
+        const hook = this.isProtectedHookCall(
+          declaration.initializer,
+          'usePathname',
+        )
+          ? 'usePathname'
+          : 'useRoute'
+        if (!this.assertUnconditionalHook(declaration.initializer, hook)) {
+          continue
+        }
+        const baked = this.compileProtectedNavigationHook(
+          declaration.initializer,
+          hook,
+        )
+        if (baked) environment.set(declaration.name.text, baked)
+        continue
+      }
       if (!ts.isIdentifier(declaration.name)) {
         this.report(
           declaration.name,
@@ -1194,6 +1865,56 @@ export class SourceCompiler {
     }
     const value = this.compileExpression(initializer, environment)
     if (value) environment.set(state.name.text, value)
+  }
+
+  /** Bake useRef initial value as ref.current; mutation is ignored for markup. */
+  private compileUseRef(
+    declaration: ts.VariableDeclaration,
+    environment: ExpressionEnvironment,
+  ): void {
+    const call = declaration.initializer as ts.CallExpression
+    const name = (declaration.name as ts.Identifier).text
+    const initializer = call.arguments[0]
+    let value: PlanExpression = { kind: 'literal', value: null }
+    if (initializer) {
+      if (
+        ts.isArrowFunction(initializer) ||
+        ts.isFunctionExpression(initializer)
+      ) {
+        this.report(
+          initializer,
+          'GB1023',
+          'useRef initializers must be a portable expression, not a factory function.',
+          'Pass a literal/prop-derived initial value such as useRef(null) or useRef(props.x).',
+        )
+        return
+      }
+      const compiled = this.compileExpression(initializer, environment)
+      if (!compiled) return
+      value = compiled
+    }
+    environment.set(`${name}.current`, value)
+    // Bare ref identity is not markup; bind null so accidental reads stay inert.
+    environment.set(name, { kind: 'literal', value: null })
+  }
+
+  private compileProtectedNavigationHook(
+    expression: ts.CallExpression,
+    hook: 'usePathname' | 'useRoute',
+  ): PlanExpression | undefined {
+    if (expression.arguments.length !== 0) {
+      this.report(
+        expression,
+        'GB1085',
+        `Portable ${hook}() takes no arguments.`,
+      )
+      return undefined
+    }
+    if (hook === 'usePathname') {
+      return { kind: 'path', path: ['__gobeyond', 'pathname'] }
+    }
+    // useRoute() returns { routeId, pathname, params }; bake the object path.
+    return { kind: 'path', path: ['__gobeyond', 'route'] }
   }
 
   private compileUseReducer(
@@ -1378,6 +2099,13 @@ export class SourceCompiler {
         environment,
       )
     }
+    if (tagName === 'Columns') {
+      return this.compileColumns(
+        element.openingElement.attributes,
+        element.children,
+        environment,
+      )
+    }
     if (this.isSuspenseTag(tagName)) {
       return this.compileSuspensePassthrough(
         element.openingElement.attributes,
@@ -1436,6 +2164,9 @@ export class SourceCompiler {
     }
     if (tagName === 'SafeHTML')
       return this.compileSafeHTML(element.attributes, environment)
+    if (tagName === 'Columns') {
+      return this.compileColumns(element.attributes, [], environment)
+    }
     if (this.isSuspenseTag(tagName)) {
       return this.compileSuspensePassthrough(element.attributes, [], environment)
     }
@@ -1479,7 +2210,7 @@ export class SourceCompiler {
         if (!entries) continue
         for (const entry of entries) {
           if (!entry.value) continue
-          if (entry.name === 'key' || /^on[A-Z]/.test(entry.name)) continue
+          if (entry.name === 'key' || entry.name === 'ref' || /^on[A-Z]/.test(entry.name)) continue
           if (entry.name === 'dangerouslySetInnerHTML') {
             this.report(
               attribute,
@@ -1504,7 +2235,7 @@ export class SourceCompiler {
         continue
       }
       const name = attribute.name.getText(this.sourceFile)
-      if (name === 'key' || /^on[A-Z]/.test(name)) continue
+      if (name === 'key' || name === 'ref' || /^on[A-Z]/.test(name)) continue
       if (name === 'dangerouslySetInnerHTML') {
         this.report(
           attribute,
@@ -1689,6 +2420,122 @@ export class SourceCompiler {
     // but the portable compiler does not inspect or execute it.
     void children
     return { kind: 'clientOnly', fallback: fallbackNode }
+  }
+
+  /** Portable CSS multi-column gallery substitute (no JS measurement). */
+  private compileColumns(
+    attributes: ts.JsxAttributes,
+    children: readonly ts.JsxChild[],
+    environment: ExpressionEnvironment,
+  ): PlanNode | undefined {
+    let columnCount: PlanExpression = { kind: 'literal', value: 2 }
+    let gap: PlanExpression = { kind: 'literal', value: '1rem' }
+    let className: PlanExpression | undefined
+    const styleEntries: Array<{ name: string; value: PlanExpression }> = []
+    for (const attribute of attributes.properties) {
+      if (ts.isJsxSpreadAttribute(attribute)) {
+        this.report(
+          attribute,
+          'GB1088',
+          'Portable Columns does not support spreads.',
+        )
+        return undefined
+      }
+      const name = attribute.name.getText(this.sourceFile)
+      if (name === 'columnCount') {
+        if (
+          attribute.initializer &&
+          ts.isJsxExpression(attribute.initializer) &&
+          attribute.initializer.expression
+        ) {
+          const value = this.compileExpression(
+            attribute.initializer.expression,
+            environment,
+          )
+          if (!value) return undefined
+          columnCount = value
+        }
+        continue
+      }
+      if (name === 'gap') {
+        if (
+          attribute.initializer &&
+          ts.isJsxExpression(attribute.initializer) &&
+          attribute.initializer.expression
+        ) {
+          const value = this.compileExpression(
+            attribute.initializer.expression,
+            environment,
+          )
+          if (!value) return undefined
+          gap = value
+        } else if (
+          attribute.initializer &&
+          ts.isStringLiteral(attribute.initializer)
+        ) {
+          gap = { kind: 'literal', value: attribute.initializer.text }
+        }
+        continue
+      }
+      if (name === 'className') {
+        if (
+          attribute.initializer &&
+          ts.isJsxExpression(attribute.initializer) &&
+          attribute.initializer.expression
+        ) {
+          className = this.compileExpression(
+            attribute.initializer.expression,
+            environment,
+          )
+        } else if (
+          attribute.initializer &&
+          ts.isStringLiteral(attribute.initializer)
+        ) {
+          className = { kind: 'literal', value: attribute.initializer.text }
+        }
+        continue
+      }
+      if (name === 'style') {
+        // Additional style props are not merged in MVP; column styles win.
+        continue
+      }
+      if (name === 'key' || name === 'ref' || /^on[A-Z]/.test(name)) continue
+      this.report(
+        attribute,
+        'GB1088',
+        `Portable Columns does not support prop ${name}.`,
+        'Use columnCount, gap, className, and children only.',
+      )
+      return undefined
+    }
+    styleEntries.push({ name: 'columnCount', value: columnCount })
+    // gap number → `${n}px` is handled at render via style helper when literal number
+    const gapValue =
+      gap.kind === 'literal' && typeof gap.value === 'number'
+        ? { kind: 'literal' as const, value: `${gap.value}px` }
+        : gap
+    styleEntries.push({ name: 'columnGap', value: gapValue })
+    const styleArgs: PlanExpression[] = []
+    for (const entry of styleEntries) {
+      styleArgs.push({ kind: 'literal', value: entry.name }, entry.value)
+    }
+    const planAttributes: Attribute[] = [
+      {
+        name: 'style',
+        value: { kind: 'helper', name: 'style', arguments: styleArgs },
+        mode: 'style',
+      },
+    ]
+    if (className) {
+      planAttributes.push({ name: 'className', value: className })
+    }
+    return {
+      kind: 'element',
+      tag: 'div',
+      namespace: 'html',
+      attributes: planAttributes,
+      children: this.compileJsxChildren(children, environment),
+    }
   }
 
   private compileSafeHTML(
@@ -2435,6 +3282,11 @@ export class SourceCompiler {
       boundary,
       target,
     ].join('\0')
+    const primary = diagnostics[0]!
+    const triggerConstruct = extractTriggerConstruct(primary)
+    const suggestion =
+      primary.suggestion ??
+      `Wrap just the <${component}> subtree (or the unsupported construct) in <ClientOnly> so sibling portable markup stays in the Go plan.`
     this.context.clientBoundaries.push({
       id: `gbc_${createHash('sha256').update(identity).digest('hex').slice(0, 20)}`,
       routeId: this.context.routeId,
@@ -2449,6 +3301,9 @@ export class SourceCompiler {
       end,
       line: location.line + 1,
       column: location.character + 1,
+      triggerCode: primary.code,
+      ...(triggerConstruct === undefined ? {} : { triggerConstruct }),
+      suggestion,
     })
     return { kind: 'clientOnly' }
   }
@@ -2498,11 +3353,17 @@ export class SourceCompiler {
       indexParameter && ts.isIdentifier(indexParameter.name)
         ? indexParameter.name.text
         : undefined
-    const items = this.compileExpression(
+
+    // Optional .filter(pred).map / .slice(a,b).map chain → each.when / sliced items
+    const chain = this.compileMapChainSource(
       expression.expression.expression,
       environment,
+      itemParameter.name.text,
+      indexName,
     )
-    if (!items) return undefined
+    if (!chain) return undefined
+    const { items, when } = chain
+
     const callbackEnvironment = new Map(environment)
     callbackEnvironment.set(itemParameter.name.text, {
       kind: 'path',
@@ -2517,18 +3378,19 @@ export class SourceCompiler {
     let bodyExpression: ts.Expression | undefined
     if (ts.isBlock(callback.body)) {
       const returns = callback.body.statements.filter(ts.isReturnStatement)
-      const returnExpression = returns.at(-1)?.expression
-      if (!returnExpression) {
-        this.report(
-          callback.body,
-          'GB1063',
-          'Portable .map callbacks must return one JSX expression.',
-        )
-        return undefined
-      }
-      bodyExpression = returnExpression
+      bodyExpression =
+        returns.at(-1)?.expression ??
+        this.findFirstReturnExpression(callback.body)
     } else {
       bodyExpression = callback.body
+    }
+    if (!bodyExpression) {
+      this.report(
+        callback,
+        'GB1063',
+        'Portable .map callbacks must return one JSX expression.',
+      )
+      return undefined
     }
     const keyNode = this.unwrapExpression(bodyExpression)
     const keyExpression = this.getRootKeyExpression(keyNode)
@@ -2550,33 +3412,159 @@ export class SourceCompiler {
     let body: PlanNode | undefined
     try {
       if (ts.isBlock(callback.body)) {
-        for (const statement of callback.body.statements) {
-          if (ts.isReturnStatement(statement)) continue
-          if (ts.isVariableStatement(statement)) {
-            this.compileVariableStatement(statement, callbackEnvironment)
-            continue
-          }
-          this.report(
-            statement,
-            'GB1063',
-            'Portable .map callbacks may only contain local bindings and a single JSX return.',
-          )
-          return undefined
-        }
+        body = this.compileBodyStatements(
+          callback,
+          [...callback.body.statements],
+          callbackEnvironment,
+          'map',
+        )
+      } else {
+        body = this.compileNodeExpression(bodyExpression, callbackEnvironment)
       }
-      body = this.compileNodeExpression(bodyExpression, callbackEnvironment)
     } finally {
       this.eachKeyStack.pop()
     }
     if (!body) return undefined
-    const node = {
-      kind: 'each' as const,
+    const node: {
+      kind: 'each'
+      items: PlanExpression
+      item: string
+      key: PlanExpression
+      body: PlanNode
+      index?: string
+      when?: PlanExpression
+    } = {
+      kind: 'each',
       items,
       item: itemParameter.name.text,
       key,
       body,
     }
-    return indexName ? { ...node, index: indexName } : node
+    if (indexName) node.index = indexName
+    if (when) node.when = when
+    return node
+  }
+
+  /**
+   * Lower items.filter(pred).map / items.slice(a,b).map into items + optional when.
+   */
+  private compileMapChainSource(
+    source: ts.Expression,
+    environment: ExpressionEnvironment,
+    itemName: string,
+    indexName: string | undefined,
+  ): { items: PlanExpression; when?: PlanExpression } | undefined {
+    source = this.unwrapExpression(source)
+    if (
+      ts.isCallExpression(source) &&
+      ts.isPropertyAccessExpression(source.expression)
+    ) {
+      const method = source.expression.name.text
+      if (method === 'filter') {
+        const predicate = source.arguments[0]
+        if (
+          !predicate ||
+          (!ts.isArrowFunction(predicate) && !ts.isFunctionExpression(predicate))
+        ) {
+          this.report(
+            source,
+            'GB1087',
+            'Portable .filter() before .map requires an inline predicate.',
+          )
+          return undefined
+        }
+        const items = this.compileExpression(
+          source.expression.expression,
+          environment,
+        )
+        if (!items) return undefined
+        const predEnv = new Map(environment)
+        const predItem = predicate.parameters[0]
+        if (predItem && ts.isIdentifier(predItem.name)) {
+          predEnv.set(predItem.name.text, { kind: 'path', path: [itemName] })
+        }
+        const predIndex = predicate.parameters[1]
+        if (predIndex && ts.isIdentifier(predIndex.name) && indexName) {
+          predEnv.set(predIndex.name.text, { kind: 'path', path: [indexName] })
+        }
+        const predBody = this.portableFunctionBody(predicate)
+        if (!predBody) {
+          this.report(
+            predicate,
+            'GB1087',
+            'Portable .filter() predicates must be a single portable expression.',
+          )
+          return undefined
+        }
+        const when = this.compileExpression(predBody, predEnv)
+        if (!when) return undefined
+        return { items, when }
+      }
+      if (method === 'slice') {
+        const startArg = source.arguments[0]
+        const endArg = source.arguments[1]
+        if (
+          !startArg ||
+          !endArg ||
+          !ts.isNumericLiteral(startArg) ||
+          !ts.isNumericLiteral(endArg)
+        ) {
+          this.report(
+            source,
+            'GB1087',
+            'Portable .slice() before .map requires literal start and end indexes.',
+          )
+          return undefined
+        }
+        const items = this.compileExpression(
+          source.expression.expression,
+          environment,
+        )
+        if (!items) return undefined
+        // Represent slice as a helper is unavailable; bake via when on index.
+        // Prefer encoding as items path with when: index >= start && index < end
+        // when index is available; otherwise reject.
+        if (!indexName) {
+          this.report(
+            source,
+            'GB1087',
+            'Portable .slice().map() requires an index parameter on the .map callback.',
+            'Use .map((item, index) => …) so slice bounds can filter by index.',
+          )
+          return undefined
+        }
+        const start = Number(startArg.text)
+        const end = Number(endArg.text)
+        const indexPath: PlanExpression = { kind: 'path', path: [indexName] }
+        const when: PlanExpression = {
+          kind: 'binary',
+          operator: '&&',
+          left: {
+            kind: 'binary',
+            operator: '>=',
+            left: indexPath,
+            right: { kind: 'literal', value: start },
+          },
+          right: {
+            kind: 'binary',
+            operator: '<',
+            left: indexPath,
+            right: { kind: 'literal', value: end },
+          },
+        }
+        return { items, when }
+      }
+    }
+    const items = this.compileExpression(source, environment)
+    if (!items) return undefined
+    return { items }
+  }
+
+  private findFirstReturnExpression(
+    node: ts.Node,
+  ): ts.Expression | undefined {
+    if (ts.isReturnStatement(node) && node.expression) return node.expression
+    return ts.forEachChild(node, (child) => this.findFirstReturnExpression(child))
   }
 
   private getRootKeyAttribute(
@@ -2735,25 +3723,53 @@ export class SourceCompiler {
       const fullName = expression.getText(this.sourceFile)
       const direct = environment.get(fullName)
       if (direct) return direct
-      const base = ts.isIdentifier(expression.expression)
-        ? environment.get(expression.expression.text)
-        : this.compileExpression(expression.expression, environment)
-      if (base?.kind !== 'path') {
+      // this.props / this.state baked paths for class components
+      if (expression.expression.kind === ts.SyntaxKind.ThisKeyword) {
+        const thisPath = `this.${expression.name.text}`
+        const bound = environment.get(thisPath)
+        if (bound) return bound
+        if (expression.name.text === 'props' || expression.name.text === 'state') {
+          // Root path object — further .x access appends via base path handling.
+          const nested = environment.get(`this.${expression.name.text}`)
+          if (nested) return nested
+        }
         this.report(
           expression,
-          'GB1071',
-          'Property access requires a portable path base.',
+          'GB1099',
+          `Portable class render cannot read ${fullName}.`,
+          expression.name.text === 'state'
+            ? 'Bake initial state via state = {…} or constructor this.state = {…}, or keep the class behind ClientOnly.'
+            : 'Use this.props.field for portable props, or keep browser-only fields behind ClientOnly.',
         )
         return undefined
       }
-      return { kind: 'path', path: [...base.path, expression.name.text] }
+      const base = ts.isIdentifier(expression.expression)
+        ? environment.get(expression.expression.text)
+        : this.compileExpression(expression.expression, environment)
+      if (base?.kind === 'path') {
+        return { kind: 'path', path: [...base.path, expression.name.text] }
+      }
+      if (base) {
+        // Dynamic base (e.g. items[i].name): index with a literal property key.
+        return {
+          kind: 'index',
+          object: base,
+          index: { kind: 'literal', value: expression.name.text },
+        }
+      }
+      this.report(
+        expression,
+        'GB1071',
+        'Property access requires a portable path base.',
+      )
+      return undefined
     }
     if (ts.isElementAccessExpression(expression)) {
       const base = ts.isIdentifier(expression.expression)
         ? environment.get(expression.expression.text)
         : this.compileExpression(expression.expression, environment)
       const argument = expression.argumentExpression
-      if (base?.kind !== 'path' || !argument) {
+      if (!base || !argument) {
         this.report(
           expression,
           'GB1072',
@@ -2762,18 +3778,23 @@ export class SourceCompiler {
         return undefined
       }
       if (ts.isStringLiteral(argument) || ts.isNumericLiteral(argument)) {
+        if (base.kind !== 'path') {
+          this.report(
+            expression,
+            'GB1072',
+            'Element access requires a portable path base and key.',
+          )
+          return undefined
+        }
         const key = ts.isNumericLiteral(argument)
           ? Number(argument.text)
           : argument.text
         return { kind: 'path', path: [...base.path, key] }
       }
-      this.report(
-        argument,
-        'GB1073',
-        'Computed dynamic property access is not portable.',
-        'Use a typed property, literal index, or precompute the value in Go.',
-      )
-      return undefined
+      // Dynamic index: images[i] → { kind: 'index', object, index }
+      const index = this.compileExpression(argument, environment)
+      if (!index) return undefined
+      return { kind: 'index', object: base, index }
     }
     if (ts.isPrefixUnaryExpression(expression)) {
       const operator =
@@ -2906,17 +3927,52 @@ export class SourceCompiler {
         }
         return this.compileProtectedUseContext(expression)
       }
+      if (this.isProtectedHookCall(expression, 'usePathname')) {
+        if (!this.assertUnconditionalHook(expression, 'usePathname')) {
+          return undefined
+        }
+        return this.compileProtectedNavigationHook(expression, 'usePathname')
+      }
+      if (this.isProtectedHookCall(expression, 'useRoute')) {
+        if (!this.assertUnconditionalHook(expression, 'useRoute')) {
+          return undefined
+        }
+        return this.compileProtectedNavigationHook(expression, 'useRoute')
+      }
       const callName = expression.expression.getText(this.sourceFile)
-      const knownDeferred = new Set([
-        'useLayoutEffect',
-      ])
+      const knownDeferred = new Set(['useLayoutEffect', 'useSyncExternalStore'])
+      if (knownDeferred.has(callName) || looksLikeReactHook(callName)) {
+        this.report(
+          expression,
+          knownDeferred.has(callName) ? 'GB1076' : 'GB1086',
+          knownDeferred.has(callName)
+            ? `${callName} is explicitly deferred from the MVP portable render profile.`
+            : `React hook ${callName} is not in the portable profile.`,
+          knownDeferred.has(callName)
+            ? 'Calculate the initial value in Go, use a portable helper, or place browser-dependent markup behind ClientOnly.'
+            : 'Use a registered portable hook (useState, useRef, usePathname, …), calculate the value in Go, or wrap just this subtree in ClientOnly.',
+        )
+        return undefined
+      }
+      if (
+        ts.isPropertyAccessExpression(expression.expression) &&
+        ['filter', 'slice', 'find', 'reduce', 'flatMap', 'sort'].includes(
+          expression.expression.name.text,
+        )
+      ) {
+        this.report(
+          expression,
+          'GB1087',
+          `Array method .${expression.expression.name.text}() is not portable here.`,
+          'Use .filter(predicate).map(...) or .slice(start, end).map(...) directly before .map, or precompute the array in Go.',
+        )
+        return undefined
+      }
       this.report(
         expression,
-        knownDeferred.has(callName) ? 'GB1076' : 'GB1077',
-        knownDeferred.has(callName)
-          ? `${callName} is explicitly deferred from the MVP portable render profile.`
-          : `Function call ${callName} cannot execute in the Go rendering plan.`,
-        'Calculate the initial value in Go, use a portable helper, or place browser-dependent markup behind ClientOnly.',
+        'GB1088',
+        `Function call ${callName} cannot execute in the Go rendering plan.`,
+        'Calculate the initial value in Go, use a portable helper, or wrap just this subtree in ClientOnly to preserve sibling markup.',
       )
       return undefined
     }
@@ -3621,7 +4677,7 @@ export class SourceCompiler {
     if (expression.arguments.length !== 0) {
       this.report(
         expression,
-        'GB1077',
+        'GB1088',
         'Portable useId() takes no arguments in source; the Vite transform injects the stable id for hydration.',
         'Call useId() with no arguments. GoBeyond assigns a stable call-site id during compile.',
       )
@@ -3715,11 +4771,17 @@ export class SourceCompiler {
       if (!ts.isImportDeclaration(statement) || !statement.importClause) continue
       if (!ts.isStringLiteral(statement.moduleSpecifier)) continue
       const specifier = statement.moduleSpecifier.text
-      if (!isProtectedReactModule(specifier)) continue
+      if (!isProtectedApiModule(specifier)) continue
       const clause = statement.importClause
-      if (clause.name) this.reactNamespaceLocals.add(clause.name.text)
+      if (clause.name && isProtectedReactModule(specifier)) {
+        this.reactNamespaceLocals.add(clause.name.text)
+      }
       const bindings = clause.namedBindings
-      if (bindings && ts.isNamespaceImport(bindings)) {
+      if (
+        bindings &&
+        ts.isNamespaceImport(bindings) &&
+        isProtectedReactModule(specifier)
+      ) {
         this.reactNamespaceLocals.add(bindings.name.text)
       }
       if (bindings && ts.isNamedImports(bindings)) {
@@ -3879,6 +4941,27 @@ function isDowngradeableDiagnostic(diagnostic: Diagnostic): boolean {
   // These codes describe broken module/export resolution, not unsupported
   // render behavior, and must remain fatal even below a client directive.
   return ![1051, 1053, 1054, 1055].includes(number)
+}
+
+function looksLikeReactHook(callName: string): boolean {
+  const base = callName.includes('.') ? callName.split('.').pop()! : callName
+  return /^use[A-Z]/.test(base)
+}
+
+function extractTriggerConstruct(diagnostic: Diagnostic): string | undefined {
+  const hook = /React hook (\S+)/.exec(diagnostic.message)
+  if (hook) return hook[1]
+  const deferred = /(\S+) is explicitly deferred/.exec(diagnostic.message)
+  if (deferred) return deferred[1]
+  const arrayMethod = /Array method (\.\S+)/.exec(diagnostic.message)
+  if (arrayMethod) return arrayMethod[1]
+  const call = /Function call (\S+)/.exec(diagnostic.message)
+  if (call) return call[1]
+  const windowUse = /uses window/.exec(diagnostic.message)
+  if (windowUse) return 'window'
+  const setState = /this\.setState/.exec(diagnostic.message)
+  if (setState) return 'this.setState'
+  return undefined
 }
 
 function mergeProperties(

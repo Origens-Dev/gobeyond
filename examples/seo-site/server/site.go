@@ -10,6 +10,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/browserassets"
 	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/cache"
+	"github.com/Origens-Dev/gobeyond/cache/openfromenv"
 	apitime "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/api/r_api_time_066a4b03"
 	actioncontract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
 	productcontract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9"
@@ -45,6 +46,16 @@ const (
 type Site struct {
 	runtime      *gbruntime.Server
 	publicOrigin string
+	closeCache   func() error
+}
+
+// Close releases cache resources opened for this site (Redis client and
+// tag-bump watcher). It is safe to call more than once.
+func (s *Site) Close() error {
+	if s == nil || s.closeCache == nil {
+		return nil
+	}
+	return s.closeCache()
 }
 
 // AssetConfig is emitted by gobeyond build and loaded by the production
@@ -226,29 +237,32 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 			},
 		}},
 	}
+	var closeCache func() error
 	if packaged != nil {
 		// Packaged builds carry contracts and may declare route caching in
-		// page.schema.ts. Enable L1-only caching by default; shared L2 is
-		// opt-in via GOBEYOND_CACHE_* (see cache/example_test.go).
-		runtimeConfig.Cache = siteCacheRuntimeConfig()
+		// page.schema.ts. OpenFromEnv builds bounded L1 + optional Redis L2
+		// from GOBEYOND_CACHE_* (see cache/example_test.go Example_wiring).
+		cacheConfig, closeFn, err := siteCacheRuntimeConfig()
+		if err != nil {
+			return nil, err
+		}
+		closeCache = closeFn
+		runtimeConfig.Cache = cacheConfig
 		runtimeConfig.Contracts = packaged.Contracts()
 	}
 	runtime, err := gbruntime.New(runtimeConfig)
 	if err != nil {
+		if closeCache != nil {
+			_ = closeCache()
+		}
 		return nil, err
 	}
-	return &Site{runtime: runtime, publicOrigin: strings.TrimSuffix(publicOrigin, "/")}, nil
+	return &Site{runtime: runtime, publicOrigin: strings.TrimSuffix(publicOrigin, "/"), closeCache: closeCache}, nil
 }
 
-// siteCacheRuntimeConfig enables in-process L1 caching for packaged builds.
-// Leave Store nil so runtime.New defaults to a bounded memstore tier; wire
-// redisstore.FromEnv for shared L2 (see cache/example_test.go Example_wiring).
-func siteCacheRuntimeConfig() *cache.RuntimeConfig {
-	prefix := cache.DeployPrefixFromEnv()
-	if prefix == "" {
-		prefix = "local"
-	}
-	return &cache.RuntimeConfig{DeployPrefix: prefix}
+// siteCacheRuntimeConfig is the supported cache assembly for packaged builds.
+func siteCacheRuntimeConfig() (*cache.RuntimeConfig, func() error, error) {
+	return openfromenv.OpenFromEnv()
 }
 
 func homePage(origin string) *gbruntime.LoadedPage {

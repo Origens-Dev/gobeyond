@@ -46,9 +46,26 @@ Events:
 | `success` | Soft tree update completed, or navigation handed off to a document load |
 | `error` | Soft navigation threw (non-abort); still rethrown to the caller |
 
+## Active route hooks
+
+`usePathname` and `useRoute` from `@go-beyond/react` expose the active request
+pathname (and route id / params). The compiler bakes request data into the Go
+plan; the browser hooks read module-level soft-navigation state seeded at
+bootstrap and updated on soft-nav success so hydration matches.
+
+```ts
+import { usePathname, useRoute } from "@go-beyond/react";
+
+function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+  const pathname = usePathname();
+  const active = pathname === href;
+  return <a href={href} aria-current={active ? "page" : undefined}>{children}</a>;
+}
+```
+
 ## Imports
 
 ```ts
-import { ClientOnly, useId } from "@go-beyond/react";
+import { ClientOnly, Columns, useId, usePathname, useRoute } from "@go-beyond/react";
 import { bootstrapAsync } from "@go-beyond/react/browser";
 ```

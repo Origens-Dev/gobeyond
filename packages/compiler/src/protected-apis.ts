@@ -45,7 +45,7 @@ export const PROTECTED_APIS: readonly ProtectedApiEntry[] = [
     name: 'useId',
     modules: PROTECTED_REACT_MODULES,
     strategy: 'rewrite',
-    diagnostics: ['GB1084', 'GB1085', 'GB1077'],
+    diagnostics: ['GB1084', 'GB1085', 'GB1088'],
     arity: 0,
     viteSiteKind: 'useId',
     notes:
@@ -75,6 +75,15 @@ export const PROTECTED_APIS: readonly ProtectedApiEntry[] = [
     diagnostics: ['GB1022', 'GB1023', 'GB1085'],
     arity: { min: 0, max: 1 },
     notes: 'Initial state / lazy () => expr only; setters are browser-only.',
+  },
+  {
+    name: 'useRef',
+    modules: PROTECTED_REACT_MODULES,
+    strategy: 'bake',
+    diagnostics: ['GB1022', 'GB1023', 'GB1085'],
+    arity: { min: 0, max: 1 },
+    notes:
+      'Bake initial .current like useState; mutation is ignored for markup; ref={} attributes are stripped.',
   },
   {
     name: 'useReducer',
@@ -172,24 +181,56 @@ export const DATE_INTRINSIC_API: ProtectedApiEntry = {
     'Zero-arg new Date().get* / getUTC* bake to render-snapshot intrinsics; Vite rewrites to renderSnapshotDate(). Prefer UTC getters.',
 }
 
+export const PROTECTED_GOBEYOND_REACT_MODULES = [
+  '@go-beyond/react',
+  '@go-beyond/react/index.js',
+  '@go-beyond/react/index',
+] as const
+
+/** First-party hooks baked from request / soft-navigation state. */
+export const PROTECTED_GOBEYOND_APIS: readonly ProtectedApiEntry[] = [
+  {
+    name: 'usePathname',
+    modules: PROTECTED_GOBEYOND_REACT_MODULES,
+    strategy: 'bake',
+    diagnostics: ['GB1085'],
+    arity: 0,
+    notes:
+      'Request pathname for active-nav; browser reads soft-navigation route so hydration matches.',
+  },
+  {
+    name: 'useRoute',
+    modules: PROTECTED_GOBEYOND_REACT_MODULES,
+    strategy: 'bake',
+    diagnostics: ['GB1085'],
+    arity: 0,
+    notes:
+      'Route id + params from the active request; browser reads soft-navigation route.',
+  },
+]
+
 const hookNames = new Set(
-  PROTECTED_APIS.filter((entry) =>
-    [
-      'useId',
-      'useMemo',
-      'useCallback',
-      'useState',
-      'useReducer',
-      'useContext',
-      'createContext',
-      'Suspense',
-      'Fragment',
-      'Children',
-      'lazy',
-      'cloneElement',
-      'createElement',
-    ].includes(entry.name),
-  ).map((entry) => entry.name),
+  [
+    ...PROTECTED_APIS.filter((entry) =>
+      [
+        'useId',
+        'useMemo',
+        'useCallback',
+        'useState',
+        'useRef',
+        'useReducer',
+        'useContext',
+        'createContext',
+        'Suspense',
+        'Fragment',
+        'Children',
+        'lazy',
+        'cloneElement',
+        'createElement',
+      ].includes(entry.name),
+    ).map((entry) => entry.name),
+    ...PROTECTED_GOBEYOND_APIS.map((entry) => entry.name),
+  ],
 )
 
 export type ProtectedHookName =
@@ -197,6 +238,7 @@ export type ProtectedHookName =
   | 'useMemo'
   | 'useCallback'
   | 'useState'
+  | 'useRef'
   | 'useReducer'
   | 'useContext'
   | 'createContext'
@@ -206,6 +248,8 @@ export type ProtectedHookName =
   | 'lazy'
   | 'cloneElement'
   | 'createElement'
+  | 'usePathname'
+  | 'useRoute'
 
 export function isProtectedHookName(name: string): name is ProtectedHookName {
   return hookNames.has(name)
@@ -213,6 +257,19 @@ export function isProtectedHookName(name: string): name is ProtectedHookName {
 
 export function isProtectedReactModule(specifier: string): boolean {
   return (PROTECTED_REACT_MODULES as readonly string[]).includes(specifier)
+}
+
+export function isProtectedGoBeyondReactModule(specifier: string): boolean {
+  return (PROTECTED_GOBEYOND_REACT_MODULES as readonly string[]).includes(
+    specifier,
+  )
+}
+
+export function isProtectedApiModule(specifier: string): boolean {
+  return (
+    isProtectedReactModule(specifier) ||
+    isProtectedGoBeyondReactModule(specifier)
+  )
 }
 
 export function dateIntrinsicName(getter: string): string | undefined {

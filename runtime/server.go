@@ -508,7 +508,11 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 		return gb.Response{}, fmt.Errorf("page props are not JavaScript-compatible: %w", err)
 	}
 	renderStarted := time.Now()
-	body, renderNow, err := renderer.New().RenderAt(page.Plan, loaded.Props, time.Time{})
+	body, renderNow, err := renderer.New().WithNavigation(renderer.NavigationMeta{
+		RouteID:  route.ID,
+		Pathname: ctx.Request.URL.Path,
+		Params:   params,
+	}).RenderAt(page.Plan, loaded.Props, time.Time{})
 	if err != nil {
 		return gb.Response{}, err
 	}

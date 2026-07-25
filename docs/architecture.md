@@ -102,6 +102,21 @@ runtime/browser manifests; both static documents and dynamic page
 registrations use those exact URLs. Copied `public/` files are listed in the
 deployment route trie so the edge can select the static origin explicitly.
 
+Route discovery still treats a present `server/middleware/middleware.go` as
+promoting every `page.tsx` route to dynamic, which skips static packaging for
+those routes. The `create-gobeyond` starter therefore keeps product-scoped
+request-ID middleware inline in `server/cmd/app/main.go` so `/` stays static
+and loads props from the packaged `static-build.json` store.
+
+When the Go process serves origin static files itself (local preview, or an
+origin without CloudFront in front), wrap the server with
+`runtime.StaticFiles(directory, handler)` (or `StaticFilesFromEnv`). It serves
+`buildpaths.IsStaticArtifact` paths and existing public files from
+`GOBEYOND_STATIC_DIR`, sets `Cache-Control: public, max-age=31536000, immutable`
+only for content-addressed `/_gobeyond/builds/...` artifacts, and gzip-compresses
+JS/CSS/SVG/JSON/HTML/source maps when the client accepts gzip—matching document
+and API compression. Non-hashed `public/` files are not marked immutable.
+
 ## Request-time caching
 
 GoBeyond ships Next.js-style origin caching without HTML-body persistence.
@@ -156,7 +171,10 @@ Store tiers are an in-process L1 (`cache/memstore`) and an optional shared L2
 include `{deployPrefix}/{buildID}/…`; the deploy prefix is the tenant boundary
 when Redis is shared. There is no application-level encrypt/decrypt—do not put
 secrets, session tokens, or viewer-specific payloads in cached values. L2 is
-opt-in via `GOBEYOND_CACHE_*` environment variables.
+opt-in via `GOBEYOND_CACHE_*` environment variables. Apps should call
+`cache/openfromenv.OpenFromEnv` once at startup: it builds bounded L1, attaches
+Redis when an endpoint is present, starts the tag-bump watcher, and returns a
+`Close` for shutdown.
 
 At the edge, CloudFront's dynamic cache key includes cookies, query strings,
 and `Authorization`, but not OIDC or auth-context headers. For those requests,
@@ -197,11 +215,11 @@ the strategy is `rewrite`.
 
 | Technique | Examples | Browser rewrite? |
 | --- | --- | --- |
-| Bake into plan | `useState` / lazy init, `useMemo` / `useCallback`, `useReducer` init, `useContext`+Provider, keyed `Fragment`, static `Children.*`, static `createElement` / limited `cloneElement`, `defaultProps` | Usually no |
+| Bake into plan | `useState` / lazy init, `useRef` (`.current`), `useMemo` / `useCallback`, `useReducer` init, `useContext`+Provider, keyed `Fragment`, static `Children.*`, static `createElement` / limited `cloneElement`, `defaultProps`, presentational class `render()` + baked `this.state`, `usePathname` / `useRoute` | Usually no |
 | Call-site identity | `useId()` | Yes (skip for nested map inlines whose plan already holds the parametric id) |
-| Transparent wrapper | `<Suspense>` children only | No (not streaming) |
+| Transparent wrapper | `<Suspense>` children only; `<Columns>` → styled `div` | No (not streaming) |
 | Render snapshot | `new Date().get*()` / `getUTC*()` | Yes → `renderSnapshotDate()` + hydration `renderNow` |
-| Reject with guidance | `React.lazy` | Use `ClientOnly` or `use client` |
+| Reject with guidance | `React.lazy`; unsupported hooks (`GB1086`), array methods (`GB1087`), arbitrary calls (`GB1088`) | Use `ClientOnly` or `use client` |
 
 `useId` ids are **span-stable** (`gb-<spanHash>-<n>`), not route-scoped, so a
 shared module hydrates the same string on every route. Multiple inlines of one
@@ -210,6 +228,23 @@ span use a sequence factory. Inside a keyed `.map` the id is parametric
 parametric plan expression and mark the Vite site `skipViteRewrite` (the parent
 key is out of scope in the child module). Conditional / loop hook calls emit
 `GB1085` (parametric map `useId` is the intentional exception).
+
+Portable control flow includes statement-level `if` / early `return` desugared
+into nested `conditional` plan nodes. Dynamic indexing (`items[i]`) uses plan
+expression kind `index` (missing/OOB → null). `.filter(pred).map` and
+`.slice(a,b).map` lower into `each` with an optional `when` predicate.
+
+Presentational `React.Component` / `PureComponent` classes compile when
+`render()` is portable (`this.props` / baked `this.state`). Diagnostics name the
+unsupported construct (`window`, `setState`, lifecycle-in-render), not “is a
+class.” Third-party layout widgets that depend on viewport or browser state stay
+client-only. `<Columns>` is an independent portable multi-column layout
+primitive that emits real content without JavaScript; see the investigated case
+study in [ADR 003](adr/003-masonry-first-paint-spike.md).
+
+Downgrades record `triggerCode` / `triggerConstruct` and suggest wrapping just
+that subtree in `ClientOnly`. Rank fixes with `gobeyond report portability` (or
+`gobeyond-compile report-portability`) against compiler-project output.
 
 Date getters use one render clock embedded as hydration `renderNow`. Prefer UTC
 getters for cross-timezone safety; local getters match when browser and server

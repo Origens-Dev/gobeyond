@@ -10,6 +10,10 @@ import {
   shouldShowUpdateRequiredUI,
   type BuildMismatchEnvironment,
 } from "./build-mismatch.js";
+import {
+  setActiveNavigation,
+  type ActiveNavigationState,
+} from "./active-navigation.js";
 import { normalizeComparablePath, pathsIncludePathname } from "./path-utils.js";
 import { createRouterCache, type RouterCache, type RouterCacheOptions } from "./router-cache.js";
 import type {
@@ -20,6 +24,8 @@ import type {
   OpenGraphMetadata,
   TwitterMetadata,
 } from "./seo.js";
+
+export type { ActiveNavigationState };
 
 export const NAVIGATION_ANNOUNCER_ID = "__gobeyond_route_announcer__";
 
@@ -763,6 +769,52 @@ export function matchBrowserRoute(
   return best?.route;
 }
 
+/**
+ * Extract dynamic / catch-all params from a bracket pattern and pathname.
+ * Mirrors Go `router.Pattern.Match` so soft-nav and request baking agree.
+ */
+export function extractRouteParams(
+  pattern: string,
+  pathname: string,
+): Record<string, string> {
+  const patterns = pathSegments(pattern);
+  const paths = pathSegments(pathname);
+  const params: Record<string, string> = {};
+  for (let index = 0; index < patterns.length; index += 1) {
+    const segment = patterns[index]!;
+    const optionalCatchAll = /^\[\[\.\.\.([^\]]+)\]\]$/.exec(segment);
+    const catchAll = /^\[\.\.\.([^\]]+)\]$/.exec(segment);
+    const dynamic = /^\[([^\]]+)\]$/.exec(segment);
+    if (optionalCatchAll) {
+      params[optionalCatchAll[1]!] =
+        index >= paths.length ? "" : paths.slice(index).join("/");
+      return params;
+    }
+    if (catchAll) {
+      if (index >= paths.length) return params;
+      params[catchAll[1]!] = paths.slice(index).join("/");
+      return params;
+    }
+    if (index >= paths.length) return params;
+    if (dynamic) {
+      params[dynamic[1]!] = paths[index]!;
+    }
+  }
+  return params;
+}
+
+/** Build the active-nav snapshot for a matched route + public pathname. */
+export function activeNavigationFromMatch(
+  route: Pick<MatchedBrowserRoute, "routeId" | "pattern">,
+  pathname: string,
+): ActiveNavigationState {
+  return {
+    routeId: route.routeId,
+    pathname: normalizeComparablePath(pathname),
+    params: extractRouteParams(route.pattern, pathname),
+  };
+}
+
 function replaceSingleton(
   targetDocument: Document,
   selector: string,
@@ -1130,6 +1182,18 @@ export function createSoftNavigation(
   const routerCache = options.routerCache ?? createRouterCache(options.routerCacheOptions);
   const pendingWarms = new Map<string, Promise<void>>();
 
+  // Seed active-nav from the current URL so usePathname/useRoute match Go
+  // before the first soft navigation.
+  const initialRoute = matchBrowserRoute(
+    targetWindow.location.pathname,
+    options.routes,
+  );
+  if (initialRoute) {
+    setActiveNavigation(
+      activeNavigationFromMatch(initialRoute, targetWindow.location.pathname),
+    );
+  }
+
   function emit(event: NavigationLifecycleEvent): void {
     if (event.type === "start") {
       options.onNavigationStart?.(event);
@@ -1372,6 +1436,7 @@ export function createSoftNavigation(
       options.root.render(render(resolved, payload.result.props));
     });
     options.rootElement.dataset.gobeyondRoute = route.routeId;
+    setActiveNavigation(activeNavigationFromMatch(route, url.pathname));
     applyDocumentMetadata(metadata, options.document);
 
     const nextMarker: NavigationHistoryState = {
@@ -1608,6 +1673,7 @@ export function createSoftNavigation(
       if (activeSoftNavigation === publicController) {
         activeSoftNavigation = undefined;
       }
+      setActiveNavigation(undefined);
     },
   };
   activeSoftNavigation = publicController;

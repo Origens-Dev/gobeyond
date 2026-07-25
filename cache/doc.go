@@ -28,7 +28,18 @@
 //
 // A Store is a byte tier: Get/Set/Delete plus the tag-version primitives that
 // make invalidation possible. Tiered composes the two implementations into
-// the shape a deployment runs:
+// the shape a deployment runs. Prefer the supported constructor:
+//
+//	config, close, err := openfromenv.OpenFromEnv()
+//	// config.DeployPrefix = cmp.Or(DeployPrefixFromEnv(), "local")
+//	// config.Store = Tiered(memstore L1, optional redisstore L2)
+//
+// cache/openfromenv.OpenFromEnv builds bounded L1 (memstore defaults), attaches
+// redisstore.FromEnv when GOBEYOND_CACHE_ENDPOINT is set (absent endpoint is
+// success), starts WatchTagBumps when L2 is present, and returns a Close that
+// cancels the watcher and closes the Redis client.
+//
+// Manual assembly remains valid for tests:
 //
 //	store := cache.Tiered(memstore.New(memstore.Options{}), shared, cache.TieredOptions{})
 //

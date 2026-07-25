@@ -20,9 +20,11 @@ URLs are sent to private S3 instead of falling through to the Go origin.
 Public social cards, `/brand/*`, and generated favicons stay on private S3 via
 `staticAssetPaths` and ordered static behaviors. `/_gobeyond/image` is a
 sibling Go runtime route, not a `/_gobeyond/builds/<id>/...` artifact. Local
-preview uses `GOBEYOND_STATIC_DIR`; production needs an S3-backed
-`imageopt.Loader` plus a CloudFront cache key covering `url`, `w`, `q`, `f`,
-and the trusted viewer host.
+preview uses `GOBEYOND_STATIC_DIR` with `runtime.StaticFiles` (gzip for
+compressible types; immutable Cache-Control for content-addressed
+`/_gobeyond/builds/...` artifacts, not for `public/` files). Production needs
+an S3-backed `imageopt.Loader` plus a CloudFront cache key covering `url`, `w`,
+`q`, `f`, and the trusted viewer host.
 
 The multi-site hosting OpenTofu codes that IAM and edge routing per
 [ADR 002](https://github.com/Origens-Dev/gobeyond-internal/blob/main/docs/adr/002-image-optimizer-design-lock.md),
@@ -50,8 +52,10 @@ no Node or npm executable.
 
 Optional shared cache: set OpenTofu `create_cache = true` for a private
 ElastiCache Serverless Valkey endpoint. Tasks receive `GOBEYOND_CACHE_*`
-environment variables; keys are prefixed per deployment. There is no
-application-level Redis encryption—do not cache secrets or viewer-specific data.
-CloudFront's dynamic cache key does not include OIDC or auth-context headers;
-for those requests the origin's `private, no-store` downgrade is the sole
-edge-cache isolator. See `infra/opentofu/README.md`.
+environment variables; keys are prefixed per deployment. Wire the cache with
+`cache/openfromenv.OpenFromEnv` (bounded L1 + optional Redis L2 + tag-bump
+watcher)—see `cache/example_test.go`. There is no application-level Redis
+encryption—do not cache secrets or viewer-specific data. CloudFront's dynamic
+cache key does not include OIDC or auth-context headers; for those requests the
+origin's `private, no-store` downgrade is the sole edge-cache isolator. See
+`infra/opentofu/README.md`.

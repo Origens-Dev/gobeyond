@@ -20,6 +20,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   const files = [
     'app/page.tsx',
     'app/page.schema.ts',
+    'app/page.metadata.ts',
     'app/site.css',
     'app/products/[slug]/page.tsx',
     'app/products/[slug]/page.schema.ts',
@@ -29,7 +30,6 @@ test('scaffolds an internally consistent website-first hello world', async () =>
     'app/products/[slug]/page.go',
     'app/products/[slug]/actions.go',
     'app/api/products/route.go',
-    'server/middleware/middleware.go',
     'server/cmd/app/main.go',
     'public/portable-react.svg',
     'public/social/home.svg',
@@ -87,14 +87,37 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(action, /contracts\/actions\/r_products_slug_3e2e8eb9_add_to_cart/)
   const main = await readFile(join(destination, 'server/cmd/app/main.go'), 'utf8')
   assert.match(main, /routes\.RouteProductsSlug/)
-  assert.match(main, /withStaticAssets/)
   assert.match(main, /productroute\.AddToCart/)
   assert.match(main, /actioncontract\.Register\(productroute\.AddToCart\)/)
   assert.match(main, /internal\/gobeyondgen\/routes\/r_products__slug_3e2e8eb9/)
   assert.match(main, /internal\/gobeyondgen\/api\/r_api_products_3637094a/)
-  assert.match(main, /Static: home\(origin\)/)
-  assert.doesNotMatch(main, /staticStore\.Loader/)
+  // Modern shape: packaged static store, contracts, cache constructor, ISR
+  // constants from the generated contract, and the shared static handler.
+  // Home uses packaged static props only (no withHomeFallback); product-scoped
+  // request-ID middleware is inline so Discover does not promote / to dynamic.
+  assert.match(main, /GOBEYOND_RUNTIME_DATA_DIR/)
+  assert.match(main, /gbruntime\.LoadStaticStore/)
+  assert.match(main, /Load: staticStore\.Loader\(routes\.RouteRoot\)/)
+  assert.doesNotMatch(main, /withHomeFallback/)
+  assert.doesNotMatch(main, /startermiddleware/)
+  assert.match(main, /Contracts: staticStore\.Contracts\(\)/)
+  assert.match(main, /cacheenv\.OpenFromEnv\(\)/)
+  assert.match(main, /Revalidate: productcontract\.Revalidate/)
+  assert.match(main, /Tags: productcontract\.Tags/)
+  assert.match(main, /gbruntime\.StaticFiles\(staticDirectory, server\)/)
+  assert.match(main, /starter-request-id/)
+  assert.match(main, /Patterns: \[\]string\{"\/products\/\[slug\]"\}/)
+  assert.doesNotMatch(main, /withStaticAssets/)
+  assert.doesNotMatch(main, /Static: home\(origin\)/)
   assert.doesNotMatch(main, /func addToCart\(ctx \*gb\.ActionContext, raw json\.RawMessage\)/)
+
+  const homeMetadata = await readFile(join(destination, 'app/page.metadata.ts'), 'utf8')
+  assert.match(homeMetadata, /export function metadata/)
+  assert.match(homeMetadata, /GOBEYOND_PUBLIC_ORIGIN/)
+
+  const productSchema = await readFile(join(destination, 'app/products/[slug]/page.schema.ts'), 'utf8')
+  assert.match(productSchema, /revalidate: 60/)
+  assert.match(productSchema, /tags: \['products'\]/)
 
   const agents = await readFile(join(destination, 'AGENTS.md'), 'utf8')
   assert.match(agents, /React owns content/)
@@ -126,14 +149,19 @@ test('local workspace integration generates contracts and type-checks the starte
   await run('go', ['mod', 'tidy'], destination)
   await run(join(nodeModules, '.bin', 'tsc'), ['-p', 'tsconfig.json', '--noEmit'], destination)
   await run('go', ['test', './...'], destination)
-  await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'build'], destination)
+  // Bake home metadata for the ephemeral listen origin so packaged canonical
+  // URLs match runtime PublicOrigin / AllowedHosts.
+  const serveOrigin = 'http://localhost:18887'
+  await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'build'], destination, {
+    GOBEYOND_PUBLIC_ORIGIN: serveOrigin,
+  })
 
   const generatedContract = join(destination, 'internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9/types.gobeyond_gen.go')
   await access(generatedContract)
   await access(join(destination, 'dist/server/gobeyond-server'))
   const runtimeManifest = JSON.parse(await readFile(join(destination, 'dist/server/runtime-manifest.json'), 'utf8'))
   await access(join(destination, 'dist/static/_gobeyond/builds', runtimeManifest.buildId, 'assets', 'app.js'))
-  const response = await serveAndFetch(join(destination, 'dist/server/gobeyond-server'), destination)
+  const response = await serveAndFetch(join(destination, 'dist/server/gobeyond-server'), destination, serveOrigin)
   assert.equal(response.rootStatus, 200)
   assert.match(response.rootHTML, /<h1>Welcome to GoBeyond<\/h1>/)
   assert.equal(response.status, 200)
@@ -171,9 +199,9 @@ test('Tailwind v4 is an explicit scaffold option with project-owned PostCSS', as
   assert.match(css, /@import "tailwindcss"/)
 })
 
-function run(command, args, cwd) {
+function run(command, args, cwd, env = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, stdio: 'pipe' })
+    const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: 'pipe' })
     let output = ''
     child.stdout.on('data', (chunk) => { output += chunk })
     child.stderr.on('data', (chunk) => { output += chunk })
@@ -220,11 +248,15 @@ async function linkWorkspacePackages(destination) {
   await symlink(join(workspaceRoot, 'node_modules/.bin/vite'), join(nodeModules, '.bin/vite'))
 }
 
-async function serveAndFetch(binary, cwd) {
-  const address = '127.0.0.1:18887'
+async function serveAndFetch(binary, cwd, publicOrigin) {
+  const address = new URL(publicOrigin).host
   const child = spawn(binary, [], {
     cwd,
-    env: { ...process.env, GOBEYOND_ADDR: address, GOBEYOND_PUBLIC_ORIGIN: `http://${address}` },
+    env: {
+      ...process.env,
+      GOBEYOND_ADDR: address,
+      GOBEYOND_PUBLIC_ORIGIN: publicOrigin,
+    },
     stdio: 'pipe',
   })
   let output = ''

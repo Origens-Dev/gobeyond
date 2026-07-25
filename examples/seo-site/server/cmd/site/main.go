@@ -7,11 +7,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	gblisten "github.com/Origens-Dev/gobeyond/adapters/listen"
 	"github.com/Origens-Dev/gobeyond/browserassets"
-	"github.com/Origens-Dev/gobeyond/buildpaths"
 	seosite "github.com/Origens-Dev/gobeyond/examples/seo-site/server"
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
@@ -49,17 +47,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer handler.Close()
 	var siteHandler http.Handler = handler
-	if staticDirectory := os.Getenv("GOBEYOND_STATIC_DIR"); staticDirectory != "" {
-		files := http.FileServer(http.Dir(staticDirectory))
-		siteHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			if buildpaths.IsStaticArtifact(request.URL.Path) ||
-				staticFileExists(staticDirectory, request.URL.Path) {
-				files.ServeHTTP(writer, request)
-				return
-			}
-			handler.ServeHTTP(writer, request)
-		})
+	if staticDirectory := os.Getenv(gbruntime.EnvStaticDir); staticDirectory != "" {
+		siteHandler = gbruntime.StaticFiles(staticDirectory, handler)
 	}
 	// Hosted mode listens on the GOBEYOND_LISTEN socket with readiness and
 	// SIGTERM drain; without it this falls back to TCP on GOBEYOND_ADDR.
@@ -94,14 +85,4 @@ func loadBrowserAssets(path, buildID string) (*browserassets.Manifest, error) {
 		return nil, errors.New("browser asset manifest build ID does not match server build ID")
 	}
 	return &assets, nil
-}
-
-func staticFileExists(directory, requestPath string) bool {
-	cleaned := filepath.Clean("/" + requestPath)
-	if cleaned == "/" || strings.Contains(cleaned, "..") {
-		return false
-	}
-	path := filepath.Join(directory, filepath.FromSlash(strings.TrimPrefix(cleaned, "/")))
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
 }

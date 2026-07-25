@@ -104,7 +104,9 @@ test('reports unsupported render calls with an actionable location', () => {
   assert.ok(
     result.diagnostics.some(
       (diagnostic) =>
-        diagnostic.code === 'GB1077' || diagnostic.code === 'GB1076',
+        diagnostic.code === 'GB1088' ||
+        diagnostic.code === 'GB1076' ||
+        diagnostic.code === 'GB1077',
     ),
   )
   assert.ok(result.diagnostics.every((diagnostic) => diagnostic.line > 0))
@@ -112,6 +114,204 @@ test('reports unsupported render calls with an actionable location', () => {
     result.diagnostics[0]!.suggestion ?? '',
     /Calculate the initial value in Go|ClientOnly|portable|Go/,
   )
+})
+
+test('bakes useRef initial .current like useState', () => {
+  const result = compileSource({
+    routeId: 'ref',
+    sourceText: `
+      import { useRef } from 'react'
+      export default function Page(props: { label: string }) {
+        const root = useRef<HTMLDivElement>(null)
+        const label = useRef(props.label)
+        return <div ref={root}>{label.current}</div>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.deepEqual(result.plan.root, {
+    kind: 'element',
+    tag: 'div',
+    namespace: 'html',
+    attributes: [],
+    children: [{ kind: 'text', value: { kind: 'path', path: ['label'] } }],
+  })
+})
+
+test('splits unsupported hooks, array methods, and arbitrary calls', () => {
+  const hook = compileSource({
+    routeId: 'hook',
+    sourceText: `
+      export default function Page() {
+        const x = useFancy()
+        return <p>{x}</p>
+      }
+      function useFancy() { return 'x' }
+    `,
+  })
+  assert.equal(hook.ok, false)
+  if (!hook.ok) {
+    assert.ok(hook.diagnostics.some((d) => d.code === 'GB1086'))
+  }
+
+  const array = compileSource({
+    routeId: 'array',
+    sourceText: `
+      export default function Page(props: { items: { id: string; name: string }[] }) {
+        return <ul>{props.items.find((item) => item.id === 'a')?.name}</ul>
+      }
+    `,
+  })
+  assert.equal(array.ok, false)
+  if (!array.ok) {
+    assert.ok(array.diagnostics.some((d) => d.code === 'GB1087'))
+  }
+
+  const call = compileSource({
+    routeId: 'call',
+    sourceText: `
+      export default function Page() {
+        return <p>{Math.random()}</p>
+      }
+    `,
+  })
+  assert.equal(call.ok, false)
+  if (!call.ok) {
+    assert.ok(call.diagnostics.some((d) => d.code === 'GB1088'))
+  }
+})
+
+test('desugars early return if into conditional plan nodes', () => {
+  const result = compileSource({
+    routeId: 'modal',
+    sourceText: `
+      export default function Page(props: { open: boolean; title: string }) {
+        if (!props.open) return null
+        return <dialog>{props.title}</dialog>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.plan.root.kind, 'conditional')
+})
+
+test('compiles presentational class components with this.props', () => {
+  const result = compileSource({
+    routeId: 'class',
+    sourceText: `
+      import { Component } from 'react'
+      export default class Card extends Component {
+        props!: { title: string }
+        render() {
+          return <h1>{this.props.title}</h1>
+        }
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.clientBoundaries.length, 0)
+  assert.deepEqual(result.plan.root, {
+    kind: 'element',
+    tag: 'h1',
+    namespace: 'html',
+    attributes: [],
+    children: [{ kind: 'text', value: { kind: 'path', path: ['title'] } }],
+  })
+})
+
+test('bakes class field state for first paint', () => {
+  const result = compileSource({
+    routeId: 'class-state',
+    sourceText: `
+      import { Component } from 'react'
+      export default class Counter extends Component {
+        state = { count: 3 }
+        render() {
+          return <span>{this.state.count}</span>
+        }
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.deepEqual(result.plan.root, {
+    kind: 'element',
+    tag: 'span',
+    namespace: 'html',
+    attributes: [],
+    children: [{ kind: 'text', value: { kind: 'literal', value: 3 } }],
+  })
+})
+
+test('compiles filter().map and dynamic index expressions', () => {
+  const result = compileSource({
+    routeId: 'gallery',
+    sourceText: `
+      export default function Page(props: {
+        items: { id: string; name: string; ok: boolean }[]
+        index: number
+      }) {
+        const current = props.items[props.index]
+        return (
+          <div>
+            <p>{current.name}</p>
+            <ul>
+              {props.items.filter((item) => item.ok).map((item) => (
+                <li key={item.id}>{item.name}</li>
+              ))}
+            </ul>
+          </div>
+        )
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  const json = JSON.stringify(result.plan)
+  assert.match(json, /"kind":"index"/)
+  assert.match(json, /"when"/)
+})
+
+test('bakes usePathname from request locals path', () => {
+  const result = compileSource({
+    routeId: 'nav',
+    sourceText: `
+      import { usePathname } from '@go-beyond/react'
+      export default function Page() {
+        const pathname = usePathname()
+        return <nav data-path={pathname}>GoBeyond</nav>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.match(JSON.stringify(result.plan), /__gobeyond/)
+})
+
+test('compiles Columns into a styled div', () => {
+  const result = compileSource({
+    routeId: 'columns',
+    sourceText: `
+      export default function Page(props: { items: { id: string; src: string }[] }) {
+        return (
+          <Columns columnCount={3} gap="1rem">
+            {props.items.map((item) => (
+              <img key={item.id} src={item.src} alt="" />
+            ))}
+          </Columns>
+        )
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.plan.root.kind, 'element')
+  if (result.plan.root.kind === 'element') {
+    assert.equal(result.plan.root.tag, 'div')
+  }
 })
 
 test('compiles portable useMemo by inlining the factory expression', () => {
@@ -2204,21 +2404,21 @@ test('resolves export-star dependencies from a pnpm package realpath without tra
   )
 })
 
-test('downgrades a valid class package component only at its outer use-client wrapper', async (t) => {
+test('downgrades a viewport-stateful class package only at its outer use-client wrapper', async (t) => {
   const projectRoot = await fixtureProject(t, {
     'app/page.tsx': `import { Gallery } from '../components/gallery.js'; export default function Page(){ return <Gallery /> }`,
     'components/gallery.tsx': `
       'use client'
-      import Masonry from 'react-masonry-css'
-      export function Gallery() { return <Masonry><p>Image</p></Masonry> }
+      import ViewportLayout from '@synthetic/viewport-layout'
+      export function Gallery() { return <ViewportLayout><p>Image</p></ViewportLayout> }
     `,
-    'node_modules/react-masonry-css/package.json': JSON.stringify({
-      name: 'react-masonry-css',
+    'node_modules/@synthetic/viewport-layout/package.json': JSON.stringify({
+      name: '@synthetic/viewport-layout',
       type: 'module',
       exports: './index.js',
     }),
-    'node_modules/react-masonry-css/index.js': `
-      export default class Masonry {
+    'node_modules/@synthetic/viewport-layout/index.js': `
+      export default class ViewportLayout {
         render() { return this.props.children }
       }
     `,

@@ -94,6 +94,7 @@
         "item": { "type": "string", "minLength": 1 },
         "index": { "type": "string" },
         "key": { "$ref": "#/$defs/expression" },
+        "when": { "$ref": "#/$defs/expression" },
         "body": { "$ref": "#/$defs/node" }
       }
     },
@@ -146,6 +147,16 @@
         },
         {
           "type": "object",
+          "required": ["kind", "object", "index"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "index" },
+            "object": { "$ref": "#/$defs/expression" },
+            "index": { "$ref": "#/$defs/expression" }
+          }
+        },
+        {
+          "type": "object",
           "required": ["kind", "operator", "left", "right"],
           "additionalProperties": false,
           "properties": {
@@ -167,11 +178,32 @@
         },
         {
           "type": "object",
+          "required": ["kind", "test", "consequent", "alternate"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "ternary" },
+            "test": { "$ref": "#/$defs/expression" },
+            "consequent": { "$ref": "#/$defs/expression" },
+            "alternate": { "$ref": "#/$defs/expression" }
+          }
+        },
+        {
+          "type": "object",
           "required": ["kind", "name", "arguments"],
           "additionalProperties": false,
           "properties": {
             "kind": { "const": "helper" },
             "name": { "enum": ["string", "lower", "upper", "join", "url", "imageSrc", "style"] },
+            "arguments": { "type": "array", "items": { "$ref": "#/$defs/expression" } }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "name", "arguments"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "intrinsic" },
+            "name": { "type": "string", "minLength": 1 },
             "arguments": { "type": "array", "items": { "$ref": "#/$defs/expression" } }
           }
         }

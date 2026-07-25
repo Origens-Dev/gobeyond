@@ -99,6 +99,53 @@ func TestIntrinsicRoundTripAndRegistryValidation(t *testing.T) {
 	}
 }
 
+func TestIndexExprRoundTrip(t *testing.T) {
+	input := `{"apiVersion":"gobeyond.render/v1alpha1","routeId":"idx","root":{"kind":"text","value":{"kind":"index","object":{"kind":"path","path":["items"]},"index":{"kind":"path","path":["i"]}}}}`
+	plan, err := Parse([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := plan.Root.(*Text)
+	idx, ok := text.Value.(*IndexExpr)
+	if !ok || idx.Kind != "index" {
+		t.Fatalf("unexpected index expression: %#v", text.Value)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reparsed, err := Parse(encoded)
+	if err != nil {
+		t.Fatalf("index round-trip failed: %v", err)
+	}
+	if _, ok := reparsed.Root.(*Text).Value.(*IndexExpr); !ok {
+		t.Fatalf("round-trip lost index expression: %#v", reparsed.Root)
+	}
+}
+
+func TestEachWhenRoundTrip(t *testing.T) {
+	input := `{"apiVersion":"gobeyond.render/v1alpha1","routeId":"list","root":{"kind":"each","items":{"kind":"path","path":["items"]},"item":"item","index":"i","when":{"kind":"path","path":["item","visible"]},"key":{"kind":"path","path":["item","id"]},"body":{"kind":"text","value":{"kind":"path","path":["item","name"]}}}}`
+	plan, err := Parse([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	each := plan.Root.(*Each)
+	if each.When == nil {
+		t.Fatal("expected when expression")
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reparsed, err := Parse(encoded)
+	if err != nil {
+		t.Fatalf("each.when round-trip failed: %v", err)
+	}
+	if reparsed.Root.(*Each).When == nil {
+		t.Fatal("round-trip lost when")
+	}
+}
+
 func TestStrictDecodeRejectsUnknownProperties(t *testing.T) {
 	cases := []string{
 		`{"apiVersion":"gobeyond.render/v1alpha1","routeId":"x","extra":true,"root":{"kind":"fragment","children":[]}}`,

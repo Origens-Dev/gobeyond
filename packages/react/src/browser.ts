@@ -5,8 +5,10 @@ import {
   markBuildHealthy,
 } from "./build-mismatch.js";
 import {
+  activeNavigationFromMatch,
   composeRouteElement,
   createSoftNavigation,
+  matchBrowserRoute,
   resolveBrowserRoute,
   routeParts,
   type NavigationLifecycleListener,
@@ -14,6 +16,7 @@ import {
   type RouteRegistry,
   type SoftNavigationOptions,
 } from "./navigation.js";
+import { setActiveNavigation } from "./active-navigation.js";
 import { assertPinnedReactVersions } from "./version.js";
 
 export {
@@ -46,11 +49,13 @@ export {
 } from "./build-mismatch.js";
 export {
   NAVIGATION_ANNOUNCER_ID,
+  activeNavigationFromMatch,
   applyDocumentMetadata,
   browserRouteFromModule,
   commonLayoutPrefixLength,
   composeRouteElement,
   createSoftNavigation,
+  extractRouteParams,
   matchBrowserRoute,
   parseRuntimeNavigationPayload,
   refreshNavigation,
@@ -59,6 +64,7 @@ export {
   routeComponent,
   routeParts,
   subscribeNavigation,
+  type ActiveNavigationState,
   type BrowserRoute,
   type BrowserRouteRegistration,
   type BrowserRouteModule,
@@ -79,6 +85,11 @@ export {
   type SoftNavigationController,
   type SoftNavigationOptions,
 } from "./navigation.js";
+export {
+  getActiveNavigation,
+  setActiveNavigation,
+  subscribeActiveNavigation,
+} from "./active-navigation.js";
 export {
   DEFAULT_ROUTER_CACHE_TTL_MS,
   createRouterCache,
@@ -220,6 +231,25 @@ function hydrate(
 
   const render =
     options.render ?? ((resolved, props) => composeRouteElement(resolved, props));
+
+  // Seed active-nav before hydrateRoot so usePathname/useRoute match the Go
+  // baked pathname on the first React paint.
+  const targetWindow = targetDocument.defaultView;
+  const pathname = targetWindow?.location.pathname ?? "/";
+  const matched = matchBrowserRoute(pathname, options.routes);
+  setActiveNavigation(
+    matched
+      ? activeNavigationFromMatch(
+          { routeId: payload.routeId, pattern: matched.pattern },
+          pathname,
+        )
+      : {
+          routeId: payload.routeId,
+          pathname,
+          params: {},
+        },
+  );
+
   const root = hydrateRoot(
     rootElement,
     render(route, payload.props as Record<string, unknown>),
@@ -228,7 +258,6 @@ function hydrate(
 
   rootElement.dataset.gobeyondBuild = payload.buildId;
   rootElement.dataset.gobeyondRoute = payload.routeId;
-  const targetWindow = targetDocument.defaultView;
   if (targetWindow) {
     markBuildHealthy(payload.buildId, {
       sessionStorage: targetWindow.sessionStorage,
@@ -249,7 +278,9 @@ function hydrate(
           subscribe(_listener: NavigationLifecycleListener) {
             return () => {};
           },
-          destroy() {},
+          destroy() {
+            setActiveNavigation(undefined);
+          },
         }
       : createSoftNavigation({
           buildId: payload.buildId,

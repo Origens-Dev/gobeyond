@@ -104,9 +104,15 @@ OpenTofu validation is separate and requires the `tofu` binary:
   keyed by path+search, TTL capped at 30s) are shipped; rendered HTML is
   recomputed every request so CSP nonces and hydration `renderNow` stay
   fresh.
+- Portable profile now includes `useRef`, statement-level `if`/early return,
+  dynamic `index` expressions, `.filter`/`.slice` before `.map`, presentational
+  class components with baked initial `this.state`, and `usePathname`/`useRoute`.
+  `<Columns>` provides portable CSS multi-column layout; viewport-dependent
+  third-party layout widgets stay client-only ([ADR 003](../adr/003-masonry-first-paint-spike.md)).
 - No general third-party server-render metadata; unsupported package rendering
   requires a reported package-authored or project-owned `use client` boundary.
-  Explicit `ClientOnly` fallbacks are optional.
+  Explicit `ClientOnly` fallbacks are optional. Downgrades expose
+  `GB1086`/`GB1087`/`GB1088` plus `gobeyond report portability`.
 - No seamless routing of old browser sessions to old Go deployments; stale
   clients use guarded reload and actions are never replayed.
 - Conformance currently freezes a useful MVP corpus rather than claiming

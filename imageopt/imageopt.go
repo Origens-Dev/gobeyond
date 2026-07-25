@@ -1,4 +1,10 @@
 // Package imageopt provides the Node-free GoBeyond runtime image optimizer.
+//
+// This package is AWS-free by design: it owns the Loader interface, the disk
+// source, the HTTP handler, and the resize/re-encode path. The S3-backed
+// source lives in the nested module
+// github.com/Origens-Dev/gobeyond/imageopt/s3, so only deployments that read
+// images from S3 pull the AWS SDK into their module graph.
 package imageopt
 
 import (
@@ -19,12 +25,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/smithy-go"
 )
 
 const (
@@ -60,45 +60,57 @@ type DiskLoader struct {
 	Root string
 }
 
-// S3GetObjectAPI is the subset of the S3 client used by S3Loader.
-type S3GetObjectAPI interface {
-	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
-}
-
-// S3Loader reads same-site static files from a site-scoped S3 prefix.
-type S3Loader struct {
-	Client S3GetObjectAPI
-	Bucket string
-	Prefix string
-}
-
 // NewLoaderFromEnvironment selects a disk source when diskRoot (or
-// GOBEYOND_STATIC_DIR) is set, otherwise an S3 source when the image source
-// bucket and prefix environment variables are configured.
-func NewLoaderFromEnvironment(ctx context.Context, diskRoot string) (Loader, error) {
+// GOBEYOND_STATIC_DIR) is set, and reports no loader when nothing is
+// configured. This package is deliberately AWS-free: S3-backed sources live in
+// the nested github.com/Origens-Dev/gobeyond/imageopt/s3 module, whose
+// s3.NewLoaderFromEnvironment adds the S3 branch to this same environment
+// contract.
+func NewLoaderFromEnvironment(_ context.Context, diskRoot string) (Loader, error) {
+	if root, ok := DiskRootFromEnvironment(diskRoot); ok {
+		return DiskLoader{Root: root}, nil
+	}
+	configured, err := S3SourceFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	if configured {
+		return nil, fmt.Errorf(
+			"%s/%s are configured but this build has no S3 image source: import github.com/Origens-Dev/gobeyond/imageopt/s3 and call s3.NewLoaderFromEnvironment",
+			ImageSourceBucketEnv, ImageSourcePrefixEnv)
+	}
+	return nil, nil
+}
+
+// DiskRootFromEnvironment resolves the disk image source: diskRoot when set,
+// otherwise GOBEYOND_STATIC_DIR. ok is false when neither is configured.
+func DiskRootFromEnvironment(diskRoot string) (root string, ok bool) {
 	if strings.TrimSpace(diskRoot) == "" {
 		diskRoot = os.Getenv("GOBEYOND_STATIC_DIR")
 	}
-	if strings.TrimSpace(diskRoot) != "" {
-		return DiskLoader{Root: diskRoot}, nil
+	if strings.TrimSpace(diskRoot) == "" {
+		return "", false
 	}
+	return diskRoot, true
+}
 
+// S3SourceFromEnvironment reports whether a complete, valid S3 image source is
+// configured. It errors when the bucket and prefix disagree about being set or
+// when the prefix is unsafe, so the imageopt/s3 module and AWS-free builds
+// report the same misconfiguration.
+func S3SourceFromEnvironment() (configured bool, err error) {
 	bucket := strings.TrimSpace(os.Getenv(ImageSourceBucketEnv))
 	prefix := strings.TrimSpace(os.Getenv(ImageSourcePrefixEnv))
 	if bucket == "" && prefix == "" {
-		return nil, nil
+		return false, nil
 	}
 	if bucket == "" || prefix == "" {
-		return nil, fmt.Errorf("%s and %s must be configured together", ImageSourceBucketEnv, ImageSourcePrefixEnv)
+		return false, fmt.Errorf("%s and %s must be configured together", ImageSourceBucketEnv, ImageSourcePrefixEnv)
 	}
-	if _, err := validatePrefix(prefix); err != nil {
-		return nil, fmt.Errorf("invalid %s: %w", ImageSourcePrefixEnv, err)
+	if _, err := ValidatePrefix(prefix); err != nil {
+		return false, fmt.Errorf("invalid %s: %w", ImageSourcePrefixEnv, err)
 	}
-	cfg, err := awsconfig.LoadDefaultConfig(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("load AWS configuration for image source: %w", err)
-	}
-	return S3Loader{Client: s3.NewFromConfig(cfg), Bucket: bucket, Prefix: prefix}, nil
+	return true, nil
 }
 
 // Open securely resolves source beneath the configured static root.
@@ -146,35 +158,6 @@ func (loader DiskLoader) Open(_ context.Context, source string) (io.ReadCloser, 
 		return nil, ErrNotFound
 	}
 	return file, nil
-}
-
-// Open maps /path/to/image.png to <Prefix>/path/to/image.png.
-func (loader S3Loader) Open(ctx context.Context, source string) (io.ReadCloser, error) {
-	relative, err := validateSource(source)
-	if err != nil {
-		return nil, err
-	}
-	prefix, err := validatePrefix(loader.Prefix)
-	if err != nil || loader.Client == nil || strings.TrimSpace(loader.Bucket) == "" {
-		return nil, fmt.Errorf("configure S3 image source: %w", ErrInvalidSource)
-	}
-	output, err := loader.Client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(loader.Bucket),
-		Key:    aws.String(prefix + "/" + relative),
-	})
-	if err != nil {
-		var noSuchKey *s3types.NoSuchKey
-		var apiError smithy.APIError
-		if errors.As(err, &noSuchKey) ||
-			(errors.As(err, &apiError) && (apiError.ErrorCode() == "NoSuchKey" || apiError.ErrorCode() == "NotFound")) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	if output == nil || output.Body == nil {
-		return nil, ErrNotFound
-	}
-	return output.Body, nil
 }
 
 // Handler returns an HTTP handler for Route.
@@ -257,6 +240,15 @@ func Handler(loader Loader) http.Handler {
 		_, _ = writer.Write(output)
 	})
 }
+
+// ValidateSource normalizes a same-site image source into a safe relative
+// path. Loader implementations outside this package (e.g. imageopt/s3) must
+// call it before touching any storage.
+func ValidateSource(source string) (string, error) { return validateSource(source) }
+
+// ValidatePrefix normalizes a storage prefix, rejecting traversal and empty
+// segments. It is exported for out-of-package Loader implementations.
+func ValidatePrefix(prefix string) (string, error) { return validatePrefix(prefix) }
 
 func validateSource(source string) (string, error) {
 	if source == "" || !strings.HasPrefix(source, "/") || strings.HasPrefix(source, "//") || strings.Contains(source, "\\") {

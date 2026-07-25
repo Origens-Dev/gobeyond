@@ -58,6 +58,7 @@ type Each struct {
 	Item  string     `json:"item"`
 	Index string     `json:"index,omitempty"`
 	Key   Expression `json:"key"`
+	When  Expression `json:"when,omitempty"`
 	Body  Node       `json:"body"`
 }
 
@@ -146,6 +147,16 @@ type Path struct {
 }
 
 func (*Path) isExpression() {}
+
+// IndexExpr is a dynamic property or array-element lookup (object[index]).
+// Named IndexExpr to avoid clashing with the PathSegment Index helper.
+type IndexExpr struct {
+	Kind   string     `json:"kind"` // "index"
+	Object Expression `json:"object"`
+	Index  Expression `json:"index"`
+}
+
+func (*IndexExpr) isExpression() {}
 
 type Binary struct {
 	Kind     string     `json:"kind"`

@@ -4,10 +4,14 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, resolve } from 'node:path'
 
 import {
+  buildPortabilityReport,
   compileFile,
   compileProject,
   formatDiagnostics,
+  formatPortabilityReport,
+  type ClientBoundaryManifest,
   type CompileProjectOptions,
+  type RenderPlan,
   type SourceRoot,
 } from './index.js'
 
@@ -15,11 +19,50 @@ function usage(): never {
   process.stderr.write(`usage:
   gobeyond-compile --route <route-id> [--project-root <dir>] [--source-root <prefix=dir>] [--out <plan.json>] <page.tsx>
   gobeyond-compile --project <project.json> [--out <plans.json>]
+  gobeyond-compile report-portability --project <compiler-output.json> [--out <report.json>]
 `)
   process.exit(2)
 }
 
 const args = process.argv.slice(2)
+
+if (args[0] === 'report-portability') {
+  let projectOutputPath: string | undefined
+  let outputPath: string | undefined
+  for (let index = 1; index < args.length; index += 1) {
+    const argument = args[index]!
+    if (argument === '--project') {
+      projectOutputPath = args[++index]
+    } else if (argument === '--out') {
+      outputPath = args[++index]
+    } else {
+      usage()
+    }
+  }
+  if (!projectOutputPath) usage()
+  const raw = JSON.parse(await readFile(resolve(projectOutputPath), 'utf8')) as {
+    plans?: RenderPlan[]
+    clientBoundaries?: ClientBoundaryManifest
+  }
+  if (!Array.isArray(raw.plans) || !raw.clientBoundaries) {
+    process.stderr.write(
+      'report-portability expects gobeyond.compiler-project output with plans and clientBoundaries.\n',
+    )
+    process.exitCode = 1
+  } else {
+    const report = buildPortabilityReport(
+      raw.plans,
+      raw.clientBoundaries.boundaries,
+    )
+    if (outputPath) {
+      await writeOutput(report, outputPath)
+    } else {
+      process.stdout.write(formatPortabilityReport(report))
+    }
+  }
+  process.exit(process.exitCode ?? 0)
+}
+
 let routeId: string | undefined
 let outputPath: string | undefined
 let inputPath: string | undefined

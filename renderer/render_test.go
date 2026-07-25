@@ -338,6 +338,137 @@ func TestTernaryExpressionSelectsBranch(t *testing.T) {
 		t.Fatalf("ternary = %v, want yes", value)
 	}
 }
+
+func TestIndexExprReturnsNullForMissingAndOutOfRange(t *testing.T) {
+	t.Parallel()
+	env := environment{
+		props: map[string]any{
+			"items": []any{"a", "b"},
+			"sparse": []any{"only-first"},
+			"obj":    map[string]any{"present": "yes"},
+		},
+		locals: map[string]any{},
+	}
+	cases := []struct {
+		name  string
+		expr  *renderplan.IndexExpr
+		want  any
+		isNil bool
+	}{
+		{
+			name: "in range",
+			expr: &renderplan.IndexExpr{
+				Kind:   "index",
+				Object: path("items"),
+				Index:  lit(1),
+			},
+			want: "b",
+		},
+		{
+			name: "sparse out of range",
+			expr: &renderplan.IndexExpr{
+				Kind:   "index",
+				Object: path("sparse"),
+				Index:  lit(3),
+			},
+			isNil: true,
+		},
+		{
+			name: "negative index",
+			expr: &renderplan.IndexExpr{
+				Kind:   "index",
+				Object: path("items"),
+				Index:  lit(-1),
+			},
+			isNil: true,
+		},
+		{
+			name: "missing key",
+			expr: &renderplan.IndexExpr{
+				Kind:   "index",
+				Object: path("obj"),
+				Index:  lit("absent"),
+			},
+			isNil: true,
+		},
+		{
+			name: "present key",
+			expr: &renderplan.IndexExpr{
+				Kind:   "index",
+				Object: path("obj"),
+				Index:  lit("present"),
+			},
+			want: "yes",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := evaluate(tc.expr, env, "index")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.isNil {
+				if value != nil {
+					t.Fatalf("got %#v, want null", value)
+				}
+				return
+			}
+			if value != tc.want {
+				t.Fatalf("got %#v, want %#v", value, tc.want)
+			}
+		})
+	}
+}
+
+func TestIndexExprRendersNullAsEmptyText(t *testing.T) {
+	root := &renderplan.Element{Kind: "element", Tag: "p", Children: []renderplan.Node{
+		&renderplan.Text{Kind: "text", Value: &renderplan.IndexExpr{
+			Kind:   "index",
+			Object: path("items"),
+			Index:  lit(5),
+		}},
+	}}
+	got, err := Render(plan(root), map[string]any{"items": []any{"a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `<p></p>`; got != want {
+		t.Fatalf("want %s, got %s", want, got)
+	}
+}
+
+func TestEachWhenSkipsItemsAndKeyUniqueness(t *testing.T) {
+	itemPath := func(name string) *renderplan.Path {
+		return &renderplan.Path{Kind: "path", Path: []renderplan.PathSegment{renderplan.Property("item"), renderplan.Property(name)}}
+	}
+	root := &renderplan.Element{Kind: "element", Tag: "ul", Children: []renderplan.Node{
+		&renderplan.Each{
+			Kind:  "each",
+			Items: path("items"),
+			Item:  "item",
+			Index: "i",
+			When:  itemPath("visible"),
+			Key:   lit("shared"),
+			Body: &renderplan.Element{Kind: "element", Tag: "li", Children: []renderplan.Node{
+				&renderplan.Text{Kind: "text", Value: itemPath("name")},
+			}},
+		},
+	}}
+	props := map[string]any{"items": []map[string]any{
+		{"name": "alpha", "visible": true},
+		{"name": "beta", "visible": false},
+		{"name": "gamma", "visible": false},
+	}}
+	got, err := Render(plan(root), props)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `<ul><li>alpha</li></ul>`
+	if got != want {
+		t.Fatalf("want %s, got %s", want, got)
+	}
+}
+
 func path(parts ...string) renderplan.Expression {
 	segments := make([]renderplan.PathSegment, len(parts))
 	for i, part := range parts {

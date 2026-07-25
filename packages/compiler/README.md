@@ -23,11 +23,19 @@ const result = await compileFile({
 ```
 
 The initial compiler supports intrinsic HTML/SVG, fragments, project-owned
-function components across relative imports and explicit source-root aliases,
-JSX `children` composition, props paths, portable unary/binary expressions,
-conditional markup, keyed `.map()` output, deterministic `useState` initial
-values, `SafeHTML`, and `ClientOnly` with an optional fallback. Event handlers and `useEffect`
-bodies remain browser code and do not enter the server plan.
+function and presentational class components across relative imports and
+explicit source-root aliases, JSX `children` composition, props paths, dynamic
+`index` expressions, portable unary/binary expressions, conditional markup
+(including desugared `if` / early return), keyed `.map()` / `.filter().map` /
+`.slice().map` output, deterministic `useState` / `useRef` initial values,
+baked class `this.state`, portable `usePathname` / `useRoute`, `<Columns>`,
+`SafeHTML`, and `ClientOnly` with an optional fallback. Event handlers and
+`useEffect` bodies remain browser code and do not enter the server plan.
+
+Unsupported calls split into `GB1086` (React hook), `GB1087` (array method),
+and `GB1088` (arbitrary call), each with a specific remedy. Downgrades record
+the triggering construct; `gobeyond-compile report-portability` (and
+`gobeyond report portability`) summarize per-route markup lost.
 
 The compiler attempts portable compilation even for `use client` modules.
 Unsupported render behavior may downgrade only at the nearest marked boundary;

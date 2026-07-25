@@ -6,6 +6,11 @@ endpoint. The runtime loads sources from local disk when
 `GOBEYOND_IMAGE_SOURCE_BUCKET` and `GOBEYOND_IMAGE_SOURCE_PREFIX` are set.
 Disk takes precedence so local development never depends on S3.
 
+The core `imageopt` package is AWS-free: it contains `Loader`, `DiskLoader`,
+`Handler`, and the optimize path only. S3 support lives in the nested module
+`github.com/Origens-Dev/gobeyond/imageopt/s3`, so apps that do not serve images
+from S3 never pull the AWS SDK into their module graph.
+
 ## Build an image URL
 
 ```tsx
@@ -77,6 +82,28 @@ GOBEYOND_IMAGE_SOURCE_BUCKET=gobeyond-{env}-site-static
 GOBEYOND_IMAGE_SOURCE_PREFIX=landing  # or app
 ```
 
+Add the nested module only when you use S3:
+
+```bash
+go get github.com/Origens-Dev/gobeyond/imageopt/s3
+```
+
+```go
+import (
+    "github.com/Origens-Dev/gobeyond/imageopt"
+    imageopts3 "github.com/Origens-Dev/gobeyond/imageopt/s3"
+)
+
+// Disk when GOBEYOND_STATIC_DIR is set, otherwise the configured S3 source.
+loader, err := imageopts3.NewLoaderFromEnvironment(ctx, "")
+// runtime.Config{ImageLoader: loader}
+```
+
+`imageopt.NewLoaderFromEnvironment` still resolves the disk source in AWS-free
+builds; when the S3 variables are configured but the nested module is not
+imported, it returns an error naming `imageopt/s3` rather than silently serving
+nothing.
+
 A request for `/brand/logo.png` therefore reads
 `s3://gobeyond-{env}-site-static/landing/brand/logo.png` (or the corresponding
 `app/` key). The hosting platform also codes cross-account S3 `GetObject` plus a
@@ -85,10 +112,37 @@ keys `url`, `w`, `q`, `f`, and trusted viewer host). That OpenTofu is not yet
 applied in AWS. Design details are locked in
 [ADR 002](https://github.com/Origens-Dev/gobeyond-internal/blob/main/docs/adr/002-image-optimizer-design-lock.md).
 
-The S3 loader and Lambda environment wiring are present in code, but production
+The S3 loader (`imageopt/s3.Loader`) and Lambda environment wiring are present in code, but production
 availability must not be claimed until the IAM, bucket policy, Lambda
 configuration, and edge behavior have been applied.
 
 Social preview images should remain direct, absolute HTTPS URLs such as
 `https://example.com/social/og.png`; do not route Open Graph or Twitter cards
 through the runtime optimizer. See [Icons and social sharing](icons-and-social.md).
+
+## Portable multi-column galleries
+
+The first-party `<Columns>` component flows real content across CSS columns.
+It uses no JavaScript measurement, so Go can include the images and layout
+styles in first-paint HTML:
+
+```tsx
+import { Columns, imageSrc } from "@go-beyond/react";
+
+export function Gallery({ photos }: { photos: readonly string[] }) {
+  return (
+    <Columns columnCount={3} gap="1rem">
+      {photos.map((src) => (
+        <img key={src} src={imageSrc(src, { w: 640 })} alt="" width={640} height={480} />
+      ))}
+    </Columns>
+  );
+}
+```
+
+`<Columns>` uses CSS `column-count` / `column-gap` only — no JavaScript
+measurement — so it is safe for portable compilation and hydration. Third-party
+layout widgets that depend on viewport or browser state remain client-only.
+When such a widget is necessary, isolate it behind `ClientOnly`; a portable
+layout may be supplied as the fallback when showing the same content before
+JavaScript is useful.

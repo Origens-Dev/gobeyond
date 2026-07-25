@@ -42,6 +42,8 @@ export type EachNode = {
   items: PlanExpression
   item: string
   index?: string
+  /** Optional filter predicate; item is skipped when falsey (filter before map). */
+  when?: PlanExpression
   key: PlanExpression
   body: PlanNode
 }
@@ -51,6 +53,13 @@ export type RawHTMLNode = { kind: 'rawHtml'; value: PlanExpression }
 export type PlanExpression =
   | { kind: 'literal'; value: unknown }
   | { kind: 'path'; path: Array<string | number> }
+  | {
+      kind: 'index'
+      /** Base value (typically a path to an array or object). */
+      object: PlanExpression
+      /** Dynamic index / key expression. */
+      index: PlanExpression
+    }
   | {
       kind: 'binary'
       operator:
@@ -140,6 +149,19 @@ export type ClientBoundaryRecord = {
   end: number
   line: number
   column: number
+  /**
+   * Primary diagnostic code that triggered the downgrade (e.g. GB1086).
+   * Present when the compiler could attribute a single leading cause.
+   */
+  triggerCode?: string
+  /**
+   * Short description of the unsupported construct (hook name, method, call).
+   */
+  triggerConstruct?: string
+  /**
+   * Actionable hint: wrap just this subtree in ClientOnly to preserve siblings.
+   */
+  suggestion?: string
 }
 
 /**
@@ -189,6 +211,37 @@ export type ClientBoundaryManifest = {
   boundaries: ClientBoundaryRecord[]
   useIdSites: UseIdSiteRecord[]
   dateIntrinsicSites: DateIntrinsicSiteRecord[]
+}
+
+export const PORTABILITY_REPORT_API_VERSION =
+  'gobeyond.portability-report/v1alpha1' as const
+
+/** One downgraded component in a portability report. */
+export type PortabilityDowngrade = {
+  routeId: string
+  component: string
+  source: string
+  boundary: string
+  triggerCode?: string
+  triggerConstruct?: string
+  reason: string
+  suggestion?: string
+  /**
+   * Share of the route plan that became `clientOnly` (0–1). Approximate:
+   * downgraded call sites / total element+each+conditional nodes under the
+   * route root when countable; otherwise omitted.
+   */
+  markupLostShare?: number
+}
+
+export type PortabilityReport = {
+  apiVersion: typeof PORTABILITY_REPORT_API_VERSION
+  routes: Array<{
+    routeId: string
+    downgrades: PortabilityDowngrade[]
+    /** Sum of markupLostShare across downgrades, capped at 1. */
+    totalMarkupLostShare: number
+  }>
 }
 
 export type SourceRoot = {

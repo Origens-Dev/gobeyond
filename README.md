@@ -91,13 +91,20 @@ changes.
 
 ```bash
 pnpm install
+go run ./cmd/gobeyond doctor
 go run ./cmd/gobeyond generate
 go run ./cmd/gobeyond generate --check
 go test ./...
+go test ./... -C imageopt/s3
 pnpm -r test
 go run ./cmd/gobeyond build
 ./scripts/verify-node-free-server.sh
 ```
+
+`gobeyond doctor` checks Go/Node/pnpm, verifies each `@go-beyond/{react,schema,compiler,vite}`
+package's compiled exports entrypoints exist, and fails on linked version skew
+(instead of a later raw `ERR_MODULE_NOT_FOUND`). The nested `imageopt/s3`
+module is tested separately so the AWS SDK stays out of the root module graph.
 
 The build emits:
 

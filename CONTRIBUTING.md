@@ -11,8 +11,10 @@ renderer, conformance, and diagnostic cases land together.
 Before opening a change, run:
 
 ```bash
+go run ./cmd/gobeyond doctor
 go run ./cmd/gobeyond generate --check
 go test ./...
+go test ./... -C imageopt/s3
 go test -race ./...
 go vet ./...
 pnpm -r build

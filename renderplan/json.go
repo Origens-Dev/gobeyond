@@ -140,6 +140,7 @@ func decodeNode(data []byte, path string) (Node, error) {
 			Item  string          `json:"item"`
 			Index string          `json:"index,omitempty"`
 			Key   json.RawMessage `json:"key"`
+			When  json.RawMessage `json:"when,omitempty"`
 			Body  json.RawMessage `json:"body"`
 		}
 		if err := strictUnmarshal(data, &raw); err != nil {
@@ -153,11 +154,18 @@ func decodeNode(data []byte, path string) (Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		var when Expression
+		if len(raw.When) > 0 && string(raw.When) != "null" {
+			when, err = decodeExpression(raw.When, path+".when")
+			if err != nil {
+				return nil, err
+			}
+		}
 		body, err := decodeNode(raw.Body, path+".body")
 		if err != nil {
 			return nil, err
 		}
-		return &Each{Kind: raw.Kind, Items: items, Item: raw.Item, Index: raw.Index, Key: key, Body: body}, nil
+		return &Each{Kind: raw.Kind, Items: items, Item: raw.Item, Index: raw.Index, Key: key, When: when, Body: body}, nil
 	case "clientOnly":
 		var raw struct {
 			Kind     string          `json:"kind"`
@@ -235,6 +243,23 @@ func decodeExpression(data []byte, path string) (Expression, error) {
 			return nil, decodeError(path, "invalid path", err)
 		}
 		return &raw, nil
+	case "index":
+		var raw struct {
+			Kind          string
+			Object, Index json.RawMessage
+		}
+		if err := strictUnmarshal(data, &raw); err != nil {
+			return nil, decodeError(path, "invalid index expression", err)
+		}
+		object, err := decodeExpression(raw.Object, path+".object")
+		if err != nil {
+			return nil, err
+		}
+		index, err := decodeExpression(raw.Index, path+".index")
+		if err != nil {
+			return nil, err
+		}
+		return &IndexExpr{Kind: raw.Kind, Object: object, Index: index}, nil
 	case "binary":
 		var raw struct {
 			Kind, Operator string

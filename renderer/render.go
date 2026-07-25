@@ -16,7 +16,8 @@ import (
 )
 
 type Renderer struct {
-	now func() time.Time
+	now        func() time.Time
+	navigation *NavigationMeta
 }
 
 const maxRenderedBytes = 8 << 20
@@ -84,7 +85,11 @@ func (r *Renderer) RenderAt(plan *renderplan.Plan, props any, now time.Time) (st
 	// portable across browser timezones, local getters match when the browser
 	// zone equals the server zone (same class of SSR caveat as Next.js).
 	var out renderBuffer
-	ctx := renderContext{env: environment{props: props, locals: map[string]any{}, now: now}, namespace: renderplan.NamespaceHTML}
+	locals := map[string]any{}
+	for key, value := range navigationLocals(r.navigation) {
+		locals[key] = value
+	}
+	ctx := renderContext{env: environment{props: props, locals: locals, now: now}, namespace: renderplan.NamespaceHTML}
 	if err := r.node(&out, plan.Root, ctx, "$.root"); err != nil {
 		return "", time.Time{}, err
 	}
@@ -201,7 +206,16 @@ func (r *Renderer) each(out *renderBuffer, n *renderplan.Each, ctx renderContext
 			locals[n.Index] = i
 		}
 		loop := ctx
-		loop.env = environment{props: ctx.env.props, locals: locals}
+		loop.env = environment{props: ctx.env.props, locals: locals, now: ctx.env.now}
+		if n.When != nil {
+			include, err := evaluate(n.When, loop.env, path+".when")
+			if err != nil {
+				return err
+			}
+			if !truthy(include) {
+				continue
+			}
+		}
 		key, err := evaluate(n.Key, loop.env, path+".key")
 		if err != nil {
 			return err

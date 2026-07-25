@@ -115,6 +115,11 @@ func validateNode(node Node, path string, depth int) error {
 		if err := validateExpression(n.Key, path+".key", depth+1); err != nil {
 			return err
 		}
+		if n.When != nil {
+			if err := validateExpression(n.When, path+".when", depth+1); err != nil {
+				return err
+			}
+		}
 		return validateNode(n.Body, path+".body", depth+1)
 	case *ClientOnly:
 		if n == nil || n.Kind != "clientOnly" {
@@ -161,6 +166,14 @@ func validateExpression(expr Expression, path string, depth int) error {
 				return invalid(fmt.Sprintf("%s.path[%d]", path, i), "property cannot be empty")
 			}
 		}
+	case *IndexExpr:
+		if e == nil || e.Kind != "index" {
+			return invalid(path+".kind", "index kind must be index")
+		}
+		if err := validateExpression(e.Object, path+".object", depth+1); err != nil {
+			return err
+		}
+		return validateExpression(e.Index, path+".index", depth+1)
 	case *Binary:
 		if e == nil || e.Kind != "binary" {
 			return invalid(path+".kind", "binary kind must be binary")

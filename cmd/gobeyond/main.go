@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,7 +74,9 @@ func run(args []string) error {
 		}
 		return nil
 	case "doctor":
-		return doctor()
+		return doctor(root)
+	case "report":
+		return reportCommand(root, args[1:])
 	case "preview":
 		return preview(root, args[1:])
 	case "build":
@@ -949,10 +950,10 @@ type compilerProjectOutput struct {
 }
 
 type compilerClientBoundaryManifest struct {
-	APIVersion          string                         `json:"apiVersion"`
-	Boundaries          []compilerClientBoundaryRecord `json:"boundaries"`
-	UseIDSites          []compilerUseIDSiteRecord      `json:"useIdSites"`
-	DateIntrinsicSites  []compilerDateIntrinsicSite    `json:"dateIntrinsicSites"`
+	APIVersion         string                         `json:"apiVersion"`
+	Boundaries         []compilerClientBoundaryRecord `json:"boundaries"`
+	UseIDSites         []compilerUseIDSiteRecord      `json:"useIdSites"`
+	DateIntrinsicSites []compilerDateIntrinsicSite    `json:"dateIntrinsicSites"`
 }
 
 type compilerClientBoundaryRecord struct {
@@ -970,15 +971,15 @@ type compilerClientBoundaryRecord struct {
 }
 
 type compilerUseIDSiteRecord struct {
-	ID               string `json:"id"`
-	RouteID          string `json:"routeId"`
-	Source           string `json:"source"`
-	Start            int    `json:"start"`
-	End              int    `json:"end"`
-	Line             int    `json:"line"`
-	Column           int    `json:"column"`
-	KeyExpression    string `json:"keyExpression,omitempty"`
-	SkipViteRewrite  bool   `json:"skipViteRewrite,omitempty"`
+	ID              string `json:"id"`
+	RouteID         string `json:"routeId"`
+	Source          string `json:"source"`
+	Start           int    `json:"start"`
+	End             int    `json:"end"`
+	Line            int    `json:"line"`
+	Column          int    `json:"column"`
+	KeyExpression   string `json:"keyExpression,omitempty"`
+	SkipViteRewrite bool   `json:"skipViteRewrite,omitempty"`
 }
 
 type compilerDateIntrinsicSite struct {
@@ -1479,20 +1480,6 @@ func preview(root string, args []string) error {
 	return command.Run()
 }
 
-func doctor() error {
-	fmt.Println("go:", runtime.Version())
-	for _, command := range []string{"node", "pnpm"} {
-		path, err := exec.LookPath(command)
-		if err != nil {
-			fmt.Printf("%s: missing\n", command)
-			continue
-		}
-		fmt.Printf("%s: %s\n", command, path)
-	}
-	fmt.Println("react compatibility: 19.2.8")
-	return nil
-}
-
 func add(root string, args []string) error {
 	if len(args) < 2 {
 		return errors.New("usage: gobeyond add <page|dynamic|api|action> <route> [name]")
@@ -1609,7 +1596,111 @@ func findRoot() (string, error) {
 }
 
 func usage() error {
-	return errors.New("usage: gobeyond <dev|build|preview|generate|routes|doctor|add>")
+	return errors.New("usage: gobeyond <dev|build|preview|generate|routes|doctor|report|add>")
+}
+
+// reportCommand prints a portability summary from a prior compiler-project JSON
+// artifact (plans + clientBoundaries). Prefer `gobeyond-compile report-portability`
+// during package development; this wraps the same data for app roots.
+func reportCommand(root string, args []string) error {
+	if len(args) == 0 || args[0] != "portability" {
+		return errors.New("usage: gobeyond report portability [--project <compiler-output.json>]")
+	}
+	projectPath := ""
+	rest := args[1:]
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == "--project" {
+			if i+1 >= len(rest) {
+				return errors.New("usage: gobeyond report portability [--project <compiler-output.json>]")
+			}
+			projectPath = rest[i+1]
+			i++
+		}
+	}
+	if projectPath == "" {
+		candidates := []string{
+			filepath.Join(root, "dist", "server", "compiler-output.json"),
+			filepath.Join(root, "dist", "compiler-output.json"),
+		}
+		for _, candidate := range candidates {
+			if _, err := os.Stat(candidate); err == nil {
+				projectPath = candidate
+				break
+			}
+		}
+	}
+	if projectPath == "" {
+		return errors.New("gobeyond report portability: pass --project <compiler-output.json> (gobeyond.compiler-project/v1alpha1)")
+	}
+	raw, err := os.ReadFile(projectPath)
+	if err != nil {
+		return err
+	}
+	var payload struct {
+		Plans            []json.RawMessage `json:"plans"`
+		ClientBoundaries struct {
+			Boundaries []struct {
+				RouteID          string  `json:"routeId"`
+				Component        string  `json:"component"`
+				Source           string  `json:"source"`
+				Reason           string  `json:"reason"`
+				TriggerCode      string  `json:"triggerCode"`
+				TriggerConstruct string  `json:"triggerConstruct"`
+				Suggestion       string  `json:"suggestion"`
+				MarkupLostShare  float64 `json:"markupLostShare"`
+			} `json:"boundaries"`
+		} `json:"clientBoundaries"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return fmt.Errorf("parse compiler output: %w", err)
+	}
+	if len(payload.ClientBoundaries.Boundaries) == 0 {
+		fmt.Println("No client-boundary downgrades recorded.")
+		return nil
+	}
+	fmt.Println("Portability report")
+	fmt.Println()
+	byRoute := map[string][]struct {
+		RouteID          string  `json:"routeId"`
+		Component        string  `json:"component"`
+		Source           string  `json:"source"`
+		Reason           string  `json:"reason"`
+		TriggerCode      string  `json:"triggerCode"`
+		TriggerConstruct string  `json:"triggerConstruct"`
+		Suggestion       string  `json:"suggestion"`
+		MarkupLostShare  float64 `json:"markupLostShare"`
+	}{}
+	for _, boundary := range payload.ClientBoundaries.Boundaries {
+		byRoute[boundary.RouteID] = append(byRoute[boundary.RouteID], boundary)
+	}
+	routeIDs := make([]string, 0, len(byRoute))
+	for routeID := range byRoute {
+		routeIDs = append(routeIDs, routeID)
+	}
+	sort.Strings(routeIDs)
+	for _, routeID := range routeIDs {
+		fmt.Printf("Route %s\n", routeID)
+		for _, downgrade := range byRoute[routeID] {
+			trigger := downgrade.TriggerCode
+			if downgrade.TriggerConstruct != "" {
+				if trigger != "" {
+					trigger += " (" + downgrade.TriggerConstruct + ")"
+				} else {
+					trigger = downgrade.TriggerConstruct
+				}
+			}
+			if trigger == "" {
+				trigger = "unknown"
+			}
+			fmt.Printf("  • %s @ %s\n", downgrade.Component, downgrade.Source)
+			fmt.Printf("      trigger: %s\n", trigger)
+			if downgrade.Suggestion != "" {
+				fmt.Printf("      hint: %s\n", downgrade.Suggestion)
+			}
+		}
+		fmt.Println()
+	}
+	return nil
 }
 
 func writeIfMissing(path string, content []byte) error {

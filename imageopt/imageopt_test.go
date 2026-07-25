@@ -8,32 +8,13 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
-
-type fakeS3Client struct {
-	input *s3.GetObjectInput
-	body  string
-	err   error
-}
-
-func (client *fakeS3Client) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
-	client.input = input
-	if client.err != nil {
-		return nil, client.err
-	}
-	return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(client.body))}, nil
-}
 
 func TestDiskLoaderRejectsUnsafeSources(t *testing.T) {
 	root := t.TempDir()
@@ -72,48 +53,6 @@ func TestDiskLoaderRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestS3LoaderMapsSiteScopedKey(t *testing.T) {
-	client := &fakeS3Client{body: "image"}
-	loader := S3Loader{Client: client, Bucket: "gobeyond-prod-site-static", Prefix: "landing"}
-
-	body, err := loader.Open(context.Background(), "/brand/logo.png")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer body.Close()
-	if client.input == nil {
-		t.Fatal("GetObject was not called")
-	}
-	if got := aws.ToString(client.input.Bucket); got != "gobeyond-prod-site-static" {
-		t.Fatalf("bucket = %q", got)
-	}
-	if got := aws.ToString(client.input.Key); got != "landing/brand/logo.png" {
-		t.Fatalf("key = %q", got)
-	}
-}
-
-func TestS3LoaderRejectsTraversalBeforeGetObject(t *testing.T) {
-	client := &fakeS3Client{}
-	loader := S3Loader{Client: client, Bucket: "bucket", Prefix: "app"}
-	if _, err := loader.Open(context.Background(), "/%2e%2e/secret.png"); !errors.Is(err, ErrInvalidSource) {
-		t.Fatalf("error = %v, want ErrInvalidSource", err)
-	}
-	if client.input != nil {
-		t.Fatal("GetObject called for invalid source")
-	}
-}
-
-func TestS3LoaderMapsNoSuchKey(t *testing.T) {
-	loader := S3Loader{
-		Client: &fakeS3Client{err: &s3types.NoSuchKey{}},
-		Bucket: "bucket",
-		Prefix: "app",
-	}
-	if _, err := loader.Open(context.Background(), "/missing.png"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("error = %v, want ErrNotFound", err)
-	}
-}
-
 func TestNewLoaderFromEnvironmentPrefersDisk(t *testing.T) {
 	t.Setenv("GOBEYOND_STATIC_DIR", "")
 	t.Setenv(ImageSourceBucketEnv, "bucket")
@@ -127,6 +66,43 @@ func TestNewLoaderFromEnvironmentPrefersDisk(t *testing.T) {
 	disk, ok := loader.(DiskLoader)
 	if !ok || disk.Root != root {
 		t.Fatalf("loader = %#v, want DiskLoader rooted at %q", loader, root)
+	}
+}
+
+// The AWS-free core must not silently serve nothing when a deployment
+// configured an S3 source: it points at the nested imageopt/s3 module instead.
+func TestNewLoaderFromEnvironmentDirectsS3ConfigurationToNestedModule(t *testing.T) {
+	t.Setenv("GOBEYOND_STATIC_DIR", "")
+	t.Setenv(ImageSourceBucketEnv, "bucket")
+	t.Setenv(ImageSourcePrefixEnv, "landing")
+
+	_, err := NewLoaderFromEnvironment(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "imageopt/s3") {
+		t.Fatalf("error = %v, want guidance toward imageopt/s3", err)
+	}
+}
+
+func TestNewLoaderFromEnvironmentWithoutConfiguration(t *testing.T) {
+	t.Setenv("GOBEYOND_STATIC_DIR", "")
+	t.Setenv(ImageSourceBucketEnv, "")
+	t.Setenv(ImageSourcePrefixEnv, "")
+
+	loader, err := NewLoaderFromEnvironment(context.Background(), "")
+	if loader != nil || err != nil {
+		t.Fatalf("loader = %#v, err = %v; want (nil, nil)", loader, err)
+	}
+}
+
+func TestS3SourceFromEnvironmentRejectsPartialConfiguration(t *testing.T) {
+	t.Setenv(ImageSourceBucketEnv, "bucket")
+	t.Setenv(ImageSourcePrefixEnv, "")
+	if _, err := S3SourceFromEnvironment(); err == nil {
+		t.Fatal("S3SourceFromEnvironment accepted a bucket without a prefix")
+	}
+
+	t.Setenv(ImageSourcePrefixEnv, "../escape")
+	if _, err := S3SourceFromEnvironment(); err == nil {
+		t.Fatal("S3SourceFromEnvironment accepted a traversal prefix")
 	}
 }
 
