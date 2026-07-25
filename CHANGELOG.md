@@ -4,6 +4,16 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.4 - 2026-07-25
+
+- Persist nested layouts across soft navigation: generated browser route modules
+  export `page` + outermost→innermost `layouts` instead of a precomposed Route
+  wrapper, and the React runtime composes that tree so shared layout module
+  identities stay mounted while only diverging segments and the page swap.
+- Add soft-navigation lifecycle events (`start` / `success` / `error`) via
+  `subscribeNavigation()`, `SoftNavigationOptions.onNavigationStart` /
+  `onNavigationSettled`, and the bootstrap controller `subscribe(listener)`.
+
 ## 0.1.0-alpha.3 - 2026-07-25
 
 - Expand protected React APIs for portable SSR: bake `useId`, `useMemo`,

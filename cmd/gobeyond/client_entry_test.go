@@ -46,12 +46,51 @@ func TestGenerateClientEntryIncludesManifestPatterns(t *testing.T) {
 	for _, expected := range []string{
 		`import Page from "../../app/products/[slug]/page.js"`,
 		`import Layout0 from "../../app/layout.js"`,
-		`createElement(Layout0 as ComponentType<any>, props, createElement(Page as ComponentType<any>, props))`,
-		`export default Route`,
+		`export const page = Page as ComponentType<any>`,
+		`export const layouts = [Layout0 as ComponentType<any>] as const`,
+		`export default Page`,
 	} {
 		if !strings.Contains(string(routeSource), expected) {
 			t.Fatalf("generated route module is missing %q:\n%s", expected, routeSource)
 		}
+	}
+	for _, unexpected := range []string{
+		`createElement(Layout0`,
+		`export default Route`,
+	} {
+		if strings.Contains(string(routeSource), unexpected) {
+			t.Fatalf("generated route module unexpectedly contains %q:\n%s", unexpected, routeSource)
+		}
+	}
+}
+
+func TestGenerateClientEntryExposesNestedLayoutChain(t *testing.T) {
+	website := t.TempDir()
+	input, err := generateClientEntry(
+		website,
+		[]compilerRouteModules{{
+			RouteID:   "r_products",
+			EntryFile: "app/products/[slug]/page.tsx",
+			LayoutFiles: []string{
+				"app/layout.tsx",
+				"app/products/layout.tsx",
+			},
+		}},
+		[]project.Route{{ID: "r_products", Pattern: "/products/[slug]"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeSource, err := os.ReadFile(input.RouteEntries["r_products"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := `export const layouts = [Layout0 as ComponentType<any>, Layout1 as ComponentType<any>] as const`
+	if !strings.Contains(string(routeSource), expected) {
+		t.Fatalf("generated route module is missing nested layouts:\n%s", routeSource)
+	}
+	if !strings.Contains(string(routeSource), `import Layout1 from "../../app/products/layout.js"`) {
+		t.Fatalf("generated route module is missing Layout1 import:\n%s", routeSource)
 	}
 }
 

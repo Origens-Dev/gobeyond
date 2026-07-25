@@ -88,7 +88,10 @@ never traversed by the React render-plan graph and are not production inputs.
 
 Applicable `app/layout.tsx` files are compiled around every route plan from the
 root layout through the nearest nested layout. Consumers must use the emitted
-`routeModules` order to create the identical React wrapper in the browser.
+`routeModules` `layoutFiles` order (outermost→innermost) together with the page
+entry so the browser registry can hydrate the same nesting. Soft navigation
+keeps shared layout module identities mounted and swaps only the diverging
+layout segments plus the page.
 
 The programmatic build API is:
 

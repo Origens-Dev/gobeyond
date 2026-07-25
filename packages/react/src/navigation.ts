@@ -20,14 +20,31 @@ import type {
 
 export const NAVIGATION_ANNOUNCER_ID = "__gobeyond_route_announcer__";
 
+/** Eager or resolved browser route: page plus outermost→innermost layouts. */
+export interface ResolvedBrowserRoute {
+  page: ComponentType<any>;
+  /**
+   * Layout components ordered outermost to innermost. Shared module identity
+   * across routes lets React keep layout instances mounted during soft nav.
+   */
+  layouts: readonly ComponentType<any>[];
+}
+
 export interface BrowserRoute {
-  component: ComponentType<any>;
+  /** @deprecated Prefer `page`; kept for existing eager registrations. */
+  component?: ComponentType<any>;
+  page?: ComponentType<any>;
+  layouts?: readonly ComponentType<any>[];
   pattern: string;
 }
 
 export type BrowserRouteModule =
   | ComponentType<any>
-  | Readonly<{ default: ComponentType<any> }>;
+  | Readonly<{
+      default?: ComponentType<any>;
+      page?: ComponentType<any>;
+      layouts?: readonly ComponentType<any>[];
+    }>;
 
 export interface LazyBrowserRoute {
   load: () => Promise<BrowserRouteModule>;
@@ -44,6 +61,51 @@ export type BrowserRouteRegistration =
 export type RouteRegistry = Readonly<
   Record<string, BrowserRouteRegistration>
 >;
+
+export type NavigationLifecycleEvent =
+  | {
+      type: "start";
+      url: string;
+      routeId: string;
+    }
+  | {
+      type: "success";
+      url: string;
+      routeId: string;
+      payload?: RuntimeNavigationPayload;
+    }
+  | {
+      type: "error";
+      url: string;
+      routeId?: string;
+      error: unknown;
+    };
+
+export type NavigationLifecycleListener = (
+  event: NavigationLifecycleEvent,
+) => void;
+
+const navigationLifecycleListeners = new Set<NavigationLifecycleListener>();
+
+/**
+ * Subscribe to soft-navigation lifecycle events from any module (for example a
+ * layout-mounted progress bar). Works even when the generated client entry
+ * discards the bootstrap return value.
+ */
+export function subscribeNavigation(
+  listener: NavigationLifecycleListener,
+): () => void {
+  navigationLifecycleListeners.add(listener);
+  return () => {
+    navigationLifecycleListeners.delete(listener);
+  };
+}
+
+function emitNavigationLifecycle(event: NavigationLifecycleEvent): void {
+  for (const listener of navigationLifecycleListeners) {
+    listener(event);
+  }
+}
 
 export interface RuntimeMetadata {
   lang: string;
@@ -104,6 +166,8 @@ export interface SoftNavigationController {
     options?: NavigateOptions,
   ): Promise<RuntimeNavigationPayload | undefined>;
   prefetch(target: string | URL): Promise<void>;
+  /** Subscribe to soft-navigation lifecycle events (start / success / error). */
+  subscribe(listener: NavigationLifecycleListener): () => void;
   destroy(): void;
 }
 
@@ -114,13 +178,19 @@ export interface SoftNavigationOptions {
   rootElement: HTMLElement;
   document: Document;
   render?: (
-    page: ComponentType<Record<string, unknown>>,
+    route: ResolvedBrowserRoute,
     props: Record<string, unknown>,
   ) => ReactElement;
   fetch?: typeof globalThis.fetch;
   mismatchEnvironment?: BuildMismatchEnvironment;
   onUpdateRequired?: (error: BuildMismatchError) => void;
   showUpdateRequiredUI?: boolean;
+  onNavigationStart?: (
+    event: Extract<NavigationLifecycleEvent, { type: "start" }>,
+  ) => void;
+  onNavigationSettled?: (
+    event: Extract<NavigationLifecycleEvent, { type: "success" | "error" }>,
+  ) => void;
   onNavigationError?: (error: unknown) => void;
   hardNavigate?: (url: string) => void;
   scrollTo?: (x: number, y: number) => void;
@@ -370,12 +440,16 @@ function routeDefinition(
 ): MatchedBrowserRoute | undefined {
   if (
     isRecord(registration) &&
-    "component" in registration &&
+    ("component" in registration || "page" in registration) &&
     typeof registration.pattern === "string"
   ) {
+    const component = (registration.page ?? registration.component) as
+      | ComponentType<any>
+      | undefined;
+    if (typeof component !== "function") return undefined;
     return {
       routeId,
-      component: registration.component as ComponentType<any>,
+      component,
       pattern: registration.pattern,
     };
   }
@@ -394,23 +468,93 @@ function routeDefinition(
   return undefined;
 }
 
-export function routeComponent(
+function asLayouts(
+  value: unknown,
+): readonly ComponentType<any>[] {
+  if (!Array.isArray(value)) return [];
+  if (value.some((item) => typeof item !== "function")) {
+    throw new Error("GoBeyond browser route layouts must be components.");
+  }
+  return value as ComponentType<any>[];
+}
+
+/** Normalize an eager registry entry or loaded module into page + layouts. */
+export function browserRouteFromModule(
+  module: BrowserRouteModule,
+): ResolvedBrowserRoute {
+  if (typeof module === "function") {
+    return { page: module, layouts: [] };
+  }
+  if (!isRecord(module)) {
+    throw new Error("GoBeyond browser route module is invalid.");
+  }
+  const page = module.page ?? module.default;
+  if (typeof page !== "function") {
+    throw new Error("GoBeyond browser route module has no page component.");
+  }
+  return { page, layouts: asLayouts(module.layouts) };
+}
+
+export function routeParts(
   registration: BrowserRouteRegistration | undefined,
-): ComponentType<any> | undefined {
-  if (typeof registration === "function") return registration;
-  if (isRecord(registration) && "component" in registration) {
-    return registration.component as ComponentType<any>;
+): ResolvedBrowserRoute | undefined {
+  if (typeof registration === "function") {
+    return { page: registration, layouts: [] };
+  }
+  if (
+    isRecord(registration) &&
+    ("page" in registration || "component" in registration)
+  ) {
+    const page = (registration.page ?? registration.component) as
+      | ComponentType<any>
+      | undefined;
+    if (typeof page !== "function") return undefined;
+    return { page, layouts: asLayouts(registration.layouts) };
   }
   return undefined;
 }
 
-const pendingRouteModules = new WeakMap<object, Promise<ComponentType<any>>>();
+export function routeComponent(
+  registration: BrowserRouteRegistration | undefined,
+): ComponentType<any> | undefined {
+  return routeParts(registration)?.page;
+}
+
+/**
+ * Compose outermost→innermost layouts around the page. React preserves layout
+ * instances across soft navigation when shared layout module identities match.
+ */
+export function composeRouteElement(
+  route: ResolvedBrowserRoute,
+  props: Record<string, unknown>,
+): ReactElement {
+  let element: ReactElement = createElement(route.page, props);
+  for (let index = route.layouts.length - 1; index >= 0; index -= 1) {
+    element = createElement(route.layouts[index], props, element);
+  }
+  return element;
+}
+
+/** Longest shared layout prefix length (by component identity). */
+export function commonLayoutPrefixLength(
+  current: readonly ComponentType<any>[],
+  next: readonly ComponentType<any>[],
+): number {
+  const limit = Math.min(current.length, next.length);
+  let index = 0;
+  while (index < limit && current[index] === next[index]) {
+    index += 1;
+  }
+  return index;
+}
+
+const pendingRouteModules = new WeakMap<object, Promise<ResolvedBrowserRoute>>();
 
 /** Resolve an eager or lazy route, sharing only in-flight/successful imports. */
-export async function resolveRouteComponent(
+export async function resolveBrowserRoute(
   registration: BrowserRouteRegistration | undefined,
-): Promise<ComponentType<any> | undefined> {
-  const eager = routeComponent(registration);
+): Promise<ResolvedBrowserRoute | undefined> {
+  const eager = routeParts(registration);
   if (eager) return eager;
   if (!isRecord(registration) || typeof registration.load !== "function") {
     return undefined;
@@ -421,19 +565,21 @@ export async function resolveRouteComponent(
   const load = registration.load as LazyBrowserRoute["load"];
   const promise = Promise.resolve()
     .then(() => load())
-    .then((loaded) => {
-      const component = typeof loaded === "function" ? loaded : loaded.default;
-      if (typeof component !== "function") {
-        throw new Error("GoBeyond browser route module has no default component.");
-      }
-      return component;
-    })
+    .then((loaded) => browserRouteFromModule(loaded))
     .catch((error: unknown) => {
       pendingRouteModules.delete(key);
       throw error;
     });
   pendingRouteModules.set(key, promise);
   return promise;
+}
+
+/** Resolve the page component from an eager or lazy route registration. */
+export async function resolveRouteComponent(
+  registration: BrowserRouteRegistration | undefined,
+): Promise<ComponentType<any> | undefined> {
+  const route = await resolveBrowserRoute(registration);
+  return route?.page;
 }
 
 function pathSegments(path: string): string[] {
@@ -824,12 +970,17 @@ export function createSoftNavigation(
         return undefined;
       },
       async prefetch() {},
+      subscribe() {
+        return () => {};
+      },
       destroy() {},
     };
   }
   const targetWindow: Window & typeof globalThis = defaultView;
 
-  const render = options.render ?? ((Page, props) => createElement(Page, props));
+  const render =
+    options.render ??
+    ((route, props) => composeRouteElement(route, props));
   const hardNavigate =
     options.hardNavigate ?? ((url: string) => targetWindow.location.assign(url));
   const scrollTo =
@@ -848,6 +999,19 @@ export function createSoftNavigation(
   targetWindow.history.scrollRestoration = "manual";
   let active: AbortController | undefined;
   let destroyed = false;
+  const listeners = new Set<NavigationLifecycleListener>();
+
+  function emit(event: NavigationLifecycleEvent): void {
+    if (event.type === "start") {
+      options.onNavigationStart?.(event);
+    } else {
+      options.onNavigationSettled?.(event);
+    }
+    emitNavigationLifecycle(event);
+    for (const listener of listeners) {
+      listener(event);
+    }
+  }
 
   function marker(x = targetWindow.scrollX, y = targetWindow.scrollY): NavigationHistoryState {
     return {
@@ -883,16 +1047,53 @@ export function createSoftNavigation(
     active?.abort();
     const controller = new AbortController();
     active = controller;
+    const href = url.href;
+    emit({ type: "start", url: href, routeId: route.routeId });
+
+    try {
+      return await performNavigation(
+        url,
+        href,
+        route,
+        controller,
+        navigationOptions,
+      );
+    } catch (error) {
+      if (!isAbort(error) && !destroyed) {
+        emit({
+          type: "error",
+          url: href,
+          routeId: route.routeId,
+          error,
+        });
+      }
+      throw error;
+    }
+  }
+
+  async function performNavigation(
+    url: URL,
+    href: string,
+    route: MatchedBrowserRoute,
+    controller: AbortController,
+    navigationOptions: NavigateOptions,
+  ): Promise<RuntimeNavigationPayload | undefined> {
     const runtimePath =
       `/_gobeyond/builds/${encodeURIComponent(options.buildId)}/runtime/` +
       encodeURIComponent(route.routeId);
     const runtimeURL = new URL(runtimePath, targetWindow.location.origin);
     runtimeURL.searchParams.set("path", url.pathname + url.search);
 
-    const componentResult = resolveRouteComponent(options.routes[route.routeId]).then(
-      (component) => ({ component } as const),
+    const componentResult = resolveBrowserRoute(options.routes[route.routeId]).then(
+      (resolved) => ({ resolved } as const),
       (error: unknown) => ({ error } as const),
     );
+
+    const settleHard = (): void => {
+      if (active !== controller || destroyed) return;
+      emit({ type: "success", url: href, routeId: route.routeId });
+    };
+
     let response: Response;
     try {
       response = await fetchWithBuildGuard(
@@ -915,15 +1116,18 @@ export function createSoftNavigation(
       throw error;
     }
     if (response.type === "opaqueredirect") {
+      settleHard();
       hardNavigate(url.href);
       return undefined;
     }
     const location = response.headers.get("location");
     if (response.redirected) {
+      settleHard();
       hardNavigate(safeDocumentURL(response.url || location || url.href, url));
       return undefined;
     }
     if (location) {
+      settleHard();
       hardNavigate(safeDocumentURL(location, url));
       return undefined;
     }
@@ -933,6 +1137,7 @@ export function createSoftNavigation(
       ?.toLowerCase()
       .startsWith("application/json");
     if ((isRedirectStatus && !isJSON) || (!response.ok && !isRedirectStatus)) {
+      settleHard();
       hardNavigate(url.href);
       return undefined;
     }
@@ -952,10 +1157,12 @@ export function createSoftNavigation(
       if (!payload.result.redirectTo) {
         throw new Error("GoBeyond runtime redirect is missing redirectTo.");
       }
+      settleHard();
       hardNavigate(new URL(payload.result.redirectTo, url).href);
       return payload;
     }
     if (payload.result.kind !== "ok") {
+      settleHard();
       hardNavigate(url.href);
       return payload;
     }
@@ -963,13 +1170,13 @@ export function createSoftNavigation(
       throw new Error("GoBeyond runtime result is missing metadata.");
     }
     if (active !== controller || destroyed) return undefined;
-    const resolved = await componentResult;
-    if ("error" in resolved) {
+    const resolvedResult = await componentResult;
+    if ("error" in resolvedResult) {
       controller.abort();
-      throw resolved.error;
+      throw resolvedResult.error;
     }
-    const component = resolved.component;
-    if (!component) {
+    const resolved = resolvedResult.resolved;
+    if (!resolved) {
       controller.abort();
       throw new Error(`No browser route registered for ${route.routeId}.`);
     }
@@ -978,12 +1185,7 @@ export function createSoftNavigation(
     const mode = navigationOptions.history ?? "push";
     if (mode === "push") saveScroll();
     flushSync(() => {
-      options.root.render(
-        render(
-          component as ComponentType<Record<string, unknown>>,
-          payload.result.props,
-        ),
-      );
+      options.root.render(render(resolved, payload.result.props));
     });
     options.rootElement.dataset.gobeyondRoute = route.routeId;
     applyDocumentMetadata(payload.result.metadata, options.document);
@@ -1030,6 +1232,12 @@ export function createSoftNavigation(
     } else {
       scrollTo(0, 0);
     }
+    emit({
+      type: "success",
+      url: href,
+      routeId: route.routeId,
+      payload,
+    });
     return payload;
   }
 
@@ -1039,7 +1247,7 @@ export function createSoftNavigation(
     if (url.origin !== targetWindow.location.origin) return;
     const route = matchBrowserRoute(url.pathname, options.routes);
     if (!route) return;
-    await resolveRouteComponent(options.routes[route.routeId]);
+    await resolveBrowserRoute(options.routes[route.routeId]);
   }
 
   function onClick(event: MouseEvent): void {
@@ -1095,10 +1303,17 @@ export function createSoftNavigation(
   return {
     navigate,
     prefetch,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
     destroy() {
       if (destroyed) return;
       destroyed = true;
       active?.abort();
+      listeners.clear();
       options.document.removeEventListener("click", onClick);
       options.document.removeEventListener("pointerover", onPrefetch);
       options.document.removeEventListener("focusin", onPrefetch);
