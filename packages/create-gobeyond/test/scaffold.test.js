@@ -54,7 +54,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.equal(packageJSON.devDependencies.tailwindcss, undefined)
   assert.equal(packageJSON.devDependencies['@tailwindcss/postcss'], undefined)
   assert.doesNotMatch(packageJSON.scripts.test, /gobeyond test/)
-  assert.match(packageJSON.scripts.build, /^gobeyond generate && gobeyond build$/)
+  assert.equal(packageJSON.scripts.build, 'gobeyond build')
   assert.match(packageJSON.scripts.generate, /^gobeyond generate$/)
   assert.equal(packageJSON.scripts.dev, 'gobeyond dev')
 

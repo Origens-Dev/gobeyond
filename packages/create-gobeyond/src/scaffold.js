@@ -52,7 +52,7 @@ function projectFiles(projectName, { tailwind }) {
       scripts: {
         // `gobeyond build` generates plans/contracts, bundles browser JS, and
         // writes the Node-free server binary to dist/server.
-        build: 'gobeyond generate && gobeyond build',
+        build: 'gobeyond build',
         generate: 'gobeyond generate',
         'generate:check': 'gobeyond generate --check',
         routes: 'gobeyond routes',
