@@ -33,7 +33,7 @@ func writePackage(t *testing.T, dir, name, version, manifest string, files ...st
 }
 
 func manifestJSON(name, version, exports string) string {
-	return `{"name":"@go-beyond/` + name + `","version":"` + version + `","exports":` + exports + `}`
+	return `{"name":"@go-beyond/` + name + `","version":"` + version + `","type":"module","exports":` + exports + `}`
 }
 
 const builtExports = `{".":{"types":"./dist/index.d.ts","import":"./dist/index.js"}}`
@@ -137,6 +137,69 @@ func TestDoctorFailsOnMissingCompiledEntrypoint(t *testing.T) {
 	}
 }
 
+// The Studio regression: every exported entrypoint file existed, but the
+// file-installed copy was missing an internal module the entrypoint imports
+// (portability.js), so generation failed while doctor said ok.
+func TestDoctorFailsWhenEntrypointImportsMissingInternalModule(t *testing.T) {
+	workspace := t.TempDir()
+	root := t.TempDir()
+	sources := map[string]string{}
+	for _, name := range linkedPackages {
+		sources[name] = writePackage(t, workspace, name, "0.1.0-alpha.5",
+			manifestJSON(name, "0.1.0-alpha.5", builtExports),
+			"dist/index.js", "dist/index.d.ts")
+	}
+	brokenEntrypoint := filepath.Join(sources["compiler"], "dist", "index.js")
+	if err := os.WriteFile(brokenEntrypoint, []byte("import './portability.js'\nexport {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkScope(t, root, sources)
+
+	var out bytes.Buffer
+	err := runDoctor(&out, root)
+	if err == nil {
+		t.Fatalf("runDoctor succeeded for a package with a broken internal import:\n%s", out.String())
+	}
+	output := out.String()
+	if !strings.Contains(output, "cannot be imported") {
+		t.Fatalf("smoke-import failure not reported:\n%s", output)
+	}
+	if !strings.Contains(output, "portability.js") {
+		t.Fatalf("missing module not named:\n%s", output)
+	}
+	if !strings.Contains(output, "pnpm --filter @go-beyond/compiler build") {
+		t.Fatalf("missing actionable fix:\n%s", output)
+	}
+	if !strings.Contains(output, "@go-beyond/compiler: 0.1.0-alpha.5") || !strings.Contains(output, "[broken]") {
+		t.Fatalf("compiler not reported broken:\n%s", output)
+	}
+}
+
+func TestDoctorPassesWhenEntrypointImportsExistingInternalModule(t *testing.T) {
+	workspace := t.TempDir()
+	root := t.TempDir()
+	sources := map[string]string{}
+	for _, name := range linkedPackages {
+		sources[name] = writePackage(t, workspace, name, "0.1.0-alpha.5",
+			manifestJSON(name, "0.1.0-alpha.5", builtExports),
+			"dist/index.js", "dist/index.d.ts")
+	}
+	entrypoint := filepath.Join(sources["compiler"], "dist", "index.js")
+	if err := os.WriteFile(entrypoint, []byte("import './portability.js'\nexport {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sibling := filepath.Join(sources["compiler"], "dist", "portability.js")
+	if err := os.WriteFile(sibling, []byte("export {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkScope(t, root, sources)
+
+	var out bytes.Buffer
+	if err := runDoctor(&out, root); err != nil {
+		t.Fatalf("runDoctor error = %v\n%s", err, out.String())
+	}
+}
+
 func TestDoctorFlagsBinEntrypointsAndVersionSkew(t *testing.T) {
 	workspace := t.TempDir()
 	root := t.TempDir()
@@ -150,7 +213,7 @@ func TestDoctorFlagsBinEntrypointsAndVersionSkew(t *testing.T) {
 		files := []string{"dist/index.js", "dist/index.d.ts"}
 		if name == "compiler" {
 			manifest = `{"name":"@go-beyond/compiler","version":"` + version +
-				`","bin":{"gobeyond-compile":"./dist/src/cli.js"},"exports":{".":{"import":"./dist/src/index.js"}}}`
+				`","type":"module","bin":{"gobeyond-compile":"./dist/src/cli.js"},"exports":{".":{"import":"./dist/src/index.js"}}}`
 			files = []string{"dist/src/index.js", "dist/src/cli.js"}
 		}
 		sources[name] = writePackage(t, workspace, name, version, manifest, files...)

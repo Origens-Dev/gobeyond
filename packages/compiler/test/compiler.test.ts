@@ -2432,6 +2432,129 @@ test('downgrades a viewport-stateful class package only at its outer use-client 
   assert.match(result.clientBoundaries[0]?.reason ?? '', /GB1056/)
 })
 
+// Models react-masonry-css: a class component whose constructor does more
+// than super/bind/state (declaration + branching), whose defaultProps is a
+// module identifier rather than an inline literal, and whose lifecycle
+// methods touch window. Its declaration-shape diagnostics must be deferred
+// to compile time so a use-client wrapper can downgrade them.
+const masonryPackageFiles = {
+  'node_modules/@synthetic/masonry/package.json': JSON.stringify({
+    name: '@synthetic/masonry',
+    type: 'module',
+    module: 'dist/masonry.module.js',
+    main: 'dist/masonry.cjs.js',
+  }),
+  'node_modules/@synthetic/masonry/dist/masonry.module.js': `
+    import React from 'react'
+    const defaultProps = {
+      breakpointCols: undefined,
+      className: undefined,
+      columnClassName: undefined,
+      children: undefined,
+    }
+    const DEFAULT_COLUMNS = 2
+    class Masonry extends React.Component {
+      constructor(props) {
+        super(props)
+        this.reCalculateColumnCount = this.reCalculateColumnCount.bind(this)
+        let columnCount
+        if (this.props.breakpointCols && this.props.breakpointCols.default) {
+          columnCount = this.props.breakpointCols.default
+        } else {
+          columnCount = parseInt(this.props.breakpointCols) || DEFAULT_COLUMNS
+        }
+        this.state = { columnCount }
+      }
+      componentDidMount() {
+        if (window) window.addEventListener('resize', this.reCalculateColumnCount)
+      }
+      componentWillUnmount() {
+        if (window) window.removeEventListener('resize', this.reCalculateColumnCount)
+      }
+      reCalculateColumnCount() {
+        this.setState({ columnCount: Math.max(1, this.state.columnCount) })
+      }
+      render() {
+        const { className, columnClassName, children } = this.props
+        return React.createElement(
+          'div',
+          { className },
+          React.createElement('div', { className: columnClassName }, children),
+        )
+      }
+    }
+    Masonry.defaultProps = defaultProps
+    export default Masonry
+  `,
+}
+
+test('downgrades a use-client gallery that renders a constructor/defaultProps class package', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    ...masonryPackageFiles,
+    'app/page.tsx': `
+      import MasonryGallery from '../components/masonry-gallery.js'
+      export default function Page() {
+        return <main><h1>Work</h1><MasonryGallery /></main>
+      }
+    `,
+    'components/masonry-gallery.tsx': `
+      'use client'
+      import Masonry from '@synthetic/masonry'
+      export default function MasonryGallery() {
+        return (
+          <Masonry breakpointCols={{ default: 4 }} className="flex" columnClassName="flex flex-col">
+            <img src="/a.jpg" alt="" />
+          </Masonry>
+        )
+      }
+    `,
+  })
+  const result = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics, null, 2))
+  if (!result.ok) return
+  assert.equal(result.clientBoundaries.length, 1)
+  assert.equal(result.clientBoundaries[0]?.component, 'MasonryGallery')
+  assert.equal(result.clientBoundaries[0]?.boundary, 'components/masonry-gallery.tsx')
+  assert.match(result.clientBoundaries[0]?.reason ?? '', /GB10\d\d/)
+  // The portable sibling markup must survive: only the gallery downgrades.
+  assert.equal(result.plan.root.kind, 'element')
+  if (result.plan.root.kind === 'element') {
+    assert.deepEqual(result.plan.root.children, [
+      {
+        kind: 'element',
+        tag: 'h1',
+        namespace: 'html',
+        attributes: [],
+        children: [{ kind: 'text', value: { kind: 'literal', value: 'Work' } }],
+      },
+      { kind: 'clientOnly' },
+    ])
+  }
+})
+
+test('keeps the constructor/defaultProps class package fatal without a client boundary', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    ...masonryPackageFiles,
+    'app/page.tsx': `
+      import Masonry from '@synthetic/masonry'
+      export default function Page() {
+        return <Masonry className="flex"><img src="/a.jpg" alt="" /></Masonry>
+      }
+    `,
+  })
+  const result = await compileFile({ projectRoot, entryFile: 'app/page.tsx', routeId: 'root' })
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.ok(
+    result.diagnostics.some((diagnostic) => diagnostic.code === 'GB1099'),
+    JSON.stringify(result.diagnostics, null, 2),
+  )
+  assert.ok(
+    result.diagnostics.some((diagnostic) => diagnostic.code === 'GB1018'),
+    JSON.stringify(result.diagnostics, null, 2),
+  )
+})
+
 test('normalizes Heroicon-style compiled JavaScript components into portable markup', async (t) => {
   const projectRoot = await fixtureProject(t, {
     'app/page.tsx': `

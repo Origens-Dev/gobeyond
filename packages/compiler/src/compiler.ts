@@ -230,6 +230,15 @@ export class SourceCompiler {
   >()
   /** Function or class component → portable defaultProps literal fields. */
   private readonly defaultProps = new Map<Component, Map<string, PlanExpression>>()
+  /**
+   * Component portability diagnostics discovered while collecting module
+   * declarations (class constructor/state shape, defaultProps portability).
+   * They are withheld from the shared stream until the component is actually
+   * compiled, so a `use client` boundary transaction can capture and downgrade
+   * them; a component that is never rendered never reports them, and a
+   * portable-position render still fails with the same codes.
+   */
+  private readonly deferredComponentDiagnostics = new Map<Component, Diagnostic[]>()
   /** Class components keyed by declaration for defaultProps assignment. */
   private readonly classComponentsByDecl = new Map<
     ts.ClassDeclaration,
@@ -659,8 +668,12 @@ export class SourceCompiler {
         continue
       }
       if (ts.isClassDeclaration(statement)) {
+        // Declaration-shape diagnostics (constructor/state/defaultProps) are
+        // deferred to compile time; see deferredComponentDiagnostics.
+        const deferStart = this.diagnostics.length
         const classComponent = this.classComponentFromDeclaration(statement)
         if (classComponent) {
+          this.deferComponentDiagnostics(classComponent, deferStart)
           const name =
             statement.name?.text ??
             (this.hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
@@ -747,6 +760,9 @@ export class SourceCompiler {
       }
       const component = this.components.get(left.expression.text)
       if (!component) continue
+      // Deferred like class declaration shapes: only a compiled usage of the
+      // component surfaces these diagnostics (see deferredComponentDiagnostics).
+      const deferStart = this.diagnostics.length
       const right = this.unwrapExpression(statement.expression.right)
       if (!ts.isObjectLiteralExpression(right)) {
         this.report(
@@ -754,6 +770,7 @@ export class SourceCompiler {
           'GB1018',
           'defaultProps must be an object literal of portable values.',
         )
+        this.deferComponentDiagnostics(component, deferStart)
         continue
       }
       const defaults = new Map<string, PlanExpression>()
@@ -777,7 +794,26 @@ export class SourceCompiler {
         defaults.set(name, value)
       }
       if (ok) this.defaultProps.set(component, defaults)
+      this.deferComponentDiagnostics(component, deferStart)
     }
+  }
+
+  /**
+   * Move diagnostics emitted since startIndex out of the shared stream and
+   * park them on the component. compileComponent re-emits them, which places
+   * them inside any active compileAtClientBoundary transaction so a marked
+   * `use client` usage can downgrade instead of failing the whole build.
+   * Parse/type/module diagnostics never route through here and stay fatal.
+   */
+  private deferComponentDiagnostics(
+    component: Component,
+    startIndex: number,
+  ): void {
+    if (this.diagnostics.length <= startIndex) return
+    const deferred = this.diagnostics.splice(startIndex)
+    const existing = this.deferredComponentDiagnostics.get(component)
+    if (existing) existing.push(...deferred)
+    else this.deferredComponentDiagnostics.set(component, deferred)
   }
 
   private findDefaultComponent(): Component | undefined {
@@ -1222,6 +1258,8 @@ export class SourceCompiler {
     rootComponent = false,
     suppliedNodes: NodeEnvironment = new Map(),
   ): PlanNode | undefined {
+    const deferred = this.deferredComponentDiagnostics.get(component)
+    if (deferred) this.diagnostics.push(...deferred)
     if (isClassComponent(component)) {
       return this.compileClassComponent(
         name,

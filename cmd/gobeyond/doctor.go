@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // reactCompatibility is the React version this CLI's hydration runtime is
@@ -89,7 +91,7 @@ func (report packageReport) line() string {
 	}
 	status := "ok"
 	if len(report.failures) > 0 {
-		status = "unbuilt"
+		status = "broken"
 	}
 	return fmt.Sprintf("%s: %s %s%s [%s]", label, report.version, report.resolved, suffix, status)
 }
@@ -137,17 +139,7 @@ func inspectWorkspacePackages(root string) []packageReport {
 		}
 		report.version = manifest.Version
 		report.entrypoints = manifest.entrypointFiles()
-		var missing []string
-		for _, entrypoint := range report.entrypoints {
-			if _, err := os.Stat(filepath.Join(packageDir, filepath.FromSlash(entrypoint))); err != nil {
-				missing = append(missing, entrypoint)
-			}
-		}
-		if len(missing) > 0 {
-			report.failures = append(report.failures, fmt.Sprintf(
-				"@go-beyond/%s is not built: missing %s. Run `pnpm --filter @go-beyond/%s build` (or `pnpm build:packages` from the workspace root)",
-				name, strings.Join(missing, ", "), name))
-		}
+		report.failures = append(report.failures, entrypointFailures(name, packageDir, manifest)...)
 		reports = append(reports, report)
 	}
 	if !found {
@@ -196,19 +188,102 @@ func inspectPackage(root, scope, name string) packageReport {
 	}
 	report.version = manifest.Version
 	report.entrypoints = manifest.entrypointFiles()
+	report.failures = append(report.failures, entrypointFailures(name, resolved, manifest)...)
+	return report
+}
 
+// entrypointFailures verifies a resolved package is actually loadable: every
+// exported entrypoint file must exist, and once they all do, each runtime
+// entrypoint must survive a Node smoke-import. Existence alone missed the
+// case where a file:/link install copied the entrypoints but lost an internal
+// module they import (e.g. a compiler build missing portability.js), which
+// made doctor report a package as ok while generation failed.
+func entrypointFailures(name, packageDir string, manifest packageManifest) []string {
 	var missing []string
-	for _, entrypoint := range report.entrypoints {
-		if _, err := os.Stat(filepath.Join(resolved, filepath.FromSlash(entrypoint))); err != nil {
+	for _, entrypoint := range manifest.entrypointFiles() {
+		if _, err := os.Stat(filepath.Join(packageDir, filepath.FromSlash(entrypoint))); err != nil {
 			missing = append(missing, entrypoint)
 		}
 	}
 	if len(missing) > 0 {
-		report.failures = append(report.failures, fmt.Sprintf(
+		return []string{fmt.Sprintf(
 			"@go-beyond/%s is not built: missing %s. Run `pnpm --filter @go-beyond/%s build` (or `pnpm build:packages` from the workspace root)",
-			name, strings.Join(missing, ", "), name))
+			name, strings.Join(missing, ", "), name)}
 	}
-	return report
+	return smokeImportFailures(name, packageDir, manifest.runtimeEntrypointFiles())
+}
+
+// smokeImportScript import()s each entrypoint path passed as an argument and
+// prints one JSON line per failure, so a broken internal module graph is
+// reported per entrypoint instead of as a raw Node stack trace.
+const smokeImportScript = `const { pathToFileURL } = require('node:url');
+(async () => {
+  let failed = false;
+  for (const entry of process.argv.slice(1)) {
+    try {
+      await import(pathToFileURL(entry).href);
+    } catch (error) {
+      failed = true;
+      const message = error && error.message ? String(error.message).split('\n')[0] : String(error);
+      console.log(JSON.stringify({ entry, message }));
+    }
+  }
+  process.exit(failed ? 1 : 0);
+})();`
+
+// smokeImportFailures loads each runtime entrypoint through Node's module
+// loader. Type declarations are never passed here, and bin scripts are
+// excluded because importing a CLI can execute its main module. A missing
+// Node binary is not reported again; runDoctor already flags it.
+func smokeImportFailures(name, packageDir string, entrypoints []string) []string {
+	if len(entrypoints) == 0 {
+		return nil
+	}
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		return nil
+	}
+	args := []string{"-e", smokeImportScript}
+	for _, entrypoint := range entrypoints {
+		args = append(args, filepath.Join(packageDir, filepath.FromSlash(entrypoint)))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, nodePath, args...)
+	command.Dir = packageDir
+	output, runErr := command.Output()
+	if runErr == nil {
+		return nil
+	}
+
+	var failures []string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		var failure struct {
+			Entry   string `json:"entry"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &failure) != nil || failure.Entry == "" {
+			continue
+		}
+		failures = append(failures, fmt.Sprintf(
+			"@go-beyond/%s entrypoint %s exists but cannot be imported (%s); the installed copy is incomplete or stale. Rebuild the source package (`pnpm --filter @go-beyond/%s build`), then reinstall the file:/workspace dependency (e.g. `pnpm install --force` or repack it)",
+			name, relativeEntrypoint(packageDir, failure.Entry), failure.Message, name))
+	}
+	if len(failures) == 0 {
+		failures = append(failures, fmt.Sprintf(
+			"@go-beyond/%s entrypoint smoke-import did not complete (%v); rebuild with `pnpm --filter @go-beyond/%s build` and reinstall the package",
+			name, runErr, name))
+	}
+	return failures
+}
+
+// relativeEntrypoint shortens an absolute entrypoint path back to the
+// package-relative form used in package.json exports.
+func relativeEntrypoint(packageDir, entry string) string {
+	if relative, err := filepath.Rel(packageDir, entry); err == nil && !strings.HasPrefix(relative, "..") {
+		return "./" + filepath.ToSlash(relative)
+	}
+	return entry
 }
 
 // isWorkspaceLink reports whether the package resolved outside the project's
@@ -290,6 +365,36 @@ func (manifest packageManifest) entrypointFiles() []string {
 	collectExportTargets(manifest.Bin, add)
 	add(manifest.Main)
 	add(manifest.Types)
+	sort.Strings(files)
+	return files
+}
+
+// runtimeEntrypointFiles returns the subset of entrypoints Node loads at
+// runtime: JavaScript targets from exports and main. Type declarations are
+// not importable and bin scripts may execute a CLI on import, so both are
+// excluded from the smoke-import.
+func (manifest packageManifest) runtimeEntrypointFiles() []string {
+	seen := map[string]struct{}{}
+	var files []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || !strings.HasPrefix(value, "./") || strings.Contains(value, "*") {
+			return
+		}
+		if strings.HasSuffix(value, ".d.ts") || strings.HasSuffix(value, ".d.mts") || strings.HasSuffix(value, ".d.cts") {
+			return
+		}
+		if !strings.HasSuffix(value, ".js") && !strings.HasSuffix(value, ".mjs") && !strings.HasSuffix(value, ".cjs") {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		files = append(files, value)
+	}
+	collectExportTargets(manifest.Exports, add)
+	add(manifest.Main)
 	sort.Strings(files)
 	return files
 }

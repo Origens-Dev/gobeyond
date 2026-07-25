@@ -44,6 +44,14 @@ record with its route, source span, component, boundary module, and reason.
 Unmarked unsupported code remains a source-located compile error. Parse, type,
 module, contract, and internal errors are never downgraded.
 
+Component declaration-shape diagnostics — a class constructor beyond
+`super(props)`/binds/one portable `this.state`, or non-literal `defaultProps`
+(`GB1099`, `GB1018`) — are reported when the component is actually rendered,
+not when its module loads. A class package like `react-masonry-css` rendered
+under a `use client` wrapper therefore downgrades at that wrapper; the same
+package rendered without a boundary still fails with the same codes, and a
+declared-but-never-rendered component reports nothing.
+
 The CLI follows the source graph and writes a plan to stdout or a selected output file:
 
 ```bash

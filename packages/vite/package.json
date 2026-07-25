@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/vite",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "description": "Exact client-boundary transforms for GoBeyond Vite builds",
   "license": "MIT",
   "type": "module",
