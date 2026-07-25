@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/create-gobeyond",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0-alpha.8",
   "description": "Create a website-first GoBeyond project",
   "license": "MIT",
   "type": "module",

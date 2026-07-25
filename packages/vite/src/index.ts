@@ -241,8 +241,9 @@ export function transformDateIntrinsicSites(
   root: string,
 ): { code: string; map: null } | null {
   const fileName = cleanModuleID(id)
-  const matching = sites.filter(
-    (site) => matchesManifestSource(root, site.source, fileName),
+  // Route aggregation can record the same shared-module span once per route.
+  const matching = normalizeDateIntrinsicSites(
+    sites.filter((site) => matchesManifestSource(root, site.source, fileName)),
   )
   if (matching.length === 0) return null
 
@@ -378,16 +379,17 @@ function shiftDateSitesAfterUseId(
   id: string,
 ): DateIntrinsicSiteRecord[] {
   const fileName = cleanModuleID(id)
+  const normalized = normalizeDateIntrinsicSites(sites)
   const fileSites = useIdSites.filter(
     (site) => matchesManifestSource(root, site.source, fileName) && !site.skipViteRewrite,
   )
-  if (fileSites.length === 0) return [...sites]
+  if (fileSites.length === 0) return normalized
 
   const rewrite = planUseIdRewrites(original, fileSites, fileName)
   const insertion = directivePrologueEnd(original)
   const headerDelta = useIdHeaderText(rewrite.header, insertion).length
 
-  return sites.map((site) => {
+  return normalized.map((site) => {
     if (!matchesManifestSource(root, site.source, fileName)) return site
     let start = site.start
     let end = site.end
@@ -450,7 +452,7 @@ function shiftBoundariesAfterRewrites(
     // the post-useId coordinate space using shiftDateSitesAfterUseId.
     const shiftedDates = appliedUseId
       ? shiftDateSitesAfterUseId(original, dateSites, useIdSites, root, id)
-      : dateSites
+      : normalizeDateIntrinsicSites(dateSites)
     const fileDates = shiftedDates.filter(
       (site) => matchesManifestSource(root, site.source, fileName),
     )
@@ -607,6 +609,30 @@ function deduplicateBoundaries(
     seen.add(key)
     return true
   })
+}
+
+/**
+ * Collapse identical Date sites from per-route manifest aggregation.
+ * Key: source + start + end + getter. Same span with different getters is an error.
+ */
+function normalizeDateIntrinsicSites(
+  sites: readonly DateIntrinsicSiteRecord[],
+): DateIntrinsicSiteRecord[] {
+  const byKey = new Map<string, DateIntrinsicSiteRecord>()
+  const getterBySpan = new Map<string, string>()
+  for (const site of sites) {
+    const spanKey = `${site.source}:${site.start}:${site.end}`
+    const priorGetter = getterBySpan.get(spanKey)
+    if (priorGetter !== undefined && priorGetter !== site.getter) {
+      throw new Error(
+        `Conflicting GoBeyond Date intrinsic getters at ${site.source}:${site.line}:${site.column}: ${priorGetter} vs ${site.getter}.`,
+      )
+    }
+    getterBySpan.set(spanKey, site.getter)
+    const key = `${spanKey}:${site.getter}`
+    if (!byKey.has(key)) byKey.set(key, site)
+  }
+  return [...byKey.values()]
 }
 
 function assertNonOverlapping(

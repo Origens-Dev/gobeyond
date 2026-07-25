@@ -479,6 +479,190 @@ test('rewrites Date intrinsic call sites to renderSnapshotDate', async (t) => {
   assert.doesNotMatch(result.code, /new Date\(\)\.getUTCFullYear\(\)/)
 })
 
+test('dedupes Date intrinsic sites shared across routes', async (t) => {
+  const root = await fixture(t, {
+    'app/components/Footer.tsx': `
+      import { Widget } from '../../components/widget.js'
+      export function Footer() {
+        return (
+          <footer>
+            © {new Date().getFullYear()}
+            <Widget />
+          </footer>
+        )
+      }
+    `,
+    'app/page.tsx': `
+      import { Footer } from './components/Footer.js'
+      export default function Page() {
+        return <main><Footer /></main>
+      }
+    `,
+    'app/about/page.tsx': `
+      import { Footer } from '../components/Footer.js'
+      export default function About() {
+        return <main><Footer /></main>
+      }
+    `,
+    'app/contact/page.tsx': `
+      import { Footer } from '../components/Footer.js'
+      export default function Contact() {
+        return <main><Footer /></main>
+      }
+    `,
+    'components/widget.tsx': `
+      'use client'
+      export function Widget() {
+        const width = window.innerWidth
+        return <p>{width}</p>
+      }
+    `,
+  })
+  const footerPath = resolve(root, 'app/components/Footer.tsx')
+  const footerCode = await readFile(footerPath, 'utf8')
+  const routes = ['root', 'about', 'contact'] as const
+  const entries = [
+    'app/page.tsx',
+    'app/about/page.tsx',
+    'app/contact/page.tsx',
+  ] as const
+  const dateSites = []
+  const boundaries = []
+  for (let index = 0; index < routes.length; index += 1) {
+    const compiled = await compileFile({
+      projectRoot: root,
+      entryFile: entries[index]!,
+      routeId: routes[index]!,
+    })
+    assert.equal(
+      compiled.ok,
+      true,
+      compiled.ok ? '' : JSON.stringify(compiled.diagnostics),
+    )
+    if (!compiled.ok) return
+    dateSites.push(...compiled.dateIntrinsicSites)
+    boundaries.push(...compiled.clientBoundaries)
+  }
+  assert.equal(dateSites.length, 3)
+  assert.equal(
+    new Set(dateSites.map((site) => `${site.source}:${site.start}:${site.end}:${site.getter}`)).size,
+    1,
+  )
+  assert.ok(boundaries.length >= 1)
+
+  const dateOnly = transformDateIntrinsicSites(footerCode, footerPath, dateSites, root)
+  assert.ok(dateOnly)
+  assert.equal(
+    [...dateOnly.code.matchAll(/__gbRenderSnapshotDate\(\)\.getFullYear\(\)/g)].length,
+    1,
+  )
+  assert.doesNotMatch(dateOnly.code, /new Date\(\)\.getFullYear\(\)/)
+
+  const plugin = goBeyond({
+    clientBoundaries: {
+      apiVersion: 'gobeyond.client-boundaries/v1alpha1',
+      boundaries,
+      useIdSites: [],
+      dateIntrinsicSites: dateSites,
+    },
+  })
+  const hooks = plugin as unknown as {
+    configResolved(config: { root: string }): void
+    buildStart(): Promise<void>
+    transform(code: string, id: string): { code: string } | null
+  }
+  hooks.configResolved({ root })
+  await hooks.buildStart()
+  const footerResult = hooks.transform(footerCode, footerPath)
+  assert.ok(footerResult)
+  assert.equal(
+    [...footerResult.code.matchAll(/__gbRenderSnapshotDate\(\)\.getFullYear\(\)/g)].length,
+    1,
+  )
+  // Boundary spans must shift once for the single Date rewrite, not once per route copy.
+  assert.match(footerResult.code, /<__gbClientOnly>\{<Widget \/>\}<\/__gbClientOnly>/)
+})
+
+test('rejects conflicting Date intrinsic getters for the same span', () => {
+  const root = resolve('/project')
+  const code = `export function Footer() { return <footer>{new Date().getFullYear()}</footer> }`
+  const start = code.indexOf('new Date().getFullYear()')
+  const end = start + 'new Date().getFullYear()'.length
+  const site = {
+    routeId: 'root',
+    source: 'app/components/Footer.tsx',
+    start,
+    end,
+    line: 1,
+    column: start + 1,
+    getter: 'getFullYear',
+  }
+  assert.throws(
+    () => transformDateIntrinsicSites(
+      code,
+      resolve(root, 'app/components/Footer.tsx'),
+      [site, { ...site, routeId: 'about', getter: 'getUTCFullYear' }],
+      root,
+    ),
+    /Conflicting GoBeyond Date intrinsic getters/,
+  )
+})
+
+test('dedupes identical useId sites shared across routes', async (t) => {
+  const root = await fixture(t, {
+    'app/components/Logo.tsx': `
+      import { useId } from 'react'
+      export function Logo() {
+        const id = useId()
+        return <svg id={id} />
+      }
+    `,
+    'app/page.tsx': `
+      import { Logo } from './components/Logo.js'
+      export default function Page() {
+        return <main><Logo /></main>
+      }
+    `,
+    'app/about/page.tsx': `
+      import { Logo } from '../components/Logo.js'
+      export default function About() {
+        return <main><Logo /></main>
+      }
+    `,
+  })
+  const logoPath = resolve(root, 'app/components/Logo.tsx')
+  const code = await readFile(logoPath, 'utf8')
+  const useIdSites = []
+  for (const [routeId, entryFile] of [
+    ['root', 'app/page.tsx'],
+    ['about', 'app/about/page.tsx'],
+  ] as const) {
+    const compiled = await compileFile({
+      projectRoot: root,
+      entryFile,
+      routeId,
+    })
+    assert.equal(
+      compiled.ok,
+      true,
+      compiled.ok ? '' : JSON.stringify(compiled.diagnostics),
+    )
+    if (!compiled.ok) return
+    useIdSites.push(...compiled.useIdSites)
+  }
+  assert.equal(useIdSites.length, 2)
+  assert.equal(useIdSites[0]?.id, useIdSites[1]?.id)
+  const result = transformUseIdSites(code, logoPath, useIdSites, root)
+  assert.ok(result)
+  const baked = useIdSites[0]?.id
+  assert.ok(baked)
+  assert.equal(
+    [...result.code.matchAll(new RegExp(`__gbUseId\\(${JSON.stringify(baked)}\\)`, 'g'))].length,
+    1,
+  )
+  assert.doesNotMatch(result.code, /__gbUseIdSeq/)
+})
+
 async function fixture(
   t: test.TestContext,
   files: Record<string, string>,
