@@ -56,7 +56,9 @@ jobs:
           go-version: "1.24.x"
           check-latest: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @go-beyond/compiler build
+      # The seo-site build type-checks against the workspace packages'
+      # emitted declarations, so build those first.
+      - run: pnpm --filter @go-beyond/schema --filter @go-beyond/compiler --filter @go-beyond/react --filter @go-beyond/vite build
       - run: pnpm build
       - run: ./scripts/verify-node-free-server.sh dist/server
 
