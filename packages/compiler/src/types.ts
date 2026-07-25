@@ -73,6 +73,12 @@ export type PlanExpression =
     }
   | { kind: 'unary'; operator: '!' | '-'; operand: PlanExpression }
   | {
+      kind: 'ternary'
+      test: PlanExpression
+      consequent: PlanExpression
+      alternate: PlanExpression
+    }
+  | {
       kind: 'helper'
       name: 'string' | 'lower' | 'upper' | 'join' | 'url' | 'imageSrc' | 'style'
       arguments: PlanExpression[]
@@ -106,6 +112,8 @@ export type CompileResult =
       ok: true
       plan: RenderPlan
       clientBoundaries: ClientBoundaryRecord[]
+      useIdSites: UseIdSiteRecord[]
+      dateIntrinsicSites: DateIntrinsicSiteRecord[]
       diagnostics: []
     }
   | { ok: false; diagnostics: Diagnostic[] }
@@ -134,9 +142,53 @@ export type ClientBoundaryRecord = {
   column: number
 }
 
+/**
+ * A portable `useId()` call site rewritten to a stable id for Go SSR and the
+ * browser Vite transform. The browser rewrite injects this same `id` so
+ * hydration matches without depending on React's fiber-tree encoding.
+ */
+export type UseIdSiteRecord = {
+  id: string
+  routeId: string
+  source: string
+  start: number
+  end: number
+  line: number
+  column: number
+  /**
+   * When set, the plan id is `id + String(key)` and Vite rewrites
+   * `useId()` to `__gbUseId(id + String(keyExpression))` using this
+   * source text (in scope inside the `.map` callback).
+   */
+  keyExpression?: string
+  /**
+   * When true, the plan already holds the parametric id expression for a
+   * nested component inlined under `.map`; Vite must not rewrite this span
+   * for that instance (keyExpression would be out of scope in the child).
+   */
+  skipViteRewrite?: boolean
+}
+
+/**
+ * A portable `new Date().get*()` / `getUTC*()` call site. Go evaluates against
+ * the render-snapshot clock; Vite rewrites the receiver to `renderSnapshotDate()`.
+ */
+export type DateIntrinsicSiteRecord = {
+  routeId: string
+  source: string
+  start: number
+  end: number
+  line: number
+  column: number
+  /** ECMAScript getter name such as `getUTCFullYear`. */
+  getter: string
+}
+
 export type ClientBoundaryManifest = {
   apiVersion: typeof CLIENT_BOUNDARY_API_VERSION
   boundaries: ClientBoundaryRecord[]
+  useIdSites: UseIdSiteRecord[]
+  dateIntrinsicSites: DateIntrinsicSiteRecord[]
 }
 
 export type SourceRoot = {

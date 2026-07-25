@@ -70,6 +70,10 @@ export interface BootstrapPayload<Props = unknown> {
   buildId: string;
   routeId: string;
   props: Props;
+  /** RFC3339 render-snapshot clock for portable Date getters. */
+  renderNow?: string;
+  /** Document language at render time (diagnostics / future Intl). */
+  renderLocale?: string;
 }
 
 export interface BootstrapOptions {

@@ -75,6 +75,11 @@ class SourceGraph {
       componentStack: [],
       diagnostics: [],
       clientBoundaries: [],
+      useIdSites: [],
+      dateIntrinsicSites: [],
+      eachKeyStack: [],
+      rejectUseIdFrames: [],
+      conditionalHookDepth: 0,
       routeId: '',
       sourceName: (fileName) => toProjectPath(this.projectRoot, fileName),
     }
@@ -91,6 +96,8 @@ class SourceGraph {
 
   async compileRoute(route: ProjectRoute): Promise<CompileResult> {
     const boundaryStart = this.context.clientBoundaries.length
+    const useIdStart = this.context.useIdSites.length
+    const dateStart = this.context.dateIntrinsicSites.length
     const entryFile = resolve(this.projectRoot, route.entryFile)
     if (!this.isAllowedSourcePath(entryFile)) {
       return {
@@ -118,6 +125,8 @@ class SourceGraph {
       ok: true,
       plan,
       clientBoundaries: this.context.clientBoundaries.slice(boundaryStart),
+      useIdSites: this.context.useIdSites.slice(useIdStart),
+      dateIntrinsicSites: this.context.dateIntrinsicSites.slice(dateStart),
       diagnostics: [],
     }
   }
@@ -646,6 +655,8 @@ export async function compileProject(
   const actionContracts: ActionValueContract[] = []
   const routeModules = []
   const clientBoundaries = []
+  const useIdSites = []
+  const dateIntrinsicSites = []
   const staticRoutes = []
   const projectDiagnostics: Diagnostic[] = []
 
@@ -667,6 +678,8 @@ export async function compileProject(
     if (result.ok) {
       plans.push(result.plan)
       clientBoundaries.push(...result.clientBoundaries)
+      useIdSites.push(...result.useIdSites)
+      dateIntrinsicSites.push(...result.dateIntrinsicSites)
     }
 
     const absoluteEntry = resolve(options.projectRoot, route.entryFile)
@@ -759,6 +772,8 @@ export async function compileProject(
       clientBoundaries: {
         apiVersion: CLIENT_BOUNDARY_API_VERSION,
         boundaries: clientBoundaries.sort(compareClientBoundaries),
+        useIdSites: useIdSites.sort(compareUseIdSites),
+        dateIntrinsicSites: dateIntrinsicSites.sort(compareDateIntrinsicSites),
       },
       staticBuild: {
         apiVersion: STATIC_BUILD_API_VERSION,
@@ -777,6 +792,26 @@ function compareClientBoundaries(
     left.source.localeCompare(right.source) ||
     left.start - right.start ||
     left.id.localeCompare(right.id)
+}
+
+function compareUseIdSites(
+  left: { routeId: string; source: string; start: number; id: string },
+  right: { routeId: string; source: string; start: number; id: string },
+): number {
+  return left.routeId.localeCompare(right.routeId) ||
+    left.source.localeCompare(right.source) ||
+    left.start - right.start ||
+    left.id.localeCompare(right.id)
+}
+
+function compareDateIntrinsicSites(
+  left: { routeId: string; source: string; start: number; getter: string },
+  right: { routeId: string; source: string; start: number; getter: string },
+): number {
+  return left.routeId.localeCompare(right.routeId) ||
+    left.source.localeCompare(right.source) ||
+    left.start - right.start ||
+    left.getter.localeCompare(right.getter)
 }
 
 function toProjectPath(projectRoot: string, fileName: string): string {

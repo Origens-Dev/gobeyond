@@ -26,6 +26,15 @@ type HydrationData struct {
 	BuildID    string `json:"buildId"`
 	RouteID    string `json:"routeId"`
 	Props      any    `json:"props"`
+	// RenderNow is the UTC RFC3339Nano instant used for render-snapshot Date
+	// projections in the Go plan. The browser must use this same instant on
+	// first paint (via Vite rewrites), not new Date() at hydrate time.
+	RenderNow string `json:"renderNow,omitempty"`
+	// RenderLocale is the document language used for first paint. Locale-sensitive
+	// strings (Intl.DateTimeFormat, etc.) are not portable Date intrinsics —
+	// format them in the Go loader and pass as props. This field documents the
+	// server locale for diagnostics and future Intl work.
+	RenderLocale string `json:"renderLocale,omitempty"`
 }
 
 type Input struct {

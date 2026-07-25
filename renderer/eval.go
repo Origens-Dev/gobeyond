@@ -52,6 +52,15 @@ func evaluate(expr renderplan.Expression, env environment, path string) (any, er
 		default:
 			return nil, evaluation(path, "unsupported unary operator")
 		}
+	case *renderplan.Ternary:
+		test, err := evaluate(e.Test, env, path+".test")
+		if err != nil {
+			return nil, err
+		}
+		if truthy(test) {
+			return evaluate(e.Consequent, env, path+".consequent")
+		}
+		return evaluate(e.Alternate, env, path+".alternate")
 	case *renderplan.Helper:
 		return evalHelper(e, env, path)
 	case *renderplan.Intrinsic:
@@ -365,6 +374,26 @@ func evalIntrinsic(expr *renderplan.Intrinsic, env environment, path string) (an
 		return env.now.Year(), nil
 	case renderplan.IntrinsicDateGetUTCFullYear:
 		return env.now.UTC().Year(), nil
+	case renderplan.IntrinsicDateGetMonth:
+		return int(env.now.Month()) - 1, nil
+	case renderplan.IntrinsicDateGetUTCMonth:
+		return int(env.now.UTC().Month()) - 1, nil
+	case renderplan.IntrinsicDateGetDate:
+		return env.now.Day(), nil
+	case renderplan.IntrinsicDateGetUTCDate:
+		return env.now.UTC().Day(), nil
+	case renderplan.IntrinsicDateGetHours:
+		return env.now.Hour(), nil
+	case renderplan.IntrinsicDateGetUTCHours:
+		return env.now.UTC().Hour(), nil
+	case renderplan.IntrinsicDateGetMinutes:
+		return env.now.Minute(), nil
+	case renderplan.IntrinsicDateGetUTCMinutes:
+		return env.now.UTC().Minute(), nil
+	case renderplan.IntrinsicDateGetSeconds:
+		return env.now.Second(), nil
+	case renderplan.IntrinsicDateGetUTCSeconds:
+		return env.now.UTC().Second(), nil
 	default:
 		return nil, evaluation(path, "unsupported intrinsic")
 	}

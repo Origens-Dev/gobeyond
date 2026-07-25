@@ -120,9 +120,44 @@ never imported or executed.
   Portable package components join the Go plan; unsupported package code still
   requires a package-authored or project-owned `use client` boundary.
 - Source aliases must be explicit prefix/directory pairs.
-- `useContext`, `useId`, `useLayoutEffect`, `useMemo`, and `useReducer` are
-  rejected in initial rendering.
-- Suspense, streaming, arbitrary function calls, dynamic computed properties,
-  and complex map callback bodies are not portable.
+- Protected React APIs are import-tracked from `react` only. The registry is
+  `src/protected-apis.ts`; sync `docs/architecture.md` and the root README when
+  shipping a new entry. Test matrix: compiler success + failure, plus Vite when
+  strategy is `rewrite`.
+- `useMemo` / `useCallback`, lazy `useState`, and `useReducer` are portable when
+  the value they produce is a single portable expression; `useLayoutEffect` is
+  rejected. Conditional / loop protected hooks emit `GB1085`.
+- `useContext` reads the nearest `<Ctx.Provider value={...}>` in the same
+  portable tree, where `Ctx` comes from a `createContext` call in that module.
+  Consumers without a Provider in the tree are rejected.
+- `useId` bakes a **span-stable** call-site id into the plan (`gb-<spanHash>-<n>`),
+  not a route-scoped id, so a shared module hydrates the same string on every
+  route. The Vite plugin rewrites the browser call to that string. Multiple
+  inlines of the same span become a sequence factory. Inside a keyed `.map` the
+  id is parametric (`prefix + String(key)`); a nested component that calls
+  `useId` under `.map` bakes the parametric plan expression and skips the Vite
+  rewrite for that instance (`skipViteRewrite`). `GB1084` remains only when there
+  is no enclosing map key.
+- `new Date().get*()` / `getUTC*()` bake to render-snapshot intrinsics; Vite
+  rewrites them to `renderSnapshotDate()` using hydration `renderNow`. Prefer UTC.
+- Keyed `Fragment` / `React.Fragment`, static `Children.map` / `Children.toArray`,
+  broader static `createElement`, limited `cloneElement`, and function
+  `defaultProps` object literals are portable. `React.lazy` is rejected with
+  `GB1098` (wrap in `ClientOnly` or `use client`).
+- Portable forms should prefer `defaultValue` / `defaultChecked` for SSR first
+  paint. Static `style` object locals are supported; runtime styled/theme APIs
+  are not. `useSyncExternalStore` is deferred until a real platform store exists
+  in `@go-beyond/react`.
+- Nested component default prop values and scalar ternaries (`a ? b : c`) are
+  portable when their operands are portable expressions.
+- Same-module `const` bindings with portable initializers (literals, templates,
+  portable binary/unary expressions that only reference earlier module consts)
+  are inlined into the plan. `let`/`var` and dynamic initializers (`process.env`,
+  arbitrary calls) stay rejected as `GB1068` when referenced from portable
+  expressions; unused non-portable module consts do not fail the compile.
+- `Suspense` renders its children transparently; there is no streaming, and the
+  fallback never reaches initial markup.
+- Streaming, arbitrary function calls, dynamic computed properties, and complex
+  map callback bodies are not portable.
 - Metadata and JSON-LD use GoBeyond's separate document metadata contract; they
   are not body render-plan nodes.

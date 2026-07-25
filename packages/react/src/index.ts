@@ -4,6 +4,8 @@ export {
   type ClientOnlyProps,
 } from "./client-only.js";
 export { SafeHTML, type SafeHTMLProps } from "./safe-html.js";
+export { useId, createUseIdSequence } from "./use-id.js";
+export { renderSnapshotDate } from "./render-snapshot.js";
 export {
   imageSrc,
   join,

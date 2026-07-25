@@ -312,6 +312,32 @@ func plan(root renderplan.Node) *renderplan.Plan {
 	return &renderplan.Plan{APIVersion: renderplan.APIVersionV1Alpha1, RouteID: "test", Root: root}
 }
 func lit(value any) renderplan.Expression { return &renderplan.Literal{Kind: "literal", Value: value} }
+
+func TestTernaryExpressionSelectsBranch(t *testing.T) {
+	t.Parallel()
+	expr := &renderplan.Ternary{
+		Kind:       "ternary",
+		Test:       lit(nil),
+		Consequent: lit("yes"),
+		Alternate:  lit("navy"),
+	}
+	value, err := evaluate(expr, environment{}, "ternary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "navy" {
+		t.Fatalf("ternary = %v, want navy", value)
+	}
+
+	expr.Test = lit("prefix")
+	value, err = evaluate(expr, environment{}, "ternary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "yes" {
+		t.Fatalf("ternary = %v, want yes", value)
+	}
+}
 func path(parts ...string) renderplan.Expression {
 	segments := make([]renderplan.PathSegment, len(parts))
 	for i, part := range parts {

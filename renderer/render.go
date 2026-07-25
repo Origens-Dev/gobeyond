@@ -45,25 +45,53 @@ func (buffer *renderBuffer) appendByte(value byte) {
 func New() *Renderer { return &Renderer{now: time.Now} }
 
 // Render validates and renders a complete plan. It never returns partial HTML.
-func Render(plan *renderplan.Plan, props any) (string, error) { return New().Render(plan, props) }
+// The render clock is captured once and must also be embedded in hydration data
+// as renderNow so browser Date rewrites match Go (same class of contract as
+// Next.js SSR: first paint uses the server snapshot).
+func Render(plan *renderplan.Plan, props any) (string, error) {
+	html, _, err := New().RenderAt(plan, props, time.Time{})
+	return html, err
+}
+
+// RenderAt is like Render but uses an explicit render clock. A zero now uses
+// the renderer's clock function (default time.Now).
+func RenderAt(plan *renderplan.Plan, props any, now time.Time) (string, error) {
+	html, _, err := New().RenderAt(plan, props, now)
+	return html, err
+}
 
 func (r *Renderer) Render(plan *renderplan.Plan, props any) (string, error) {
+	html, _, err := r.RenderAt(plan, props, time.Time{})
+	return html, err
+}
+
+// RenderAt validates and renders a plan using now as the render-snapshot clock.
+// It returns the HTML and the normalized UTC instant that callers must embed in
+// hydration JSON as renderNow. A zero now uses r.now (or time.Now).
+func (r *Renderer) RenderAt(plan *renderplan.Plan, props any, now time.Time) (string, time.Time, error) {
 	if err := renderplan.Validate(plan); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
+	if now.IsZero() {
+		if r.now != nil {
+			now = r.now()
+		} else {
+			now = time.Now()
+		}
+	}
+	// Keep the clock's Location so local Date getters (getFullYear, …) match the
+	// server zone. Hydration embeds this instant as RFC3339; UTC getters are
+	// portable across browser timezones, local getters match when the browser
+	// zone equals the server zone (same class of SSR caveat as Next.js).
 	var out renderBuffer
-	now := time.Now()
-	if r.now != nil {
-		now = r.now()
-	}
 	ctx := renderContext{env: environment{props: props, locals: map[string]any{}, now: now}, namespace: renderplan.NamespaceHTML}
 	if err := r.node(&out, plan.Root, ctx, "$.root"); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if out.exceeded {
-		return "", fail(CodeRender, "$.root", "rendered HTML exceeds the 8 MiB response budget")
+		return "", time.Time{}, fail(CodeRender, "$.root", "rendered HTML exceeds the 8 MiB response budget")
 	}
-	return out.String(), nil
+	return out.String(), now, nil
 }
 
 type renderContext struct {

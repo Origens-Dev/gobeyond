@@ -26,12 +26,29 @@ export {
   STATIC_BUILD_API_VERSION,
   VALUE_CONTRACT_API_VERSION,
 } from './types.js'
+export {
+  DATE_INTRINSIC_API,
+  DATE_PROJECTION_GETTERS,
+  PROTECTED_APIS,
+  PROTECTED_REACT_MODULES,
+  dateIntrinsicName,
+  isProtectedHookName,
+  isProtectedReactModule,
+} from './protected-apis.js'
+export type {
+  DateProjectionGetter,
+  ProtectedApiEntry,
+  ProtectedApiStrategy,
+  ProtectedHookName,
+} from './protected-apis.js'
 export type {
   ActionContractCompileResult,
   ActionValueContract,
   Attribute,
   ClientBoundaryManifest,
   ClientBoundaryRecord,
+  DateIntrinsicSiteRecord,
+  UseIdSiteRecord,
   ClientOnlyNode,
   CompileOptions,
   CompileFileOptions,

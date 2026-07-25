@@ -4,6 +4,23 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.3 - 2026-07-25
+
+- Expand protected React APIs for portable SSR: bake `useId`, `useMemo`,
+  `useState`/`useReducer` initial state, `useContext`/`createContext`,
+  `useCallback`, and transparent `Suspense` passthrough into the render plan.
+- Bake same-module portable `const` bindings into component environments
+  (reject non-portable module bindings with GB1068 when referenced).
+- Parametric `useId` under `.map`, span-stable ids across routes, and Vite
+  rewrite sequencing for linked packages (realpath-aware matching).
+- Decode JSX text/attribute HTML entities in the compiler so Go SSR matches
+  Vite/React client semantics (`&hellip;` → `…`).
+- Add render-snapshot Date/Intl contract (`renderNow` / `renderLocale` in
+  hydration) and Vite rewrites for Date intrinsic call sites.
+- Wire `@go-beyond/vite` into create-gobeyond scaffolds by default.
+- Add optional `gobeyond.builds/v2` middleware artifact
+  (`dist/middleware/gobeyond-middleware`) for listen-mode reverse proxies.
+
 ## 0.1.0-alpha.0 - Unreleased
 
 - Move the Go module path to `github.com/Origens-Dev/gobeyond`.

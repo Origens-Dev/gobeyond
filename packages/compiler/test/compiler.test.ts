@@ -92,6 +92,7 @@ test('reports unsupported render calls with an actionable location', () => {
     routeId: 'unsupported',
     fileName: 'app/page.tsx',
     sourceText: `
+      import { useMemo } from 'react'
       export default function Page(props: { value: string }) {
         const formatted = useMemo(() => props.value.toUpperCase(), [props.value])
         return <h1>{formatted}</h1>
@@ -101,13 +102,238 @@ test('reports unsupported render calls with an actionable location', () => {
   assert.equal(result.ok, false)
   if (result.ok) return
   assert.ok(
-    result.diagnostics.some((diagnostic) => diagnostic.code === 'GB1076'),
+    result.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === 'GB1077' || diagnostic.code === 'GB1076',
+    ),
   )
   assert.ok(result.diagnostics.every((diagnostic) => diagnostic.line > 0))
   assert.match(
     result.diagnostics[0]!.suggestion ?? '',
-    /Calculate the initial value in Go/,
+    /Calculate the initial value in Go|ClientOnly|portable|Go/,
   )
+})
+
+test('compiles portable useMemo by inlining the factory expression', () => {
+  const result = compileSource({
+    routeId: 'memo',
+    sourceText: `
+      import { useMemo } from 'react'
+      export default function Page(props: { value: string }) {
+        const label = useMemo(() => props.value + '!', [props.value])
+        return <h1>{label}</h1>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.plan.root.kind, 'element')
+})
+
+test('compiles lazy useState and useReducer initial state', () => {
+  const result = compileSource({
+    routeId: 'lazy-state',
+    sourceText: `
+      import { useState, useReducer } from 'react'
+      export default function Page(props: { start: number }) {
+        const [count] = useState(() => props.start + 1)
+        const [total] = useReducer((n: number) => n, props.start)
+        return <p>{count}-{total}</p>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+})
+
+test('useId inside .map is parametric; nested component useId under map bakes parametric plan', () => {
+  const ok = compileSource({
+    routeId: 'map-id',
+    sourceText: `
+      import { useId } from 'react'
+      export default function Page(props: { items: Array<{ id: string }> }) {
+        return (
+          <ul>
+            {props.items.map((item) => {
+              const id = useId()
+              return <li key={item.id} id={id}>{item.id}</li>
+            })}
+          </ul>
+        )
+      }
+    `,
+  })
+  assert.equal(ok.ok, true, ok.ok ? '' : JSON.stringify(ok.diagnostics))
+  if (ok.ok) {
+    assert.equal(ok.useIdSites[0]?.keyExpression, 'item.id')
+    assert.equal(ok.useIdSites[0]?.skipViteRewrite, undefined)
+  }
+
+  const nested = compileSource({
+    routeId: 'map-nested-id',
+    // Use createElement to avoid TS2322 on JSX `key` without React's JSX types.
+    sourceText: `
+      import { createElement, useId } from 'react'
+      function Row(props: { item: { id: string } }) {
+        const id = useId()
+        return <li id={id}>{props.item.id}</li>
+      }
+      export default function Page(props: { items: Array<{ id: string }> }) {
+        return (
+          <ul>
+            {props.items.map((item) =>
+              createElement(Row, { key: item.id, item })
+            )}
+          </ul>
+        )
+      }
+    `,
+  })
+  assert.equal(
+    nested.ok,
+    true,
+    nested.ok ? '' : JSON.stringify(nested.diagnostics),
+  )
+  if (nested.ok) {
+    assert.equal(nested.useIdSites[0]?.keyExpression, 'item.id')
+    assert.equal(nested.useIdSites[0]?.skipViteRewrite, true)
+  }
+})
+
+test('binds the init argument of useReducer(reducer, initArg, init)', () => {
+  const result = compileSource({
+    routeId: 'reducer-init',
+    sourceText: `
+      import { useReducer } from 'react'
+      export default function Page(props: { start: number }) {
+        const [total] = useReducer((n: number) => n, props.start, (n: number) => n + 1)
+        return <p>{total}</p>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.plan.root.kind, 'element')
+  if (result.plan.root.kind !== 'element') return
+  assert.deepEqual(result.plan.root.children?.[0], {
+    kind: 'text',
+    value: {
+      kind: 'binary',
+      operator: '+',
+      left: { kind: 'path', path: ['start'] },
+      right: { kind: 'literal', value: 1 },
+    },
+  })
+})
+
+test('parametric useId in nested maps composes every enclosing key', () => {
+  const result = compileSource({
+    routeId: 'nested-ids',
+    sourceText: `
+      import { useId } from 'react'
+      type Group = { id: string; rows: Array<{ id: string }> }
+      export default function Page(props: { groups: Group[] }) {
+        return (
+          <ul>
+            {props.groups.map((group) => (
+              <li key={group.id}>
+                {group.rows.map((row) => {
+                  const id = useId()
+                  return <span key={row.id} id={id}>{row.id}</span>
+                })}
+              </li>
+            ))}
+          </ul>
+        )
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(
+    result.useIdSites[0]?.keyExpression,
+    'group.id + "-" + row.id',
+  )
+  assert.match(result.useIdSites[0]?.id ?? '', /^gb-[a-f0-9]{8}-0-$/)
+})
+
+test('records one useId site per inlined instance of a shared component', () => {
+  const result = compileSource({
+    routeId: 'logos',
+    fileName: 'page.tsx',
+    sourceText: `
+      import { useId } from 'react'
+      function Logo() {
+        const id = useId()
+        return <svg aria-labelledby={id} />
+      }
+      export default function Page() {
+        return <header><Logo /><Logo /></header>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.useIdSites.length, 2)
+  assert.match(result.useIdSites[0]?.id ?? '', /^gb-[a-f0-9]{8}-0$/)
+  assert.match(result.useIdSites[1]?.id ?? '', /^gb-[a-f0-9]{8}-1$/)
+  assert.equal(
+    result.useIdSites[0]?.id?.replace(/-0$/, ''),
+    result.useIdSites[1]?.id?.replace(/-1$/, ''),
+  )
+  // One source span, two plan literals: the Vite transform sequences them.
+  assert.equal(result.useIdSites[0]?.start, result.useIdSites[1]?.start)
+  assert.equal(result.useIdSites[0]?.end, result.useIdSites[1]?.end)
+})
+
+test('compiles nested-module useId under .map with skipViteRewrite', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `
+      import { Row } from '../components/row.js'
+      export default function Page(props: { items: Array<{ id: string }> }) {
+        return <ul>{props.items.map((item) => <Row key={item.id} label={item.id} />)}</ul>
+      }
+    `,
+    'components/row.tsx': `
+      import { useId } from 'react'
+      export function Row({ label }: { label: string }) {
+        const id = useId()
+        return <li id={id}>{label}</li>
+      }
+    `,
+  })
+  const result = await compileFile({
+    projectRoot,
+    entryFile: 'app/page.tsx',
+    routeId: 'rows',
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.useIdSites[0]?.skipViteRewrite, true)
+  assert.equal(result.useIdSites[0]?.keyExpression, 'item.id')
+})
+
+test('Suspense passthrough emits children; useContext reads Provider value', () => {
+  const result = compileSource({
+    routeId: 'suspense-ctx',
+    sourceText: `
+      import { Suspense, createContext, useContext } from 'react'
+      const Label = createContext('x')
+      function Show() {
+        const value = useContext(Label)
+        return <span>{value}</span>
+      }
+      export default function Page() {
+        return (
+          <Suspense fallback={<p>loading</p>}>
+            <Label.Provider value="hello">
+              <Show />
+            </Label.Provider>
+          </Suspense>
+        )
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
 })
 
 test('rejects an imported component in initial markup', () => {
@@ -161,6 +387,30 @@ test('normalizes multiline JSX text without hydration-changing edge spaces', () 
     attributes: [],
     children: [
       { kind: 'text', value: { kind: 'literal', value: 'First second' } },
+    ],
+  })
+})
+
+test('decodes JSX text and attribute HTML entities like Vite/React', () => {
+  const result = compileSource({
+    routeId: 'entities',
+    sourceText: `
+      export default function Page() {
+        return (
+          <p title="A&hellip;B">Preparing sign-in&hellip;</p>
+        )
+      }
+    `,
+  })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.deepEqual(result.plan.root, {
+    kind: 'element',
+    tag: 'p',
+    namespace: 'html',
+    attributes: [{ name: 'title', mode: 'string', value: { kind: 'literal', value: 'A…B' } }],
+    children: [
+      { kind: 'text', value: { kind: 'literal', value: 'Preparing sign-in…' } },
     ],
   })
 })
@@ -224,6 +474,231 @@ test('uses null for omitted nested component props instead of leaking root props
       },
     ],
   })
+})
+
+test('compiles nested component default props and scalar ternaries', () => {
+  const result = compileSource({
+    routeId: 'nested-defaults',
+    sourceText: `
+      function Mark({ prefix = 'origens', tone }: { prefix?: string; tone?: string }) {
+        const id = tone ? \`\${prefix}-\${tone}\` : \`\${prefix}-navy\`
+        return <svg id={id} />
+      }
+      export default function Page() {
+        return <Mark />
+      }
+    `,
+  })
+  assert.equal(
+    result.ok,
+    true,
+    !result.ok ? JSON.stringify(result.diagnostics, null, 2) : '',
+  )
+  if (!result.ok) return
+  assert.equal(result.plan.root.kind, 'element')
+  if (result.plan.root.kind !== 'element') return
+  assert.equal(result.plan.root.tag, 'svg')
+  const id = result.plan.root.attributes?.find((attribute) => attribute.name === 'id')
+  assert.equal(id?.value.kind, 'ternary')
+  const serialized = JSON.stringify(id?.value)
+  assert.match(serialized, /"value":"origens"/)
+  assert.match(serialized, /"value":"-navy"/)
+  assert.match(serialized, /"kind":"ternary"/)
+})
+
+test('compiles portable module-level const bindings into plan expressions', () => {
+  const literal = compileSource({
+    routeId: 'module-const-literal',
+    sourceText: `
+      const NAVY_ID = 'origens-navy'
+      const BLUE_ID = 'origens-blue'
+      export default function Page() {
+        return (
+          <svg>
+            <linearGradient id={NAVY_ID} />
+            <path fill={'url(#' + NAVY_ID + ')'} />
+            <linearGradient id={BLUE_ID} />
+          </svg>
+        )
+      }
+    `,
+  })
+  assert.equal(
+    literal.ok,
+    true,
+    !literal.ok ? JSON.stringify(literal.diagnostics, null, 2) : '',
+  )
+  if (!literal.ok) return
+  assert.equal(literal.plan.root.kind, 'element')
+  if (literal.plan.root.kind !== 'element') return
+  const navy = literal.plan.root.children?.[0]
+  assert.equal(navy?.kind, 'element')
+  if (navy?.kind !== 'element') return
+  assert.deepEqual(navy.attributes?.[0]?.value, {
+    kind: 'literal',
+    value: 'origens-navy',
+  })
+
+  const derived = compileSource({
+    routeId: 'module-const-derived',
+    sourceText: `
+      const PREFIX = 'origens'
+      const NAVY_ID = PREFIX + '-navy'
+      const BLUE_ID = \`\${PREFIX}-blue\`
+      export default function Page() {
+        return (
+          <svg>
+            <linearGradient id={NAVY_ID} />
+            <linearGradient id={BLUE_ID} />
+          </svg>
+        )
+      }
+    `,
+  })
+  assert.equal(
+    derived.ok,
+    true,
+    !derived.ok ? JSON.stringify(derived.diagnostics, null, 2) : '',
+  )
+  if (!derived.ok) return
+  const serialized = JSON.stringify(derived.plan.root)
+  assert.match(serialized, /"value":"origens"/)
+  assert.match(serialized, /"value":"-navy"/)
+  assert.match(serialized, /"value":"-blue"/)
+  assert.match(serialized, /"kind":"binary"/)
+})
+
+test('rejects non-portable module-level bindings used in portable expressions', () => {
+  const dynamic = compileSource({
+    routeId: 'module-const-dynamic',
+    sourceText: `
+      const PREFIX = process.env.PREFIX ?? 'origens'
+      export default function Page() {
+        return <svg id={PREFIX} />
+      }
+    `,
+  })
+  assert.equal(dynamic.ok, false)
+  const dynamicDiagnostic = dynamic.diagnostics.find((entry) => entry.code === 'GB1068')
+  assert.ok(dynamicDiagnostic)
+  assert.match(dynamicDiagnostic?.message ?? '', /Module-level const PREFIX/)
+  assert.match(dynamicDiagnostic?.suggestion ?? '', /portable literal|calculate it in Go/i)
+
+  const mutable = compileSource({
+    routeId: 'module-let',
+    sourceText: `
+      let PREFIX = 'origens'
+      export default function Page() {
+        return <svg id={PREFIX} />
+      }
+    `,
+  })
+  assert.equal(mutable.ok, false)
+  const mutableDiagnostic = mutable.diagnostics.find((entry) => entry.code === 'GB1068')
+  assert.ok(mutableDiagnostic)
+  assert.match(mutableDiagnostic?.message ?? '', /Module-level let PREFIX/)
+})
+
+test('allows unused non-portable module consts without failing the plan', () => {
+  const result = compileSource({
+    routeId: 'unused-module-const',
+    sourceText: `
+      const UNUSED = process.env.PREFIX ?? 'x'
+      export default function Page() {
+        return <p>ok</p>
+      }
+    `,
+  })
+  assert.equal(
+    result.ok,
+    true,
+    !result.ok ? JSON.stringify(result.diagnostics, null, 2) : '',
+  )
+})
+
+test('compiles React useId() to a stable call-site literal for hydration', () => {
+  const result = compileSource({
+    routeId: 'use-id',
+    fileName: 'page.tsx',
+    sourceText: `
+      import { useId } from 'react'
+      export default function Page() {
+        const id = useId()
+        return <svg id={id} />
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.plan.root.kind, 'element')
+  if (result.plan.root.kind !== 'element') return
+  const id = result.plan.root.attributes?.find((attribute) => attribute.name === 'id')
+  assert.equal(result.useIdSites.length, 1)
+  assert.match(result.useIdSites[0]?.id ?? '', /^gb-[a-f0-9]{8}-0$/)
+  assert.deepEqual(id?.value, {
+    kind: 'literal',
+    value: result.useIdSites[0]?.id,
+  })
+  assert.equal(result.useIdSites[0]?.source, 'page.tsx')
+})
+
+test('useId span tokens match across routes for a shared module', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'components/logo.tsx': `
+      import { useId } from 'react'
+      export function Logo() {
+        const id = useId()
+        return <svg id={id} />
+      }
+    `,
+    'app/a/page.tsx': `
+      import { Logo } from '../../components/logo.js'
+      export default function Page() { return <Logo /> }
+    `,
+    'app/b/page.tsx': `
+      import { Logo } from '../../components/logo.js'
+      export default function Page() { return <Logo /> }
+    `,
+  })
+  const first = await compileFile({
+    projectRoot,
+    entryFile: 'app/a/page.tsx',
+    routeId: 'a',
+  })
+  const second = await compileFile({
+    projectRoot,
+    entryFile: 'app/b/page.tsx',
+    routeId: 'b',
+  })
+  assert.equal(first.ok, true, first.ok ? '' : JSON.stringify(first.diagnostics))
+  assert.equal(second.ok, true, second.ok ? '' : JSON.stringify(second.diagnostics))
+  if (!first.ok || !second.ok) return
+  assert.equal(first.useIdSites[0]?.id, second.useIdSites[0]?.id)
+  assert.equal(first.useIdSites[0]?.source, 'components/logo.tsx')
+  assert.equal(second.useIdSites[0]?.source, 'components/logo.tsx')
+})
+
+test('expands portable JSX spreads from rest props and object literals', () => {
+  const result = compileSource({
+    routeId: 'spreads',
+    sourceText: `
+      function Mark({ className, ...props }: { className?: string; role?: string }) {
+        return <svg className={className} {...props} />
+      }
+      export default function Page() {
+        const attrs = { role: 'img' }
+        return <Mark className="logo" {...attrs} />
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.equal(result.plan.root.kind, 'element')
+  if (result.plan.root.kind !== 'element') return
+  const names = result.plan.root.attributes?.map((attribute) => attribute.name) ?? []
+  assert.deepEqual(names.sort(), ['className', 'role'].sort())
+  const role = result.plan.root.attributes?.find((attribute) => attribute.name === 'role')
+  assert.deepEqual(role?.value, { kind: 'literal', value: 'img' })
 })
 
 test('rejects loose equality and direct table rows as hydration-unsafe', () => {
@@ -353,6 +828,158 @@ test('compiles the current local year from a zero-argument Date', () => {
       { kind: 'text', value: { kind: 'literal', value: ' Studio' } },
     ],
   })
+  assert.equal(result.dateIntrinsicSites.length, 1)
+  assert.equal(result.dateIntrinsicSites[0]?.getter, 'getFullYear')
+})
+
+test('compiles portable useCallback for event handlers', () => {
+  const result = compileSource({
+    routeId: 'callback',
+    sourceText: `
+      import { useCallback } from 'react'
+      export default function Page(props: { label: string }) {
+        const onClick = useCallback(() => props.label, [props.label])
+        return <button onClick={onClick}>{props.label}</button>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+})
+
+test('reports GB1085 for conditional protected hooks', () => {
+  const result = compileSource({
+    routeId: 'cond-hook',
+    sourceText: `
+      import { useMemo } from 'react'
+      export default function Page(props: { on: boolean; value: string }) {
+        const label = props.on ? useMemo(() => props.value, [props.value]) : props.value
+        return <h1>{label}</h1>
+      }
+    `,
+  })
+  assert.equal(result.ok, false)
+  if (!result.ok) {
+    assert.ok(result.diagnostics.some((d) => d.code === 'GB1085'))
+  }
+})
+
+test('compiles keyed Fragment roots in .map', () => {
+  const result = compileSource({
+    routeId: 'frag-map',
+    sourceText: `
+      import { Fragment } from 'react'
+      export default function Page(props: { items: Array<{ id: string; label: string }> }) {
+        return (
+          <ul>
+            {props.items.map((item) => (
+              <Fragment key={item.id}>
+                <li>{item.label}</li>
+              </Fragment>
+            ))}
+          </ul>
+        )
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+})
+
+test('folds function defaultProps into missing props', () => {
+  const result = compileSource({
+    routeId: 'defaults',
+    sourceText: `
+      function Card({ title }: { title?: string }) {
+        return <p>{title}</p>
+      }
+      Card.defaultProps = { title: 'Untitled' }
+      export default function Page() {
+        return <Card />
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.deepEqual(result.plan.root, {
+    kind: 'element',
+    tag: 'p',
+    namespace: 'html',
+    attributes: [],
+    children: [{ kind: 'text', value: { kind: 'literal', value: 'Untitled' } }],
+  })
+})
+
+test('compiles static style object locals', () => {
+  const result = compileSource({
+    routeId: 'style-local',
+    sourceText: `
+      export default function Page(props: { gap: number }) {
+        const style = { color: 'red', marginTop: props.gap }
+        return <div style={style} />
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+})
+
+test('rejects React.lazy with ClientOnly guidance', () => {
+  const result = compileSource({
+    routeId: 'lazy',
+    sourceText: `
+      import { lazy } from 'react'
+      const Chart = lazy(() => import('chart-package'))
+      export default function Page() {
+        return <Chart />
+      }
+    `,
+  })
+  assert.equal(result.ok, false)
+  if (!result.ok) {
+    assert.ok(result.diagnostics.some((d) => d.code === 'GB1098'))
+  }
+})
+
+test('compiles form defaultValue and defaultChecked', () => {
+  const result = compileSource({
+    routeId: 'form-defaults',
+    sourceText: `
+      export default function Page(props: { name: string; ok: boolean }) {
+        return (
+          <form>
+            <input name="title" defaultValue={props.name} />
+            <input type="checkbox" name="ok" defaultChecked={props.ok} />
+          </form>
+        )
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+})
+
+test('compiles static Children.toArray over a fragment', () => {
+  const result = compileSource({
+    routeId: 'children-toarray',
+    sourceText: `
+      import { Children } from 'react'
+      export default function Page() {
+        return <div>{Children.toArray(<><span>a</span><span>b</span></>)}</div>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+})
+
+test('compiles limited cloneElement over a JSX local', () => {
+  const result = compileSource({
+    routeId: 'clone',
+    sourceText: `
+      import { cloneElement } from 'react'
+      export default function Page(props: { label: string }) {
+        const el = <button type="button">x</button>
+        return cloneElement(el, { 'aria-label': props.label })
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
 })
 
 test('rejects all children in HTML raw-text and RCDATA elements', () => {
@@ -747,6 +1374,8 @@ test('compileProject compiles the real SEO article and imported product componen
   assert.deepEqual(result.output.clientBoundaries, {
     apiVersion: 'gobeyond.client-boundaries/v1alpha1',
     boundaries: [],
+    useIdSites: [],
+    dateIntrinsicSites: [],
   })
   assert.deepEqual(
     result.output.plans.map((plan) => plan.routeId),
