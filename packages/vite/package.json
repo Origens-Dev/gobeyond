@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/vite",
-  "version": "0.1.0-alpha.5",
+  "version": "0.1.0-alpha.6",
   "description": "Exact client-boundary transforms for GoBeyond Vite builds",
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,9 @@
       "import": "./dist/src/index.js"
     }
   },
-  "files": ["dist/src"],
+  "files": [
+    "dist/src"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/test/*.test.js",
