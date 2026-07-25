@@ -442,7 +442,7 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 		return gb.Response{}, fmt.Errorf("page props are not JavaScript-compatible: %w", err)
 	}
 	renderStarted := time.Now()
-	body, err := renderer.Render(page.Plan, loaded.Props)
+	body, renderNow, err := renderer.New().RenderAt(page.Plan, loaded.Props, time.Time{})
 	if err != nil {
 		return gb.Response{}, err
 	}
@@ -477,15 +477,21 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 		scripts = append(scripts, document.Asset{URL: clientScript})
 	}
 	indexable := page.Indexable && loaded.Kind != gb.ResultNotFound
+	renderLocale := loaded.Metadata.Lang
+	if renderLocale == "" {
+		renderLocale = "en"
+	}
 	if err := document.Render(&output, document.Input{
 		PublicOrigin: ctx.PublicOrigin,
 		Indexable:    indexable,
 		Metadata:     loaded.Metadata,
 		Body:         document.BodyHTML(body),
 		Hydration: document.HydrationData{
-			BuildID: s.config.BuildID,
-			RouteID: route.ID,
-			Props:   loaded.Props,
+			BuildID:      s.config.BuildID,
+			RouteID:      route.ID,
+			Props:        loaded.Props,
+			RenderNow:    renderNow.Format(time.RFC3339Nano),
+			RenderLocale: renderLocale,
 		},
 		Styles:         styles,
 		ModulePreloads: modulePreloads,

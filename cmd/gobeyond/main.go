@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/browserassets"
@@ -198,21 +199,25 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := os.MkdirAll(filepath.Join(dist, "server", "runtime-data"), 0o755); err != nil {
 		return err
 	}
+	middlewareTarget, err := middlewareBuildTarget(projectRoot)
+	if err != nil {
+		return err
+	}
 	var publicAssets []string
-	if err := runBuildTasks(
-		buildTask{
+	tasks := []buildTask{
+		{
 			name: "build browser assets",
 			run: func() error {
 				return buildBrowserAssets(root, projectRoot, staticDir, manifest.BuildID, clientEntry.EntryFile, environment, browserMode)
 			},
 		},
-		buildTask{
+		{
 			name: "build Go server",
 			run: func() error {
 				return runCommandWithEnvironment(root, environment, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", serverOutput, serverTarget)
 			},
 		},
-		buildTask{
+		{
 			name: "discover public assets",
 			run: func() error {
 				var discoverErr error
@@ -220,10 +225,36 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 				return discoverErr
 			},
 		},
-	); err != nil {
+	}
+	if middlewareTarget != "" {
+		middlewareOutput := filepath.Join(dist, buildpaths.MiddlewareDir, buildpaths.MiddlewareEntryName)
+		if err := os.MkdirAll(filepath.Dir(middlewareOutput), 0o755); err != nil {
+			return err
+		}
+		tasks = append(tasks, buildTask{
+			name: "build middleware binary",
+			run: func() error {
+				// The middleware artifact must be statically linked so it
+				// runs inside a scratch tenant sandbox.
+				return runCommandWithEnvironment(root, withEnvironment(environment, "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", middlewareOutput, middlewareTarget)
+			},
+		})
+	}
+	if err := runBuildTasks(tasks...); err != nil {
 		return err
 	}
 	publicAssets = mergeAssetPaths(publicAssets, generatedIconAssets)
+	assetLayout := buildpaths.AssetLayout
+	if middlewareTarget != "" {
+		assetLayout = buildpaths.AssetLayoutV2
+		if err := writeJSONFile(filepath.Join(dist, buildpaths.MiddlewareDir, buildpaths.MiddlewareManifestName), map[string]any{
+			"v":        1,
+			"entry":    buildpaths.MiddlewareEntryName,
+			"matchers": []string{"/*"},
+		}); err != nil {
+			return err
+		}
+	}
 	browserAssets, err := collectBrowserAssets(staticDir, manifest.BuildID, clientEntry)
 	if err != nil {
 		return err
@@ -273,7 +304,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		"valueContract":     codegen.APIVersionV1Alpha1,
 		"compilerProject":   "gobeyond.compiler-project/v1alpha1",
 		"productionRuntime": "go",
-		"assetLayout":       buildpaths.AssetLayout,
+		"assetLayout":       assetLayout,
 	}); err != nil {
 		return err
 	}
@@ -738,7 +769,7 @@ func renderStaticDocuments(staticDir, planDir, buildID string, routes []project.
 			if err != nil {
 				return fmt.Errorf("trust static SafeHTML for %s: %w", staticRoute.RouteID, err)
 			}
-			body, err := renderer.Render(plan, props)
+			body, renderNow, err := renderer.New().RenderAt(plan, props, time.Time{})
 			if err != nil {
 				return fmt.Errorf("render static route %s: %w", staticRoute.RouteID, err)
 			}
@@ -766,12 +797,22 @@ func renderStaticDocuments(staticDir, planDir, buildID string, routes []project.
 			if routeAssets.Bootstrap != "" {
 				scripts = append(scripts, document.Asset{URL: routeAssets.Bootstrap})
 			}
+			renderLocale := metadata.Lang
+			if renderLocale == "" {
+				renderLocale = "en"
+			}
 			if err := document.Render(&output, document.Input{
-				PublicOrigin:   publicOrigin,
-				Indexable:      indexable,
-				Metadata:       metadata,
-				Body:           document.BodyHTML(body),
-				Hydration:      document.HydrationData{BuildID: buildID, RouteID: staticRoute.RouteID, Props: props},
+				PublicOrigin: publicOrigin,
+				Indexable:    indexable,
+				Metadata:     metadata,
+				Body:         document.BodyHTML(body),
+				Hydration: document.HydrationData{
+					BuildID:      buildID,
+					RouteID:      staticRoute.RouteID,
+					Props:        props,
+					RenderNow:    renderNow.Format(time.RFC3339Nano),
+					RenderLocale: renderLocale,
+				},
 				Styles:         styles,
 				ModulePreloads: modulePreloads,
 				Scripts:        scripts,
@@ -903,8 +944,10 @@ type compilerProjectOutput struct {
 }
 
 type compilerClientBoundaryManifest struct {
-	APIVersion string                         `json:"apiVersion"`
-	Boundaries []compilerClientBoundaryRecord `json:"boundaries"`
+	APIVersion          string                         `json:"apiVersion"`
+	Boundaries          []compilerClientBoundaryRecord `json:"boundaries"`
+	UseIDSites          []compilerUseIDSiteRecord      `json:"useIdSites"`
+	DateIntrinsicSites  []compilerDateIntrinsicSite    `json:"dateIntrinsicSites"`
 }
 
 type compilerClientBoundaryRecord struct {
@@ -919,6 +962,28 @@ type compilerClientBoundaryRecord struct {
 	End       int    `json:"end"`
 	Line      int    `json:"line"`
 	Column    int    `json:"column"`
+}
+
+type compilerUseIDSiteRecord struct {
+	ID               string `json:"id"`
+	RouteID          string `json:"routeId"`
+	Source           string `json:"source"`
+	Start            int    `json:"start"`
+	End              int    `json:"end"`
+	Line             int    `json:"line"`
+	Column           int    `json:"column"`
+	KeyExpression    string `json:"keyExpression,omitempty"`
+	SkipViteRewrite  bool   `json:"skipViteRewrite,omitempty"`
+}
+
+type compilerDateIntrinsicSite struct {
+	RouteID string `json:"routeId"`
+	Source  string `json:"source"`
+	Start   int    `json:"start"`
+	End     int    `json:"end"`
+	Line    int    `json:"line"`
+	Column  int    `json:"column"`
+	Getter  string `json:"getter"`
 }
 
 type compilerRouteModules struct {
@@ -1287,6 +1352,23 @@ func serverBuildTarget(website string) (string, error) {
 		return target, nil
 	}
 	return "", errors.New("production server entry is missing; add server/cmd/app or server/cmd/site")
+}
+
+// middlewareBuildTarget reports the optional middleware artifact entry
+// (server/cmd/middleware). Projects without one produce a v1 layout.
+func middlewareBuildTarget(website string) (string, error) {
+	target := filepath.Join(website, "server", "cmd", "middleware")
+	info, err := os.Stat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", errors.New("server/cmd/middleware must be a directory containing the middleware main package")
+	}
+	return target, nil
 }
 
 func runCommand(directory, name string, args ...string) error {

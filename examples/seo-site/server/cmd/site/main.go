@@ -1,18 +1,15 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 
+	gblisten "github.com/Origens-Dev/gobeyond/adapters/listen"
 	"github.com/Origens-Dev/gobeyond/browserassets"
 	"github.com/Origens-Dev/gobeyond/buildpaths"
 	seosite "github.com/Origens-Dev/gobeyond/examples/seo-site/server"
@@ -64,30 +61,9 @@ func main() {
 			handler.ServeHTTP(writer, request)
 		})
 	}
-	address := os.Getenv("GOBEYOND_ADDR")
-	if address == "" {
-		address = ":8080"
-	}
-	server := &http.Server{
-		Addr:              address,
-		Handler:           siteHandler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      20 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
-	stopping, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	go func() {
-		<-stopping.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("graceful shutdown: %v", err)
-		}
-	}()
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// Hosted mode listens on the GOBEYOND_LISTEN socket with readiness and
+	// SIGTERM drain; without it this falls back to TCP on GOBEYOND_ADDR.
+	if err := gblisten.Serve(siteHandler); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -180,6 +180,17 @@ func validateExpression(expr Expression, path string, depth int) error {
 			return invalid(path+".operator", "unsupported unary operator")
 		}
 		return validateExpression(e.Operand, path+".operand", depth+1)
+	case *Ternary:
+		if e == nil || e.Kind != "ternary" {
+			return invalid(path+".kind", "ternary kind must be ternary")
+		}
+		if err := validateExpression(e.Test, path+".test", depth+1); err != nil {
+			return err
+		}
+		if err := validateExpression(e.Consequent, path+".consequent", depth+1); err != nil {
+			return err
+		}
+		return validateExpression(e.Alternate, path+".alternate", depth+1)
 	case *Helper:
 		if e == nil || e.Kind != "helper" {
 			return invalid(path+".kind", "helper kind must be helper")

@@ -265,6 +265,27 @@ func decodeExpression(data []byte, path string) (Expression, error) {
 			return nil, err
 		}
 		return &Unary{Kind: raw.Kind, Operator: raw.Operator, Operand: operand}, nil
+	case "ternary":
+		var raw struct {
+			Kind                        string
+			Test, Consequent, Alternate json.RawMessage
+		}
+		if err := strictUnmarshal(data, &raw); err != nil {
+			return nil, decodeError(path, "invalid ternary expression", err)
+		}
+		test, err := decodeExpression(raw.Test, path+".test")
+		if err != nil {
+			return nil, err
+		}
+		consequent, err := decodeExpression(raw.Consequent, path+".consequent")
+		if err != nil {
+			return nil, err
+		}
+		alternate, err := decodeExpression(raw.Alternate, path+".alternate")
+		if err != nil {
+			return nil, err
+		}
+		return &Ternary{Kind: raw.Kind, Test: test, Consequent: consequent, Alternate: alternate}, nil
 	case "helper":
 		var raw struct {
 			Kind, Name string

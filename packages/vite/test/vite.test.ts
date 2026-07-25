@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -11,6 +11,8 @@ import {
   goBeyond,
   loadClientBoundaryManifest,
   transformClientBoundaries,
+  transformDateIntrinsicSites,
+  transformUseIdSites,
 } from '../src/index.js'
 
 test('transforms only compiler-downgraded JSX call sites', async (t) => {
@@ -139,6 +141,8 @@ test('bundles a direct JSX child as an executable empty-first-render boundary', 
       clientBoundaries: {
         apiVersion: 'gobeyond.client-boundaries/v1alpha1',
         boundaries: compiled.clientBoundaries,
+        useIdSites: compiled.useIdSites,
+        dateIntrinsicSites: compiled.dateIntrinsicSites,
       },
     })],
     resolve: {
@@ -214,6 +218,8 @@ test('loads a boundary manifest from complete compiler output and rejects stale 
   })
   const manifest = await loadClientBoundaryManifest('boundaries.json', root)
   assert.deepEqual(manifest.boundaries, [])
+  assert.deepEqual(manifest.useIdSites, [])
+  assert.deepEqual(manifest.dateIntrinsicSites, [])
 
   assert.throws(
     () => transformClientBoundaries(
@@ -236,6 +242,241 @@ test('loads a boundary manifest from complete compiler output and rejects stale 
     ),
     /Stale GoBeyond client boundary/,
   )
+})
+
+test('rewrites compiler-recorded useId() call sites to stable ids', async (t) => {
+  const root = await fixture(t, {
+    'app/page.tsx': `
+      import { useId } from 'react'
+      export default function Page() {
+        const id = useId()
+        return <svg id={id} />
+      }
+    `,
+  })
+  const code = await readFile(resolve(root, 'app/page.tsx'), 'utf8')
+  const compiled = await compileFile({
+    projectRoot: root,
+    entryFile: 'app/page.tsx',
+    routeId: 'root',
+  })
+  assert.equal(compiled.ok, true, compiled.ok ? '' : JSON.stringify(compiled.diagnostics))
+  if (!compiled.ok) return
+  assert.equal(compiled.useIdSites.length, 1)
+  const result = transformUseIdSites(
+    code,
+    resolve(root, 'app/page.tsx'),
+    compiled.useIdSites,
+    root,
+  )
+  assert.ok(result)
+  assert.match(result.code, /import \{ useId as __gbUseId \} from '@go-beyond\/react'/)
+  const baked = compiled.useIdSites[0]?.id
+  assert.ok(baked)
+  assert.match(
+    result.code,
+    new RegExp(`const id = __gbUseId\\(${JSON.stringify(baked)}\\)`),
+  )
+  assert.doesNotMatch(result.code, /const id = useId\(\)/)
+})
+
+test('rewrites useId when Vite resolves a linked package via realpath', async (t) => {
+  const root = await fixture(t, {
+    'packages/ui/src/logo.tsx': `
+      import { useId } from 'react'
+      export function Logo() {
+        const id = useId()
+        return <svg id={id} />
+      }
+    `,
+    'packages/ui/package.json': JSON.stringify({
+      name: '@fixture/ui',
+      type: 'module',
+      exports: { '.': './src/logo.tsx' },
+    }),
+    'app/page.tsx': `
+      import { Logo } from '@fixture/ui'
+      export default function Page() {
+        return <main><Logo /></main>
+      }
+    `,
+  })
+  await mkdir(resolve(root, 'node_modules/@fixture'), { recursive: true })
+  await symlink(
+    resolve(root, 'packages/ui'),
+    resolve(root, 'node_modules/@fixture/ui'),
+  )
+  const logicalSource = 'node_modules/@fixture/ui/src/logo.tsx'
+  const code = await readFile(resolve(root, logicalSource), 'utf8')
+  const compiled = await compileFile({
+    projectRoot: root,
+    entryFile: 'app/page.tsx',
+    routeId: 'root',
+  })
+  assert.equal(compiled.ok, true, compiled.ok ? '' : JSON.stringify(compiled.diagnostics))
+  if (!compiled.ok) return
+  assert.equal(compiled.useIdSites.length, 1)
+  assert.equal(compiled.useIdSites[0]?.source, logicalSource)
+  const physicalId = await realpath(resolve(root, logicalSource))
+  assert.notEqual(physicalId, resolve(root, logicalSource))
+  const result = transformUseIdSites(
+    code,
+    physicalId,
+    compiled.useIdSites,
+    root,
+  )
+  assert.ok(result)
+  const baked = compiled.useIdSites[0]?.id
+  assert.ok(baked)
+  assert.match(
+    result.code,
+    new RegExp(`const id = __gbUseId\\(${JSON.stringify(baked)}\\)`),
+  )
+})
+
+test('sequences repeated useId spans and parameterizes mapped ones', async (t) => {
+  const root = await fixture(t, {
+    'app/page.tsx': `
+      import { useId } from 'react'
+      function Logo() {
+        const id = useId()
+        return <svg aria-labelledby={id} />
+      }
+      export default function Page(props: { items: Array<{ id: string }> }) {
+        return (
+          <main>
+            <Logo />
+            <Logo />
+            <ul>
+              {props.items.map((item) => {
+                const rowId = useId()
+                return <li key={item.id} id={rowId}>{item.id}</li>
+              })}
+            </ul>
+          </main>
+        )
+      }
+    `,
+  })
+  const code = await readFile(resolve(root, 'app/page.tsx'), 'utf8')
+  const compiled = await compileFile({
+    projectRoot: root,
+    entryFile: 'app/page.tsx',
+    routeId: 'root',
+  })
+  assert.equal(compiled.ok, true, compiled.ok ? '' : JSON.stringify(compiled.diagnostics))
+  if (!compiled.ok) return
+  const result = transformUseIdSites(
+    code,
+    resolve(root, 'app/page.tsx'),
+    compiled.useIdSites,
+    root,
+  )
+  assert.ok(result)
+  const logoSites = compiled.useIdSites.filter((site) => !site.keyExpression)
+  const mapSite = compiled.useIdSites.find((site) => site.keyExpression)
+  assert.equal(logoSites.length, 2)
+  assert.ok(mapSite)
+  assert.match(
+    result.code,
+    /import \{ createUseIdSequence as __gbUseIdSeq \} from '@go-beyond\/react'/,
+  )
+  assert.ok(
+    result.code.includes(
+      `const __gbUseIdSeq0 = __gbUseIdSeq(${JSON.stringify(logoSites.map((site) => site.id))});`,
+    ),
+  )
+  assert.match(result.code, /const id = __gbUseIdSeq0\(\)/)
+  assert.ok(
+    result.code.includes(
+      `const rowId = __gbUseId(${JSON.stringify(mapSite.id)} + String(item.id))`,
+    ),
+  )
+})
+
+test('keeps client-boundary spans aligned behind a sequenced useId header', async (t) => {
+  const root = await fixture(t, {
+    'app/page.tsx': `
+      import { useId } from 'react'
+      import { Widget } from '../components/widget.js'
+      function Logo() {
+        const id = useId()
+        return <svg aria-labelledby={id} />
+      }
+      export default function Page() {
+        return <main><Logo /><Logo /><Widget /></main>
+      }
+    `,
+    'components/widget.tsx': `
+      'use client'
+      export function Widget() {
+        const width = window.innerWidth
+        return <p>{width}</p>
+      }
+    `,
+  })
+  const code = await readFile(resolve(root, 'app/page.tsx'), 'utf8')
+  const compiled = await compileFile({
+    projectRoot: root,
+    entryFile: 'app/page.tsx',
+    routeId: 'root',
+  })
+  assert.equal(compiled.ok, true, compiled.ok ? '' : JSON.stringify(compiled.diagnostics))
+  if (!compiled.ok) return
+  assert.equal(compiled.useIdSites.length, 2)
+  assert.equal(compiled.clientBoundaries.length, 1)
+
+  const plugin = goBeyond({
+    clientBoundaries: {
+      apiVersion: 'gobeyond.client-boundaries/v1alpha1',
+      boundaries: compiled.clientBoundaries,
+      useIdSites: compiled.useIdSites,
+      dateIntrinsicSites: compiled.dateIntrinsicSites,
+    },
+  })
+  const hooks = plugin as unknown as {
+    configResolved(config: { root: string }): void
+    buildStart(): Promise<void>
+    transform(code: string, id: string): { code: string } | null
+  }
+  hooks.configResolved({ root })
+  await hooks.buildStart()
+  const result = hooks.transform(code, resolve(root, 'app/page.tsx'))
+  assert.ok(result)
+  assert.match(result.code, /const __gbUseIdSeq0 = __gbUseIdSeq\(/)
+  assert.match(result.code, /<__gbClientOnly>\{<Widget \/>\}<\/__gbClientOnly>/)
+})
+
+test('rewrites Date intrinsic call sites to renderSnapshotDate', async (t) => {
+  const root = await fixture(t, {
+    'app/page.tsx': `
+      export default function Page() {
+        return <footer>{new Date().getUTCFullYear()}</footer>
+      }
+    `,
+  })
+  const code = await readFile(resolve(root, 'app/page.tsx'), 'utf8')
+  const compiled = await compileFile({
+    projectRoot: root,
+    entryFile: 'app/page.tsx',
+    routeId: 'root',
+  })
+  assert.equal(compiled.ok, true, compiled.ok ? '' : JSON.stringify(compiled.diagnostics))
+  if (!compiled.ok) return
+  assert.equal(compiled.dateIntrinsicSites.length, 1)
+  const result = transformDateIntrinsicSites(
+    code,
+    resolve(root, 'app/page.tsx'),
+    compiled.dateIntrinsicSites,
+    root,
+  )
+  assert.ok(result)
+  assert.match(
+    result.code,
+    /import \{ renderSnapshotDate as __gbRenderSnapshotDate \} from '@go-beyond\/react'/,
+  )
+  assert.match(result.code, /__gbRenderSnapshotDate\(\)\.getUTCFullYear\(\)/)
+  assert.doesNotMatch(result.code, /new Date\(\)\.getUTCFullYear\(\)/)
 })
 
 async function fixture(

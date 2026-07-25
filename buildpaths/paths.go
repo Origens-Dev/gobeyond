@@ -29,6 +29,18 @@ import (
 // deployment references can detect the layout a build was produced with.
 const AssetLayout = "gobeyond.builds/v1"
 
+// AssetLayoutV2 is AssetLayout plus the optional dist/middleware/ artifact
+// (a separately-runnable listen-mode reverse proxy). A build publishes
+// AssetLayoutV2 when it emits dist/middleware/; v1 bundles stay servable.
+const AssetLayoutV2 = "gobeyond.builds/v2"
+
+// Middleware artifact locations inside dist/ under AssetLayoutV2.
+const (
+	MiddlewareDir          = "middleware"
+	MiddlewareEntryName    = "gobeyond-middleware"
+	MiddlewareManifestName = "middleware.json"
+)
+
 // BuildsPrefix is the reserved public URL prefix every build-scoped path
 // falls under.
 const BuildsPrefix = "/_gobeyond/builds/"

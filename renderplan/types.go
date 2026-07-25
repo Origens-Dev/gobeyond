@@ -164,6 +164,17 @@ type Unary struct {
 
 func (*Unary) isExpression() {}
 
+// Ternary is a scalar conditional expression (test ? consequent : alternate).
+// Node-level branching remains Conditional.
+type Ternary struct {
+	Kind       string     `json:"kind"`
+	Test       Expression `json:"test"`
+	Consequent Expression `json:"consequent"`
+	Alternate  Expression `json:"alternate"`
+}
+
+func (*Ternary) isExpression() {}
+
 type Helper struct {
 	Kind      string       `json:"kind"`
 	Name      string       `json:"name"`

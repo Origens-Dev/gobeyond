@@ -157,12 +157,21 @@ Rich HTML is explicit: validate/sanitize it into the schema package's branded
 strings cannot cross that trust boundary, and the wrapper is identical in the
 Go document and the hydrated React tree.
 
-The alpha intentionally defers arbitrary render helpers, `useContext`,
-`useId`, `useReducer`, `useMemo`, Suspense, streaming, generalized third-party
-render adapters, ISR, WebP image output, production S3-backed image loading
-with an applied CloudFront image-cache policy, and exact arbitrary React SSR
-compatibility. Local and preview servers can use `imageSrc()` with
-`GOBEYOND_STATIC_DIR`; see [Runtime images](docs/guides/images.md).
+The alpha intentionally defers arbitrary render helpers, streaming, generalized
+third-party render adapters, ISR, WebP image output, production S3-backed image
+loading with an applied CloudFront image-cache policy, and exact arbitrary React
+SSR compatibility. Nested component default props, scalar ternaries, statically
+known JSX spreads, `useMemo` / `useCallback`, lazy `useState`, `useReducer`,
+provider-backed `useContext`, transparent `Suspense` children, keyed `Fragment`,
+static `Children` helpers, limited `createElement` / `cloneElement`, and React
+`useId()` (rewritten to stable call-site ids via the compiler + Vite plugin;
+parametric under `.map`, including nested inlines) are portable. Zero-arg
+`new Date().get*()` / `getUTC*()` use the render-snapshot clock (`renderNow` +
+Vite `renderSnapshotDate()`). Prefer form `defaultValue` / `defaultChecked` for
+first paint. Same-module portable `const` bindings are baked into the plan.
+Local and preview servers can use
+`imageSrc()` with `GOBEYOND_STATIC_DIR`; see
+[Runtime images](docs/guides/images.md).
 
 ## Documentation
 

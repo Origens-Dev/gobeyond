@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/compiler",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.3",
   "description": "Compile GoBeyond's portable TSX profile into v1alpha1 Go rendering plans",
   "license": "MIT",
   "type": "module",

@@ -117,6 +117,47 @@ render, not a general HTML approximation. Changes to escaping, attributes,
 form state, SVG, tables, whitespace, or scalar serialization require a React
 reference case and a hydration case.
 
+## Protected React APIs
+
+Some idiomatic React APIs are recognized from `react` imports so first paint can
+stay in the Go plan. The compiler registry lives in
+`packages/compiler/src/protected-apis.ts`; keep this table, the compiler README,
+and the root README in sync when shipping a new API. Every new API needs a
+compiler success case, a failure/diagnostic case, and a Vite/hydration case when
+the strategy is `rewrite`.
+
+| Technique | Examples | Browser rewrite? |
+| --- | --- | --- |
+| Bake into plan | `useState` / lazy init, `useMemo` / `useCallback`, `useReducer` init, `useContext`+Provider, keyed `Fragment`, static `Children.*`, static `createElement` / limited `cloneElement`, `defaultProps` | Usually no |
+| Call-site identity | `useId()` | Yes (skip for nested map inlines whose plan already holds the parametric id) |
+| Transparent wrapper | `<Suspense>` children only | No (not streaming) |
+| Render snapshot | `new Date().get*()` / `getUTC*()` | Yes → `renderSnapshotDate()` + hydration `renderNow` |
+| Reject with guidance | `React.lazy` | Use `ClientOnly` or `use client` |
+
+`useId` ids are **span-stable** (`gb-<spanHash>-<n>`), not route-scoped, so a
+shared module hydrates the same string on every route. Multiple inlines of one
+span use a sequence factory. Inside a keyed `.map` the id is parametric
+(`prefix + String(key)`). Nested components rendered from `.map` bake the same
+parametric plan expression and mark the Vite site `skipViteRewrite` (the parent
+key is out of scope in the child module). Conditional / loop hook calls emit
+`GB1085` (parametric map `useId` is the intentional exception).
+
+Date getters use one render clock embedded as hydration `renderNow`. Prefer UTC
+getters for cross-timezone safety; local getters match when browser and server
+zones agree (same class of SSR caveat as Next.js). Format locale-sensitive
+`Intl` strings in Go and pass them as props.
+
+Portable forms should use `defaultValue` / `defaultChecked` for first paint;
+controlled `value={…}` is fine only when the expression is portable and matches
+Go’s markup. Same-module `const` bindings with portable initializers are baked
+into the plan (no need to inline string literals for SVG gradient ids and similar);
+`let`/`var` and dynamic module initializers remain `GB1068` when referenced.
+`useSyncExternalStore` is not registered yet—there is no platform
+store in `@go-beyond/react` to map through `getServerSnapshot`.
+
+Streaming Suspense, Error Boundaries, and `useLayoutEffect` stay behind
+`ClientOnly` or Go HTTP / route error documents.
+
 ## SEO boundary
 
 Indexable results must resolve their status, language, title, description,
