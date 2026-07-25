@@ -33,8 +33,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # @go-beyond/vite type-checks against the compiler's emitted declarations.
-      - run: pnpm --filter @go-beyond/schema --filter @go-beyond/compiler build
+      # @go-beyond/vite and examples/seo-site type-check against the emitted
+      # declarations of the workspace packages, so build those first.
+      - run: pnpm --filter @go-beyond/schema --filter @go-beyond/compiler --filter @go-beyond/react --filter @go-beyond/vite build
       - run: pnpm --recursive typecheck
       - run: pnpm --recursive test
       - run: pnpm generate:check
