@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/Origens-Dev/gobeyond/renderplan"
 )
@@ -142,6 +143,11 @@ func softLookup(object, index any, path string) (any, error) {
 	if err != nil {
 		return nil, evaluation(path+".index", "index must be a number or scalar string")
 	}
+	if key == "length" {
+		if length, ok := javascriptLength(rv); ok {
+			return length, nil
+		}
+	}
 	if rv.Kind() == reflect.Array || rv.Kind() == reflect.Slice {
 		if i, err := strconv.Atoi(key); err == nil && strconv.Itoa(i) == key {
 			if i < 0 || i >= rv.Len() {
@@ -155,6 +161,11 @@ func softLookup(object, index any, path string) (any, error) {
 }
 
 func softProperty(rv reflect.Value, name, path string) (any, error) {
+	if name == "length" {
+		if length, ok := javascriptLength(rv); ok {
+			return length, nil
+		}
+	}
 	switch rv.Kind() {
 	case reflect.Map:
 		if rv.Type().Key().Kind() != reflect.String {
@@ -210,6 +221,11 @@ func lookup(value any, segment renderplan.PathSegment) (any, error) {
 		}
 		return rv.Index(segment.Index).Interface(), nil
 	}
+	if segment.Name == "length" {
+		if length, ok := javascriptLength(rv); ok {
+			return length, nil
+		}
+	}
 	switch rv.Kind() {
 	case reflect.Map:
 		if rv.Type().Key().Kind() != reflect.String {
@@ -242,6 +258,20 @@ func lookup(value any, segment renderplan.PathSegment) (any, error) {
 		return nil, fmt.Errorf("property %q does not exist", segment.Name)
 	default:
 		return nil, fmt.Errorf("property segment requires an object")
+	}
+}
+
+// javascriptLength implements the property shared by JavaScript arrays and
+// strings. Go string lengths count UTF-8 bytes, while JavaScript counts UTF-16
+// code units, so non-BMP characters contribute two just as they do in React.
+func javascriptLength(rv reflect.Value) (int, bool) {
+	switch rv.Kind() {
+	case reflect.Array, reflect.Slice:
+		return rv.Len(), true
+	case reflect.String:
+		return len(utf16.Encode([]rune(rv.String()))), true
+	default:
+		return 0, false
 	}
 }
 
