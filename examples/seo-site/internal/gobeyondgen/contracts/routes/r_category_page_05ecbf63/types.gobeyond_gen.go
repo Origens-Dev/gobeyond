@@ -3,6 +3,10 @@
 
 package r_category_page_05ecbf63
 
+import (
+	"time"
+)
+
 const RouteID = "r_category__page_05ecbf63"
 
 type Props struct {
@@ -18,3 +22,13 @@ type PropsItemsItem struct {
 	Name    string `json:"name"`
 	Summary string `json:"summary"`
 }
+
+// Revalidate is how long the origin may reuse this route's computed props,
+// from definePage({ revalidate }). Zero leaves the route uncached. It is not
+// an HTTP directive: the edge Cache-Control stays the loader's gb.CachePolicy,
+// which should be derived from this window rather than drifting from it.
+const Revalidate = 0 * time.Second
+
+// Tags are this route's invalidation handles, from definePage({ tags }).
+// cache.RevalidateTag on any of them drops the route's cached props.
+var Tags []string

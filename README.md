@@ -158,9 +158,12 @@ strings cannot cross that trust boundary, and the wrapper is identical in the
 Go document and the hydrated React tree.
 
 The alpha intentionally defers arbitrary render helpers, streaming, generalized
-third-party render adapters, ISR, WebP image output, production S3-backed image
-loading with an applied CloudFront image-cache policy, and exact arbitrary React
-SSR compatibility. Nested component default props, scalar ternaries, statically
+third-party render adapters, HTML-body caching, WebP image output, production
+S3-backed image loading with an applied CloudFront image-cache policy, and
+exact arbitrary React SSR compatibility. Props-only origin ISR, the data
+cache, request memoization, action refresh, and an in-memory client Router
+Cache (public payloads only, TTL capped at 30s) are
+available—see [Architecture and runtime boundary](docs/architecture.md#request-time-caching). Nested component default props, scalar ternaries, statically
 known JSX spreads, `useMemo` / `useCallback`, lazy `useState`, `useReducer`,
 provider-backed `useContext`, transparent `Suspense` children, keyed `Fragment`,
 static `Children` helpers, limited `createElement` / `cloneElement`, and React

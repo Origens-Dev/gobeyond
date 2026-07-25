@@ -9,8 +9,10 @@ import (
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/browserassets"
 	"github.com/Origens-Dev/gobeyond/buildpaths"
+	"github.com/Origens-Dev/gobeyond/cache"
 	apitime "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/api/r_api_time_066a4b03"
 	actioncontract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	productcontract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9"
 	generatedroutes "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes"
 	pageaccount "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_account_441bb226"
 	pagearticle "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/routes/r_articles__slug_c2f99372"
@@ -81,7 +83,7 @@ func New(buildID, publicOrigin string, plans map[string]*renderplan.Plan) (*Site
 func NewWithAssets(buildID, publicOrigin string, plans map[string]*renderplan.Plan, assets AssetConfig) (*Site, error) {
 	return newWithStaticLoader(buildID, publicOrigin, plans, nil, assets, func(*gb.PageContext) (gbruntime.LoadedPage, error) {
 		return *homePage(publicOrigin), nil
-	})
+	}, nil)
 }
 
 // NewWithStaticStore uses route-aware browser assets when the build emitted a
@@ -95,10 +97,10 @@ func NewWithStaticStore(buildID, publicOrigin string, plans map[string]*renderpl
 	if assets == nil {
 		legacyAssets = AssetConfig{ClientScript: buildpaths.AssetURL(buildID, "app.js"), Styles: []string{}}
 	}
-	return newWithStaticLoader(buildID, publicOrigin, plans, assets, legacyAssets, staticStore.Loader(HomeRouteID))
+	return newWithStaticLoader(buildID, publicOrigin, plans, assets, legacyAssets, staticStore.Loader(HomeRouteID), staticStore)
 }
 
-func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderplan.Plan, browserAssets *browserassets.Manifest, legacyAssets AssetConfig, homeLoader gbruntime.PageLoader) (*Site, error) {
+func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderplan.Plan, browserAssets *browserassets.Manifest, legacyAssets AssetConfig, homeLoader gbruntime.PageLoader, packaged *gbruntime.StaticStore) (*Site, error) {
 	required := []string{
 		HomeRouteID, AccountRouteID, ArticleRouteID, CategoryRouteID,
 		EnglishArticleRouteID, FrenchArticleRouteID, LocationRouteID, ProductRouteID,
@@ -108,7 +110,7 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 			return nil, errors.New("SEO site requires render plan " + routeID)
 		}
 	}
-	runtime, err := gbruntime.New(gbruntime.Config{
+	runtimeConfig := gbruntime.Config{
 		BuildID:       buildID,
 		PublicOrigin:  publicOrigin,
 		BrowserAssets: browserAssets,
@@ -194,6 +196,11 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 					withPublicOrigin(ctx, publicOrigin)
 					return productroute.Page(ctx, productroute.Params{Slug: ctx.Params["slug"]})
 				},
+				// Route caching declared in page.schema.ts. It only takes effect
+				// where the deployment also configures gbruntime.Config.Cache and
+				// Config.Contracts; elsewhere the loader simply runs per request.
+				Revalidate:   productcontract.Revalidate,
+				Tags:         productcontract.Tags,
 				Indexable:    true,
 				ClientScript: legacyAssets.ClientScript,
 				Styles:       legacyAssets.Styles,
@@ -218,11 +225,30 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 				}
 			},
 		}},
-	})
+	}
+	if packaged != nil {
+		// Packaged builds carry contracts and may declare route caching in
+		// page.schema.ts. Enable L1-only caching by default; shared L2 is
+		// opt-in via GOBEYOND_CACHE_* (see cache/example_test.go).
+		runtimeConfig.Cache = siteCacheRuntimeConfig()
+		runtimeConfig.Contracts = packaged.Contracts()
+	}
+	runtime, err := gbruntime.New(runtimeConfig)
 	if err != nil {
 		return nil, err
 	}
 	return &Site{runtime: runtime, publicOrigin: strings.TrimSuffix(publicOrigin, "/")}, nil
+}
+
+// siteCacheRuntimeConfig enables in-process L1 caching for packaged builds.
+// Leave Store nil so runtime.New defaults to a bounded memstore tier; wire
+// redisstore.FromEnv for shared L2 (see cache/example_test.go Example_wiring).
+func siteCacheRuntimeConfig() *cache.RuntimeConfig {
+	prefix := cache.DeployPrefixFromEnv()
+	if prefix == "" {
+		prefix = "local"
+	}
+	return &cache.RuntimeConfig{DeployPrefix: prefix}
 }
 
 func homePage(origin string) *gbruntime.LoadedPage {

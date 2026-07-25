@@ -21,6 +21,8 @@ const primitiveKinds = new Map<string, ValueSchema['kind']>([
   ['safeHTML', 'safeHtml'],
 ] as const)
 
+const pageDefinitionKeys = new Set(['props', 'revalidate', 'tags'])
+
 class ContractCompiler {
   readonly sourceFile: ts.SourceFile
   readonly diagnostics: Diagnostic[] = []
@@ -69,13 +71,123 @@ class ContractCompiler {
     }
     const definition = this.requireObject(definitions[0]!.call.arguments[0], 'definePage')
     if (!definition) return undefined
+    if (!this.rejectUnknownPageKeys(definition)) return undefined
     const props = this.objectProperty(definition, 'props')
     if (!props) {
       this.report(definition, 'GB1201', 'definePage requires a props schema.')
       return undefined
     }
     const schema = this.compileSchema(props)
-    return schema ? { routeId, props: schema } : undefined
+    if (!schema) return undefined
+    const contract: RouteValueContract = { routeId, props: schema }
+    const revalidateNode = this.objectProperty(definition, 'revalidate')
+    if (revalidateNode) {
+      const revalidate = this.pageRevalidate(revalidateNode)
+      if (revalidate === undefined) return undefined
+      contract.revalidate = revalidate
+    }
+    const tagsNode = this.objectProperty(definition, 'tags')
+    if (tagsNode) {
+      const tags = this.pageTags(tagsNode)
+      if (!tags) return undefined
+      // Tags invalidate cached props, so tags without a revalidate window
+      // describe nothing: the route is recomputed every request either way.
+      if (contract.revalidate === undefined) {
+        this.report(
+          tagsNode,
+          'GB1206',
+          'definePage tags require a revalidate window to invalidate.',
+          'Add revalidate, or drop tags from a route that is recomputed on every request.',
+        )
+        return undefined
+      }
+      contract.tags = tags
+    }
+    return contract
+  }
+
+  /**
+   * definePage keys are a closed set. An unrecognized key is a compile error
+   * rather than an ignored one: silently dropping something like `revalidte`
+   * would leave an author believing a route is cached when nothing downstream
+   * ever saw the request.
+   */
+  private rejectUnknownPageKeys(definition: ts.ObjectLiteralExpression): boolean {
+    let ok = true
+    for (const property of definition.properties) {
+      if (!ts.isPropertyAssignment(property)) {
+        this.report(
+          property,
+          'GB1203',
+          'definePage requires inline key/value properties without spreads or shorthand.',
+        )
+        ok = false
+        continue
+      }
+      const name = propertyName(property.name)
+      if (name === undefined || !pageDefinitionKeys.has(name)) {
+        this.report(
+          property.name,
+          'GB1203',
+          `Unsupported definePage key ${name === undefined ? '' : JSON.stringify(name)}.`,
+          `definePage accepts ${[...pageDefinitionKeys].join(', ')}.`,
+        )
+        ok = false
+      }
+    }
+    return ok
+  }
+
+  /**
+   * The origin props-ISR window, in whole seconds. It is deliberately a plain
+   * literal: the value is part of a build artifact the Go runtime reads, so it
+   * cannot depend on anything the compiler would have to execute.
+   */
+  private pageRevalidate(node: ts.Expression): number | undefined {
+    const value = this.literalValue(node)
+    if (
+      typeof value !== 'number' ||
+      !Number.isSafeInteger(value) ||
+      value <= 0
+    ) {
+      this.report(
+        node,
+        'GB1204',
+        'definePage revalidate must be a positive whole number of seconds.',
+        'Use a numeric literal such as 60, or omit revalidate to leave the route uncached.',
+      )
+      return undefined
+    }
+    return value
+  }
+
+  private pageTags(node: ts.Expression): string[] | undefined {
+    const unwrapped = unwrap(node)
+    if (!ts.isArrayLiteralExpression(unwrapped)) {
+      this.report(node, 'GB1205', 'definePage tags must be an inline array of string literals.')
+      return undefined
+    }
+    const tags: string[] = []
+    for (const element of unwrapped.elements) {
+      if (!ts.isStringLiteral(element) && !ts.isNoSubstitutionTemplateLiteral(element)) {
+        this.report(element, 'GB1205', 'definePage tags must be string literals.')
+        return undefined
+      }
+      if (element.text === '') {
+        this.report(element, 'GB1205', 'definePage tags must not be empty.')
+        return undefined
+      }
+      if (tags.includes(element.text)) {
+        this.report(element, 'GB1205', `Duplicate definePage tag ${JSON.stringify(element.text)}.`)
+        return undefined
+      }
+      tags.push(element.text)
+    }
+    if (tags.length === 0) {
+      this.report(node, 'GB1205', 'definePage tags must list at least one tag, or be omitted.')
+      return undefined
+    }
+    return tags
   }
 
   compileActions(routeId: string): ActionValueContract[] {

@@ -1463,6 +1463,173 @@ test('normalizes the real SEO action with a stable route-qualified ID', async ()
   ])
 })
 
+test('carries definePage route caching into the value contract', () => {
+  const result = compilePageContractSource({
+    routeId: 'products_slug',
+    sourceText: `
+      import { definePage, schema } from '@go-beyond/schema'
+      export const page = definePage({
+        props: schema.object({ title: schema.string() }),
+        revalidate: 60,
+        tags: ['products', 'product'],
+      })
+    `,
+  })
+  assert.equal(
+    result.ok,
+    true,
+    !result.ok ? JSON.stringify(result.diagnostics, null, 2) : '',
+  )
+  if (!result.ok) return
+  assert.equal(result.contract.revalidate, 60)
+  assert.deepEqual(result.contract.tags, ['products', 'product'])
+})
+
+test('leaves route caching absent when definePage omits it', () => {
+  const result = compilePageContractSource({
+    routeId: 'products_slug',
+    sourceText: `
+      import { definePage, schema } from '@go-beyond/schema'
+      export const page = definePage({ props: schema.object({ title: schema.string() }) })
+    `,
+  })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.contract.revalidate, undefined)
+  assert.equal(result.contract.tags, undefined)
+})
+
+test('rejects unknown definePage keys instead of dropping them', () => {
+  const result = compilePageContractSource({
+    routeId: 'products_slug',
+    sourceText: `
+      import { definePage, schema } from '@go-beyond/schema'
+      export const page = definePage({
+        props: schema.object({ title: schema.string() }),
+        revalidte: 60,
+      })
+    `,
+  })
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  const diagnostic = result.diagnostics.find(
+    (candidate) => candidate.code === 'GB1203',
+  )
+  assert.ok(diagnostic)
+  assert.match(diagnostic.message, /revalidte/)
+})
+
+test('rejects definePage revalidate values that are not positive whole seconds', () => {
+  for (const revalidate of ['0', '-60', '1.5', 'sixty', 'Number(60)']) {
+    const result = compilePageContractSource({
+      routeId: 'products_slug',
+      sourceText: `
+        import { definePage, schema } from '@go-beyond/schema'
+        export const page = definePage({
+          props: schema.object({ title: schema.string() }),
+          revalidate: ${revalidate},
+        })
+      `,
+    })
+    assert.equal(result.ok, false, `expected ${revalidate} to be rejected`)
+    if (result.ok) continue
+    assert.ok(
+      result.diagnostics.some((candidate) => candidate.code === 'GB1204'),
+      `expected GB1204 for ${revalidate}`,
+    )
+  }
+})
+
+test('rejects definePage tags that are not unique non-empty string literals', () => {
+  for (const tags of ["['a', 'a']", "['']", '[]', '[tag]', "'products'"]) {
+    const result = compilePageContractSource({
+      routeId: 'products_slug',
+      sourceText: `
+        import { definePage, schema } from '@go-beyond/schema'
+        const tag = 'products'
+        export const page = definePage({
+          props: schema.object({ title: schema.string() }),
+          tags: ${tags},
+        })
+      `,
+    })
+    assert.equal(result.ok, false, `expected ${tags} to be rejected`)
+    if (result.ok) continue
+    assert.ok(
+      result.diagnostics.some((candidate) => candidate.code === 'GB1205'),
+      `expected GB1205 for ${tags}`,
+    )
+  }
+})
+
+test('rejects definePage tags that have no revalidate window to invalidate', () => {
+  const result = compilePageContractSource({
+    routeId: 'products_slug',
+    sourceText: `
+      import { definePage, schema } from '@go-beyond/schema'
+      export const page = definePage({
+        props: schema.object({ title: schema.string() }),
+        tags: ['products'],
+      })
+    `,
+  })
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.ok(
+    result.diagnostics.some((candidate) => candidate.code === 'GB1206'),
+  )
+})
+
+test('rejects definePage route caching on a route without a Go loader', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx':
+      'export default function Page() { return <main>Static</main> }',
+    'app/page.schema.ts': `
+      import { definePage, schema } from '@go-beyond/schema'
+      export const page = definePage({ props: schema.object({}), revalidate: 60 })
+    `,
+  })
+  const result = await compileProject({
+    projectRoot,
+    routes: [{ routeId: 'root', entryFile: 'app/page.tsx' }],
+  })
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  const diagnostic = result.diagnostics.find(
+    (candidate) => candidate.code === 'GB1235',
+  )
+  assert.ok(diagnostic)
+  assert.match(diagnostic.message, /page\.go/)
+})
+
+test('accepts definePage route caching beside a Go loader', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx':
+      'export default function Page() { return <main>Dynamic</main> }',
+    'app/page.go': 'package root\n',
+    'app/page.schema.ts': `
+      import { definePage, schema } from '@go-beyond/schema'
+      export const page = definePage({
+        props: schema.object({}),
+        revalidate: 60,
+        tags: ['products'],
+      })
+    `,
+  })
+  const result = await compileProject({
+    projectRoot,
+    routes: [{ routeId: 'root', entryFile: 'app/page.tsx', kind: 'dynamic' }],
+  })
+  assert.equal(
+    result.ok,
+    true,
+    !result.ok ? JSON.stringify(result.diagnostics, null, 2) : '',
+  )
+  if (!result.ok) return
+  assert.equal(result.output.contracts.routes[0]?.revalidate, 60)
+  assert.deepEqual(result.output.contracts.routes[0]?.tags, ['products'])
+})
+
 test('rejects executable helpers in value contracts', () => {
   const result = compilePageContractSource({
     routeId: 'unsafe',

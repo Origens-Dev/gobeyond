@@ -60,6 +60,11 @@ progress. The compatibility surface remains alpha and frozen at
   ([ADR 002](https://github.com/Origens-Dev/gobeyond-internal/blob/main/docs/adr/002-image-optimizer-design-lock.md)),
   but production S3 optimization is not complete until that infrastructure is
   applied.
+- Request-time caching: `cache.RequestScope`, `cache.Memo`, `cache.Load`,
+  `cache.LoadRoute`, tag/path invalidation, props-only origin ISR via
+  `definePage({ revalidate, tags })`, the frozen action envelope with client
+  `postAction` / `runAction` refresh, shared privacy gates, and optional
+  ElastiCache Serverless Valkey in the AWS reference.
 - Functional, idempotent `gobeyond add page|dynamic|action|api` scaffolding
   with safe refusal rather than overwriting engineer-owned files.
 - Eight-route SEO site for articles, products, pagination, locations,
@@ -91,9 +96,14 @@ OpenTofu validation is separate and requires the `tofu` binary:
 
 ## Known alpha limits
 
-- No Suspense, streaming, ISR, WebP image output, production S3 image
-  optimization with applied IAM/Lambda/CloudFront configuration, parallel
-  routes, or intercepted routes.
+- No Suspense, streaming, HTML-body cache, WebP image output, production S3
+  image optimization with applied IAM/Lambda/CloudFront configuration,
+  parallel routes, or intercepted routes.
+- Props-only origin ISR, the data cache, request memoization, action-driven
+  invalidation, and an in-memory client Router Cache (public payloads only,
+  keyed by path+search, TTL capped at 30s) are shipped; rendered HTML is
+  recomputed every request so CSP nonces and hydration `renderNow` stay
+  fresh.
 - No general third-party server-render metadata; unsupported package rendering
   requires a reported package-authored or project-owned `use client` boundary.
   Explicit `ClientOnly` fallbacks are optional.

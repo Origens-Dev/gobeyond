@@ -102,6 +102,68 @@ runtime/browser manifests; both static documents and dynamic page
 registrations use those exact URLs. Copied `public/` files are listed in the
 deployment route trie so the edge can select the static origin explicitly.
 
+## Request-time caching
+
+GoBeyond ships Next.js-style origin caching without HTML-body persistence.
+Each document request still re-renders HTML so every response gets its own CSP
+nonce and hydration `renderNow`; only loader props, metadata, status, and
+result kind may be shared across visitors.
+
+The runtime attaches a `cache.RequestScope` to every document, runtime-data,
+API, and action request. `cache.Memo`, `cache.Load`, `cache.LoadRoute`, and
+`cache.RevalidateTag` / `cache.RevalidatePath` require that scope on the
+context; they do not operate on a bare `context.Context`. The scope holds the
+request's privacy flag (computed once from inbound headers), a per-request memo
+bag, and a refresh recorder actions use to accumulate invalidation targets.
+
+| Surface | Role |
+| --- | --- |
+| `cache.Memo(ctx, key, fn)` | Request-scoped deduplication (React `cache()` analogue). |
+| `cache.Load(ctx, Options{…}, codec, fn)` | Shared data cache keyed by deploy prefix, build ID, name, and args. |
+| `cache.LoadRoute(…)` | Props ISR keyed by route ID, path, raw query, and public origin. |
+| `cache.RevalidateTag` / `cache.RevalidatePath` | Bump tag versions, drop matching L1 entries, and record paths/tags on the scope. |
+| `definePage({ revalidate, tags })` | Origin props ISR window and invalidation tags in `page.schema.ts`; requires a sibling `page.go`. Unknown keys are rejected. |
+| `gb.CachePolicy` on loader results | HTTP `Cache-Control` only; not inferred from schema `revalidate`. |
+
+Schema `revalidate` and loader `gb.CachePolicy` are separate knobs. When both
+apply, keep them aligned deliberately—for example
+`gb.PublicRevalidate(revalidate, k*revalidate, staleIfError)` beside
+`definePage({ revalidate: 60, … })`. The runtime cannot detect an accidental
+mismatch from an omitted policy versus an explicit `private, no-store`.
+
+Privacy is fail-closed and shared across HTTP headers and every cache layer.
+`cache.IsPrivateRequest` gates reads on Cookie, Authorization,
+`X-Gobeyond-Auth-Context`, and `X-Origens-Oidc-Token`. `cache.IsPrivateResponse`
+also inspects `Set-Cookie` on the loaded result. Private requests skip cache
+reads; non-OK results and cookie-minting responses are never written. Actions
+may still call `RevalidateTag` / `RevalidatePath` from authenticated requests.
+
+Successful actions return a frozen envelope:
+`{ apiVersion, buildId, data, refresh?: { paths, tags } }`. The client helpers
+`postAction` / `runAction` parse it and, when `refresh.paths` is present,
+re-fetch the current route's runtime JSON through `refreshNavigation` (no
+history change), which only re-renders the mounted route if it matches one of
+those paths. Either way, `refresh` invalidates the client Router Cache
+(`packages/react/src/router-cache.ts`): matching entries when `paths` is
+given, the whole cache otherwise. That cache is in-memory, keyed by
+path+search, and only stores `mode: "public"` soft-nav payloads, for a TTL
+taken from the response's `CachePolicy` (`maxAge`/`sharedMaxAge`) and capped
+at 30s; prefetch (hover/focus) warms it ahead of navigation. Soft navigation
+still replaces props/metadata only; it does not refresh hydration `renderNow`.
+
+Store tiers are an in-process L1 (`cache/memstore`) and an optional shared L2
+(`cache/redisstore`, ElastiCache Serverless Valkey in the AWS reference). Keys
+include `{deployPrefix}/{buildID}/…`; the deploy prefix is the tenant boundary
+when Redis is shared. There is no application-level encrypt/decrypt—do not put
+secrets, session tokens, or viewer-specific payloads in cached values. L2 is
+opt-in via `GOBEYOND_CACHE_*` environment variables.
+
+At the edge, CloudFront's dynamic cache key includes cookies, query strings,
+and `Authorization`, but not OIDC or auth-context headers. For those requests,
+the origin's `Cache-Control: private, no-store` downgrade is the sole edge-cache
+isolator. See `infra/opentofu/README.md` for optional Valkey wiring and the
+edge boundary.
+
 ## Browser protocol
 
 Public URLs always return documents. Same-origin links whose route patterns

@@ -26,8 +26,17 @@ authorization, a request-specific status, or SEO metadata.
 6. Resolve complete metadata before returning. Canonicals use the configured
    public origin, never the request Host header.
 7. Treat cookies or authorization as private/no-store. Public body content may
-   not vary by authentication cookie.
-8. Keep indexable loader data in portable initial markup. A reported
+   not vary by authentication cookie. `cache.Load` and props ISR skip reads on
+   private requests; never store secrets or viewer-specific data in cached
+   values.
+8. For shared loader work, use `cache.Load` with a deploy-unique `Name`,
+   positive `Revalidate`, and invalidation `Tags`. Use `cache.Memo` for
+   per-request deduplication inside one loader.
+9. To reuse a route's loaded props across requests, set
+   `definePage({ revalidate, tags })` in `page.schema.ts` beside a sibling
+   `page.go`. Unknown keys are rejected. Set `gb.CachePolicy` on the loader
+   result separately for HTTP caching; keep both windows aligned deliberately.
+10. Keep indexable loader data in portable initial markup. A reported
    `use client` downgrade or explicit `ClientOnly` region may have an optional
    fallback, but it cannot be the only copy of critical route content.
 
@@ -37,6 +46,20 @@ func Page(ctx *gb.PageContext) (gb.PageResult[Props], error) {
   if !found { return gb.NotFound[Props](notFoundMetadata()), nil }
   return gb.OK(product, metadataFor(product)), nil
 }
+
+// Shared loader data (optional):
+// product, err := cache.Load(ctx.Context, cache.Options{
+//   Name: "catalog.product", Args: []any{ctx.Params["slug"]},
+//   Revalidate: 60 * time.Second, Tags: []string{"products"},
+// }, cache.JSONCodec[Product](), fetchProduct)
+```
+
+```ts
+export const page = definePage({
+  props: schema.object({ title: schema.string() }),
+  revalidate: 60,
+  tags: ["products"],
+})
 ```
 
 ```bash
@@ -48,5 +71,6 @@ pnpm build && pnpm preview
 ```
 
 Verify the no-JavaScript response contains the title, canonical URL, body
-content, links, and JSON-LD. See `docs/guides/connect-go-data.md` and
-`$debug-contracts` for type or hydration failures.
+content, links, and JSON-LD. See `docs/guides/connect-go-data.md`,
+`docs/architecture.md` (request-time caching), and `$debug-contracts` for type
+or hydration failures.

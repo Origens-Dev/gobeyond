@@ -58,7 +58,7 @@ func Generate(document Document, options Options) (map[string][]byte, error) {
 			return nil, fmt.Errorf("route IDs %q and %q map to the same Go package %q", previous, route.RouteID, packageName)
 		}
 		routePackages[packageName] = route.RouteID
-		generated, err := generatePackage(packageName, "RouteID", route.RouteID, []rootDefinition{{Name: "Props", Value: route.Props}}, safeHTMLImport, nil)
+		generated, err := generatePackage(packageName, "RouteID", route.RouteID, []rootDefinition{{Name: "Props", Value: route.Props}}, safeHTMLImport, &route, nil)
 		if err != nil {
 			return nil, fmt.Errorf("generate route %q: %w", route.RouteID, err)
 		}
@@ -78,7 +78,7 @@ func Generate(document Document, options Options) (map[string][]byte, error) {
 		generated, err := generatePackage(packageName, "ActionID", action.ActionID, []rootDefinition{
 			{Name: "Input", Value: action.Input},
 			{Name: "Output", Value: action.Output},
-		}, safeHTMLImport, &action)
+		}, safeHTMLImport, nil, &action)
 		if err != nil {
 			return nil, fmt.Errorf("generate action %q: %w", action.ActionID, err)
 		}
@@ -100,7 +100,7 @@ type generator struct {
 	typeNames      map[string]string
 }
 
-func generatePackage(packageName, identityName, identityValue string, roots []rootDefinition, safeHTMLImport string, action *Action) ([]byte, error) {
+func generatePackage(packageName, identityName, identityValue string, roots []rootDefinition, safeHTMLImport string, route *Route, action *Action) ([]byte, error) {
 	generator := &generator{
 		packageName:    packageName,
 		safeHTMLImport: safeHTMLImport,
@@ -111,6 +111,9 @@ func generatePackage(packageName, identityName, identityValue string, roots []ro
 		if _, err := generator.namedType(root.Name, root.Value, root.Name); err != nil {
 			return nil, err
 		}
+	}
+	if route != nil {
+		generator.addRouteCache(*route)
 	}
 	if action != nil {
 		generator.addActionBoundary(*action)
@@ -150,6 +153,33 @@ func generatePackage(packageName, identityName, identityValue string, roots []ro
 		return nil, fmt.Errorf("format generated package %s: %w\n%s", packageName, err, source.String())
 	}
 	return formatted, nil
+}
+
+// addRouteCache projects definePage's route caching into the same package the
+// route's props type lives in, so a loader registration reads its ISR window
+// from the schema that declared it instead of repeating the number in Go.
+// Both declarations are always emitted, including for uncached routes, so
+// registration code can reference them unconditionally.
+func (g *generator) addRouteCache(route Route) {
+	g.imports["time"] = "time"
+	tags := "var Tags []string"
+	if len(route.Tags) > 0 {
+		quoted := make([]string, len(route.Tags))
+		for index, tag := range route.Tags {
+			quoted[index] = strconv.Quote(tag)
+		}
+		tags = "var Tags = []string{" + strings.Join(quoted, ", ") + "}"
+	}
+	g.declarations = append(g.declarations,
+		"// Revalidate is how long the origin may reuse this route's computed props,\n"+
+			"// from definePage({ revalidate }). Zero leaves the route uncached. It is not\n"+
+			"// an HTTP directive: the edge Cache-Control stays the loader's gb.CachePolicy,\n"+
+			"// which should be derived from this window rather than drifting from it.\n"+
+			"const Revalidate = "+strconv.Itoa(route.Revalidate)+" * time.Second",
+		"// Tags are this route's invalidation handles, from definePage({ tags }).\n"+
+			"// cache.RevalidateTag on any of them drops the route's cached props.\n"+
+			tags,
+	)
 }
 
 func (g *generator) addActionBoundary(action Action) {

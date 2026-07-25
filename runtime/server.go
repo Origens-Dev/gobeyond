@@ -21,6 +21,9 @@ import (
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/browserassets"
 	"github.com/Origens-Dev/gobeyond/buildpaths"
+	"github.com/Origens-Dev/gobeyond/cache"
+	"github.com/Origens-Dev/gobeyond/cache/memstore"
+	"github.com/Origens-Dev/gobeyond/codegen"
 	"github.com/Origens-Dev/gobeyond/document"
 	"github.com/Origens-Dev/gobeyond/imageopt"
 	"github.com/Origens-Dev/gobeyond/internal/jsvalue"
@@ -49,10 +52,22 @@ type LoadedPage struct {
 type PageLoader func(*gb.PageContext) (LoadedPage, error)
 
 type PageRoute struct {
-	Route        router.Route
-	Plan         *renderplan.Plan
-	Load         PageLoader
-	Static       *LoadedPage
+	Route  router.Route
+	Plan   *renderplan.Plan
+	Load   PageLoader
+	Static *LoadedPage
+	// Revalidate is how long the origin may reuse this route's loaded props,
+	// metadata, status, and kind for one URL, from definePage({ revalidate }).
+	// Zero leaves the route uncached. It is route metadata, deliberately not
+	// part of gb.CachePolicy: CachePolicy is the HTTP edge header the loader
+	// returns, this is how often the Go origin re-runs the loader. A route
+	// that sets both should derive the edge policy from this window
+	// (gb.PublicRevalidate) rather than letting the two drift apart.
+	Revalidate time.Duration
+	// Tags are the route's invalidation handles, from definePage({ tags }).
+	// cache.RevalidateTag on any of them drops this route's cached entries;
+	// cache.RevalidatePath drops one URL's entry without them.
+	Tags         []string
 	Indexable    bool
 	ClientScript string
 	Styles       []string
@@ -130,6 +145,19 @@ type Config struct {
 	Deadlines           gb.DeadlinePolicy
 	MaxHeaderSize       int
 	ImageLoader         imageopt.Loader
+	// Cache installs the request-time cache (cache.Load, cache.Revalidate*).
+	// Leave it nil to run without one: loaders then compute every value. The
+	// server owns Cache.BuildID - it must be empty or equal to Config.BuildID,
+	// so one build can never read another build's cached shapes - and defaults
+	// Cache.Store to a bounded in-process L1, which is the degraded mode of a
+	// deployment with no shared cache endpoint configured.
+	Cache *cache.RuntimeConfig
+	// Contracts is the build's value-contract document. Route caching needs
+	// it: cached props cross JSON, and only the contract says which strings
+	// were renderplan.SafeHTML before they did, so decoding without it would
+	// either lose the trust marker or restore it blindly. A server with a
+	// cache and a route that sets Revalidate must supply it.
+	Contracts *codegen.Document
 }
 
 type Server struct {
@@ -141,6 +169,7 @@ type Server struct {
 	apiTable     *router.Table
 	documentPipe gb.Handler
 	imageHandler http.Handler
+	cache        *cache.Runtime
 	logger       *slog.Logger
 }
 
@@ -213,6 +242,9 @@ func New(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRouteCaching(config); err != nil {
+		return nil, err
+	}
 	actions := make(map[string]Action, len(config.Actions))
 	for _, action := range config.Actions {
 		if action.ID == "" || action.execute == nil {
@@ -239,6 +271,10 @@ func New(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	cacheRuntime, err := newCacheRuntime(config)
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		config:       config,
 		pages:        pages,
@@ -248,6 +284,7 @@ func New(config Config) (*Server, error) {
 		apiTable:     apiTable,
 		logger:       config.Logger,
 		imageHandler: imageopt.Handler(config.ImageLoader),
+		cache:        cacheRuntime,
 	}
 	pipe, err := gbmiddleware.Chain(config.Middleware, server.documentHandler)
 	if err != nil {
@@ -255,6 +292,34 @@ func New(config Config) (*Server, error) {
 	}
 	server.documentPipe = pipe
 	return server, nil
+}
+
+// newCacheRuntime builds the cache handle every RequestScope carries. BuildID
+// comes from the server rather than the cache config so the two cannot drift;
+// a caller that sets a different one is told rather than silently overridden.
+func newCacheRuntime(config Config) (*cache.Runtime, error) {
+	if config.Cache == nil {
+		return nil, nil
+	}
+	cacheConfig := *config.Cache
+	if cacheConfig.BuildID != "" && cacheConfig.BuildID != config.BuildID {
+		return nil, errors.New("cache runtime build ID mismatch")
+	}
+	cacheConfig.BuildID = config.BuildID
+	if cacheConfig.Store == nil {
+		cacheConfig.Store = cache.Tiered(memstore.New(memstore.Options{}), nil, cache.TieredOptions{Logger: config.Logger})
+	}
+	if cacheConfig.Logger == nil {
+		cacheConfig.Logger = config.Logger
+	}
+	return cache.NewRuntime(cacheConfig)
+}
+
+// newRequestScope creates the per-request cache scope: the Get-gate privacy
+// flag plus the server's cache handle, which is what makes cache.Load and
+// cache.Revalidate* functional inside loaders, actions, and API handlers.
+func (s *Server) newRequestScope(private bool) *cache.RequestScope {
+	return cache.NewRequestScope(private, cache.WithRuntimeHandle(s.cache))
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -379,7 +444,8 @@ func acceptsGzip(request *http.Request) bool {
 
 func (s *Server) serveDocument(writer http.ResponseWriter, request *http.Request, requestID string) {
 	current := request.Clone(request.Context())
-	privateRequest := request.Header.Get("Authorization") != "" || request.Header.Get("Cookie") != ""
+	privateRequest := cache.IsPrivateRequest(request.Header)
+	current = current.WithContext(cache.WithRequestScope(current.Context(), s.newRequestScope(privateRequest)))
 	for rewrites := 0; rewrites <= maxRewrites; rewrites++ {
 		_, params, _ := s.pageTable.Resolve(current.URL.Path)
 		ctx := &gb.RequestContext{
@@ -506,20 +572,39 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	return gb.Response{Status: loaded.Status, Headers: headers, Body: output.Bytes()}, nil
 }
 
+// loadPage produces the route's data for one request: packaged static data,
+// the loader, or - for a route with an ISR window - the loader behind the
+// props cache. Every caller of a page's data goes through here, so a document
+// request and a soft-navigation runtime request share one cache entry and one
+// set of privacy gates.
 func (s *Server) loadPage(parent context.Context, request *http.Request, params map[string]string, values map[string]any, page PageRoute) (LoadedPage, error) {
 	if page.Static != nil {
 		return *page.Static, nil
 	}
-	ctx, cancel := context.WithTimeout(parent, s.config.Deadlines.Loader)
-	defer cancel()
-	return page.Load(&gb.PageContext{
-		Context:      ctx,
-		Request:      request.WithContext(ctx),
-		PublicOrigin: publicOriginFromContext(request.Context()),
-		Params:       params,
-		Values:       values,
-		BuildID:      s.config.BuildID,
-	})
+	publicOrigin := publicOriginFromContext(request.Context())
+	load := func(parent context.Context) (LoadedPage, error) {
+		ctx, cancel := context.WithTimeout(parent, s.config.Deadlines.Loader)
+		defer cancel()
+		return page.Load(&gb.PageContext{
+			Context:      ctx,
+			Request:      request.WithContext(ctx),
+			PublicOrigin: publicOrigin,
+			Params:       params,
+			Values:       values,
+			BuildID:      s.config.BuildID,
+		})
+	}
+	if s.cache == nil || page.Revalidate <= 0 {
+		return load(parent)
+	}
+	return cache.LoadRoute(parent, cache.RouteOptions{
+		RouteID:      page.Route.ID,
+		Path:         request.URL.Path,
+		RawQuery:     request.URL.RawQuery,
+		PublicOrigin: publicOrigin,
+		Revalidate:   page.Revalidate,
+		Tags:         page.Tags,
+	}, routePropsCodec{routeID: page.Route.ID, contracts: s.config.Contracts}, storablePage(request), load)
 }
 
 func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request, requestID string) {
@@ -631,7 +716,13 @@ func (s *Server) serveAction(writer http.ResponseWriter, request *http.Request, 
 		if err := jsvalue.Validate(result); err != nil {
 			return gb.Response{}, fmt.Errorf("action result is not JavaScript-compatible: %w", err)
 		}
-		return jsonResponse(http.StatusOK, map[string]any{"data": result, "buildId": s.config.BuildID})
+		scope, _ := cache.RequestScopeFrom(actionContext)
+		return jsonResponse(http.StatusOK, cache.ActionEnvelope{
+			APIVersion: cache.ActionAPIVersion,
+			BuildID:    s.config.BuildID,
+			Data:       result,
+			Refresh:    cache.ActionRefreshFromScope(scope),
+		})
 	})
 	if err != nil {
 		var inputError *actionInputError
@@ -680,12 +771,14 @@ func (s *Server) applyMiddleware(request *http.Request, requestID string, params
 	if err != nil {
 		return gb.Response{}, err
 	}
+	privateRequest := cache.IsPrivateRequest(request.Header)
+	request = request.WithContext(cache.WithRequestScope(request.Context(), s.newRequestScope(privateRequest)))
 	return pipe(&gb.RequestContext{
 		Context:      request.Context(),
 		Request:      request,
 		PublicOrigin: publicOriginFromContext(request.Context()),
 		Params:       params,
-		Values:       map[string]any{"request_id": requestID, privateRequestValue: request.Header.Get("Authorization") != "" || request.Header.Get("Cookie") != ""},
+		Values:       map[string]any{"request_id": requestID, privateRequestValue: privateRequest},
 		BuildID:      s.config.BuildID,
 	})
 }
@@ -716,7 +809,7 @@ func jsonPageResponse(status int, value any, loaded LoadedPage, ctx *gb.RequestC
 }
 
 func responseCacheHeader(policy gb.CachePolicy, request *http.Request, values map[string]any, headers http.Header) string {
-	if policy.Mode == gb.CachePublic && (values[privateRequestValue] == true || request.Header.Get("Authorization") != "" || request.Header.Get("Cookie") != "" || len(headers.Values("Set-Cookie")) > 0) {
+	if policy.Mode == gb.CachePublic && (values[privateRequestValue] == true || cache.IsPrivateResponse(request.Header, headers)) {
 		return (gb.CachePolicy{Mode: gb.CachePrivateNoStore}).HeaderValue()
 	}
 	return policy.HeaderValue()

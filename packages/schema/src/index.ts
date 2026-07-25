@@ -67,12 +67,35 @@ export const schema = {
 export interface PageDefinition<S extends Schema<unknown>> {
   readonly kind: 'page'
   readonly props: S
+  /** Origin props-ISR window in seconds. Absent when the route is not cached. */
+  readonly revalidate?: number
+  /** Invalidation handles for this route's cached props. */
+  readonly tags?: readonly string[]
 }
 
+/**
+ * Declare a route's props contract and, optionally, how long the Go origin may
+ * reuse computed props for it.
+ *
+ * `revalidate` is origin props ISR measured in seconds, not an HTTP directive:
+ * the edge `Cache-Control` for a route stays the loader's explicit
+ * `gb.CachePolicy`. A route that sets both should derive one from the other
+ * (`gb.PublicRevalidate(revalidate, ...)`) because nothing at request time can
+ * tell an omitted policy from a deliberately private one. Both `revalidate`
+ * and `tags` require a sibling `page.go`; the compiler rejects them on a
+ * purely static route, which has no request-time loader to cache.
+ */
 export function definePage<S extends Schema<unknown>>(definition: {
   readonly props: S
+  readonly revalidate?: number
+  readonly tags?: readonly string[]
 }): PageDefinition<S> {
-  return { kind: 'page', props: definition.props }
+  return {
+    kind: 'page',
+    props: definition.props,
+    ...(definition.revalidate === undefined ? {} : { revalidate: definition.revalidate }),
+    ...(definition.tags === undefined ? {} : { tags: definition.tags }),
+  }
 }
 
 export type InferPageProps<P extends PageDefinition<Schema<unknown>>> = Infer<P['props']>

@@ -37,6 +37,14 @@ type Document struct {
 type Route struct {
 	RouteID string
 	Props   Value
+	// Revalidate is the origin props-ISR window declared by
+	// definePage({ revalidate }), in whole seconds. Zero means the route opted
+	// out. It is route metadata, not an HTTP cache directive: the edge
+	// Cache-Control for a response stays whatever gb.CachePolicy the loader
+	// returned.
+	Revalidate int
+	// Tags are the invalidation handles declared by definePage({ tags }).
+	Tags []string
 }
 
 type Action struct {
@@ -94,8 +102,10 @@ type rawDocument struct {
 }
 
 type rawRoute struct {
-	RouteID string          `json:"routeId"`
-	Props   json.RawMessage `json:"props"`
+	RouteID    string          `json:"routeId"`
+	Props      json.RawMessage `json:"props"`
+	Revalidate *int            `json:"revalidate"`
+	Tags       []string        `json:"tags"`
 }
 
 type rawAction struct {
@@ -132,7 +142,11 @@ func (raw rawDocument) decode() (Document, error) {
 		if err != nil {
 			return Document{}, err
 		}
-		document.Routes = append(document.Routes, Route{RouteID: route.RouteID, Props: value})
+		decoded := Route{RouteID: route.RouteID, Props: value, Tags: route.Tags}
+		if route.Revalidate != nil {
+			decoded.Revalidate = *route.Revalidate
+		}
+		document.Routes = append(document.Routes, decoded)
 	}
 	for index, action := range raw.Actions {
 		input, err := decodeValue(action.Input, fmt.Sprintf("$.actions[%d].input", index), false)
@@ -341,6 +355,9 @@ func Validate(document Document) error {
 		if err := validateValue(route.Props, location+".props", false); err != nil {
 			return err
 		}
+		if err := validateRouteCache(route, location); err != nil {
+			return err
+		}
 	}
 	actionIDs := make(map[string]struct{}, len(document.Actions))
 	for index, action := range document.Actions {
@@ -364,6 +381,26 @@ func Validate(document Document) error {
 		if err := validateValue(action.Output, location+".output", false); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateRouteCache holds definePage's route caching to the same shape the
+// compiler emits, so a hand-written or tampered contract cannot introduce a
+// route ISR window the TypeScript side would have rejected.
+func validateRouteCache(route Route, location string) error {
+	if route.Revalidate < 0 {
+		return invalid(location+".revalidate", "revalidate must be a positive whole number of seconds")
+	}
+	seen := make(map[string]struct{}, len(route.Tags))
+	for index, tag := range route.Tags {
+		if strings.TrimSpace(tag) == "" {
+			return invalid(fmt.Sprintf("%s.tags[%d]", location, index), "tags must not be empty")
+		}
+		if _, exists := seen[tag]; exists {
+			return invalid(fmt.Sprintf("%s.tags[%d]", location, index), fmt.Sprintf("duplicate tag %q", tag))
+		}
+		seen[tag] = struct{}{}
 	}
 	return nil
 }

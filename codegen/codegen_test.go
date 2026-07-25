@@ -108,6 +108,48 @@ func TestNestedArraysObjectsAndEnums(t *testing.T) {
 	}
 }
 
+func TestRouteCacheMetadata(t *testing.T) {
+	document := mustParse(t, `{
+      "apiVersion":"gobeyond.contract/v1alpha1",
+      "routes":[
+        {"routeId":"cached","props":{"kind":"object","shape":{}},"revalidate":60,"tags":["products","product"]},
+        {"routeId":"uncached","props":{"kind":"object","shape":{}}}
+      ],
+      "actions":[]
+    }`)
+	if document.Routes[0].Revalidate != 60 {
+		t.Fatalf("Revalidate = %d, want 60", document.Routes[0].Revalidate)
+	}
+	if !reflect.DeepEqual(document.Routes[0].Tags, []string{"products", "product"}) {
+		t.Fatalf("Tags = %v", document.Routes[0].Tags)
+	}
+	if document.Routes[1].Revalidate != 0 || document.Routes[1].Tags != nil {
+		t.Fatalf("uncached route carries cache metadata: %+v", document.Routes[1])
+	}
+	files, err := Generate(document, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached := string(files["internal/gobeyondgen/contracts/routes/cached/types.gobeyond_gen.go"])
+	for _, expected := range []string{
+		"const Revalidate = 60 * time.Second",
+		`var Tags = []string{"products", "product"}`,
+	} {
+		if !strings.Contains(cached, expected) {
+			t.Errorf("missing %q:\n%s", expected, cached)
+		}
+	}
+	uncached := string(files["internal/gobeyondgen/contracts/routes/uncached/types.gobeyond_gen.go"])
+	for _, expected := range []string{
+		"const Revalidate = 0 * time.Second",
+		"var Tags []string",
+	} {
+		if !strings.Contains(uncached, expected) {
+			t.Errorf("missing %q:\n%s", expected, uncached)
+		}
+	}
+}
+
 func TestStrictDecodeRejectsMalformedDocuments(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -125,6 +167,9 @@ func TestStrictDecodeRejectsMalformedDocuments(t *testing.T) {
 		{"nullable root", `{"apiVersion":"gobeyond.contract/v1alpha1","routes":[{"routeId":"x","props":{"kind":"string","nullable":true}}],"actions":[]}`, "root route props cannot be nullable"},
 		{"null literal", `{"apiVersion":"gobeyond.contract/v1alpha1","routes":[{"routeId":"x","props":{"kind":"literal","value":null}}],"actions":[]}`, "no safe generated Go type"},
 		{"mixed union", `{"apiVersion":"gobeyond.contract/v1alpha1","routes":[{"routeId":"x","props":{"kind":"union","variants":[{"kind":"literal","value":"a"},{"kind":"integer"}]}}],"actions":[]}`, "MVP unions support only"},
+		{"negative revalidate", `{"apiVersion":"gobeyond.contract/v1alpha1","routes":[{"routeId":"x","props":{"kind":"string"},"revalidate":-1}],"actions":[]}`, "positive whole number of seconds"},
+		{"empty route tag", `{"apiVersion":"gobeyond.contract/v1alpha1","routes":[{"routeId":"x","props":{"kind":"string"},"tags":[""]}],"actions":[]}`, "tags must not be empty"},
+		{"duplicate route tag", `{"apiVersion":"gobeyond.contract/v1alpha1","routes":[{"routeId":"x","props":{"kind":"string"},"tags":["a","a"]}],"actions":[]}`, "duplicate tag"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

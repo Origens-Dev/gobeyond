@@ -28,8 +28,34 @@ type staticBuildEntry struct {
 // StaticStore is the startup-loaded, packaged build data used for soft
 // navigation and for static pages promoted to the Go origin by middleware.
 type StaticStore struct {
-	routes map[string][]LoadedPageEntry
+	routes    map[string][]LoadedPageEntry
+	contracts codegen.Document
 }
+
+// LoadContracts reads the build's value-contract document, which a server
+// needs as Config.Contracts before any route may cache its props.
+func LoadContracts(path string) (*codegen.Document, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	document, err := codegen.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	return &document, nil
+}
+
+// Contracts returns the value-contract document this store was built from, so
+// a server that already packages static data does not have to read and parse
+// the same file twice to enable route caching.
+func (s *StaticStore) Contracts() *codegen.Document {
+	if s == nil {
+		return nil
+	}
+	return &s.contracts
+}
+
 type LoadedPageEntry struct {
 	Params map[string]any
 	Page   LoadedPage
@@ -40,19 +66,16 @@ func LoadStaticStore(buildPath, contractsPath string) (*StaticStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	contractData, err := os.ReadFile(contractsPath)
+	parsed, err := LoadContracts(contractsPath)
 	if err != nil {
 		return nil, err
 	}
-	contracts, err := codegen.Parse(contractData)
-	if err != nil {
-		return nil, err
-	}
+	contracts := *parsed
 	var artifact staticBuildArtifact
 	if err := json.Unmarshal(buildData, &artifact); err != nil || artifact.APIVersion != "gobeyond.static-build/v1alpha1" {
 		return nil, fmt.Errorf("invalid static build artifact")
 	}
-	store := &StaticStore{routes: make(map[string][]LoadedPageEntry, len(artifact.Routes))}
+	store := &StaticStore{routes: make(map[string][]LoadedPageEntry, len(artifact.Routes)), contracts: contracts}
 	for _, route := range artifact.Routes {
 		for _, entry := range route.Entries {
 			decoder := json.NewDecoder(bytes.NewReader(entry.Props))

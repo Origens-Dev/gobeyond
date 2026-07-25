@@ -56,6 +56,29 @@ variable "create_nat_gateway" {
   default     = true
 }
 
+variable "create_cache" {
+  description = "Create a private ElastiCache Serverless cache using Valkey for shared GoBeyond cache data."
+  type        = bool
+  default     = false
+}
+
+variable "cache_kms_key_arn" {
+  description = "Optional customer-managed KMS key ARN for ElastiCache data at rest. Leave null to use the AWS-owned key."
+  type        = string
+  default     = null
+}
+
+variable "cache_key_prefix" {
+  description = "Deployment-unique prefix for shared cache keys. Defaults to name when null."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.cache_key_prefix == null || length(trimspace(var.cache_key_prefix)) > 0
+    error_message = "cache_key_prefix must be null or a non-empty string."
+  }
+}
+
 variable "server_image" {
   description = "Immutable OCI image URI for the Node-free GoBeyond server. Pin a digest for production."
   type        = string
@@ -133,6 +156,12 @@ variable "acm_certificate_arn" {
   description = "Optional us-east-1 ACM certificate for aliases. Leave null to use the CloudFront domain name."
   type        = string
   default     = null
+}
+
+variable "enable_edge_invalidation" {
+  description = "Allow the ECS task role to create invalidations for this deployment's CloudFront distribution."
+  type        = bool
+  default     = false
 }
 
 variable "static_route_paths" {

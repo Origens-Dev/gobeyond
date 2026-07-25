@@ -96,8 +96,50 @@ resource "aws_iam_role" "task" {
   })
 }
 
+data "aws_iam_policy_document" "edge_invalidation" {
+  count = var.enable_edge_invalidation ? 1 : 0
+
+  statement {
+    sid       = "InvalidateDeploymentDistribution"
+    effect    = "Allow"
+    actions   = ["cloudfront:CreateInvalidation"]
+    resources = [aws_cloudfront_distribution.this.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "edge_invalidation" {
+  count = var.enable_edge_invalidation ? 1 : 0
+
+  name_prefix = "${var.name}-edge-invalidation-"
+  role        = aws_iam_role.task.id
+  policy      = data.aws_iam_policy_document.edge_invalidation[0].json
+}
+
 resource "aws_ecs_cluster" "this" {
   name = "${var.name}-cluster"
+}
+
+locals {
+  cache_environment = var.create_cache ? [
+    {
+      name  = "GOBEYOND_CACHE_ENDPOINT"
+      value = aws_elasticache_serverless_cache.app[0].endpoint[0].address
+    },
+    {
+      name  = "GOBEYOND_CACHE_PORT"
+      value = tostring(aws_elasticache_serverless_cache.app[0].endpoint[0].port)
+    },
+    {
+      name  = "GOBEYOND_CACHE_KEY_PREFIX"
+      value = coalesce(var.cache_key_prefix, var.name)
+    },
+  ] : []
+  edge_invalidation_environment = var.enable_edge_invalidation ? [
+    {
+      name  = "GOBEYOND_CLOUDFRONT_DISTRIBUTION_ID"
+      value = aws_cloudfront_distribution.this.id
+    },
+  ] : []
 }
 
 resource "aws_ecs_task_definition" "app" {
@@ -123,9 +165,11 @@ resource "aws_ecs_task_definition" "app" {
       hostPort      = var.container_port
       protocol      = "tcp"
     }]
-    environment = [
-      { name = "GOBEYOND_PUBLIC_ORIGIN", value = var.public_origin },
-    ]
+    environment = concat(
+      [{ name = "GOBEYOND_PUBLIC_ORIGIN", value = var.public_origin }],
+      local.cache_environment,
+      local.edge_invalidation_environment,
+    )
     logConfiguration = {
       logDriver = "awslogs"
       options = {

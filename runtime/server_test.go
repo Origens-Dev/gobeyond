@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"image"
@@ -18,6 +19,7 @@ import (
 
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/browserassets"
+	"github.com/Origens-Dev/gobeyond/cache"
 	"github.com/Origens-Dev/gobeyond/imageopt"
 	gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
 	"github.com/Origens-Dev/gobeyond/renderplan"
@@ -201,6 +203,82 @@ func TestActionRejectsCrossOriginBeforeExecution(t *testing.T) {
 	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden || calls.Load() != 0 {
 		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls.Load(), recorder.Body.String())
+	}
+}
+
+func TestServeActionEmitsEnvelopeWithRefreshFromRevalidateCalls(t *testing.T) {
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		Actions: []Action{testAction("publish", func(ctx *gb.ActionContext, _ json.RawMessage) (any, error) {
+			if err := cache.RevalidateTag(ctx.Context, "products"); err != nil {
+				return nil, err
+			}
+			if err := cache.RevalidatePath(ctx.Context, "/products/widget"); err != nil {
+				return nil, err
+			}
+			return map[string]bool{"saved": true}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/build-1/actions/publish", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "https://example.com")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+	var envelope cache.ActionEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v body=%s", err, recorder.Body.String())
+	}
+	if envelope.APIVersion != cache.ActionAPIVersion || envelope.BuildID != "build-1" {
+		t.Fatalf("envelope = %+v", envelope)
+	}
+	data, ok := envelope.Data.(map[string]any)
+	if !ok || data["saved"] != true {
+		t.Fatalf("envelope.Data = %v", envelope.Data)
+	}
+	if envelope.Refresh == nil {
+		t.Fatal("envelope.Refresh is nil, want recorded refresh")
+	}
+	if len(envelope.Refresh.Tags) != 1 || envelope.Refresh.Tags[0] != "products" {
+		t.Fatalf("envelope.Refresh.Tags = %v", envelope.Refresh.Tags)
+	}
+	if len(envelope.Refresh.Paths) != 1 || envelope.Refresh.Paths[0] != "/products/widget" {
+		t.Fatalf("envelope.Refresh.Paths = %v", envelope.Refresh.Paths)
+	}
+}
+
+func TestServeActionEnvelopeOmitsRefreshWhenNothingRecorded(t *testing.T) {
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		Actions: []Action{testAction("save", func(*gb.ActionContext, json.RawMessage) (any, error) {
+			return map[string]bool{"saved": true}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/build-1/actions/save", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "https://example.com")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "\"refresh\"") {
+		t.Fatalf("refresh must be omitted when nothing was recorded: %s", recorder.Body.String())
+	}
+	want := `{"apiVersion":"gobeyond.action/v1alpha1","buildId":"build-1","data":{"saved":true}}` + "\n"
+	if recorder.Body.String() != want {
+		t.Fatalf("body = %s, want %s", recorder.Body.String(), want)
 	}
 }
 
@@ -389,6 +467,201 @@ func TestRuntimeDataUsesDocumentCachePolicyAndPrivacyDowngrade(t *testing.T) {
 		if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
 			t.Fatalf("%s private cache = %q", path, got)
 		}
+	}
+}
+
+// TestForwardedIdentityHeadersNeverReceivePublicCacheControl is a
+// conformance test for the shared cache.IsPrivateRequest predicate
+// (Locked decision 6): requests bearing only X-Gobeyond-Auth-Context or
+// X-Origens-Oidc-Token must never receive a public Cache-Control, even when
+// the loader returns gb.CachePublic.
+func TestForwardedIdentityHeadersNeverReceivePublicCacheControl(t *testing.T) {
+	page := PageRoute{
+		Route: router.Route{ID: "public", Pattern: "/public", Mode: router.ModeDynamic},
+		Plan:  &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "public", Root: &renderplan.Element{Kind: "element", Tag: "main"}},
+		Load: func(*gb.PageContext) (LoadedPage, error) {
+			return LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}, Metadata: gb.Metadata{Lang: "en", Title: "Public"}, Cache: gb.PublicRevalidate(time.Minute, 5*time.Minute, 24*time.Hour)}, nil
+		},
+	}
+	server, err := New(Config{BuildID: "build-1", PublicOrigin: "https://example.com", Pages: []PageRoute{page}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/public", "/_gobeyond/builds/build-1/runtime/public?path=%2Fpublic"} {
+		for _, header := range []struct{ name, value string }{
+			{"X-Gobeyond-Auth-Context", "eyJ0ZXN0Ijp0cnVlfQ"},
+			{"X-Origens-Oidc-Token", "token"},
+		} {
+			request := httptest.NewRequest(http.MethodGet, "https://example.com"+path, nil)
+			request.Header.Set(header.name, header.value)
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, request)
+			if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
+				t.Fatalf("%s with %s: cache = %q, want private, no-store", path, header.name, got)
+			}
+		}
+	}
+}
+
+// TestRequestScopePresentOnDocumentRuntimeAPIAndActionRequests proves the
+// RequestScope is attached at every runtime request entry point (Locked
+// decision 1): HTML document requests, /_gobeyond/builds/<id>/runtime/
+// soft-nav requests, API requests, and action requests. It also proves
+// cache.Memo dedupes concurrent calls made from within a real loader/handler
+// invocation, and that the scope observed there survives the timeout child
+// context runtime.loadPage creates.
+func TestRequestScopePresentOnDocumentRuntimeAPIAndActionRequests(t *testing.T) {
+	var loaderMemoCalls, apiScopePresent, actionScopePresent atomic.Int32
+	page := PageRoute{
+		Route: router.Route{ID: "scoped", Pattern: "/scoped", Mode: router.ModeDynamic},
+		Plan:  &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "scoped", Root: &renderplan.Element{Kind: "element", Tag: "main"}},
+		Load: func(ctx *gb.PageContext) (LoadedPage, error) {
+			if _, ok := cache.RequestScopeFrom(ctx.Context); !ok {
+				t.Error("loader context has no RequestScope")
+			}
+			// loadPage wraps the parent context in a deadline (context.WithTimeout);
+			// prove the scope still resolves and that two sequential Memo calls for
+			// the same key only invoke fn once.
+			for i := 0; i < 2; i++ {
+				if _, err := cache.Memo(ctx.Context, "loader-memo", func(context.Context) (string, error) {
+					loaderMemoCalls.Add(1)
+					return "nav", nil
+				}); err != nil {
+					t.Errorf("cache.Memo: %v", err)
+				}
+			}
+			return LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}, Metadata: gb.Metadata{Lang: "en", Title: "Scoped"}}, nil
+		},
+	}
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		Pages:        []PageRoute{page},
+		APIs: []APIRoute{{
+			Route: router.Route{ID: "api_scoped", Pattern: "/api/scoped", Mode: router.ModeAPI},
+			Methods: map[string]gb.Handler{http.MethodGet: func(ctx *gb.RequestContext) (gb.Response, error) {
+				if _, ok := cache.RequestScopeFrom(ctx.Context); ok {
+					apiScopePresent.Add(1)
+				}
+				return gb.Response{Status: http.StatusOK}, nil
+			}},
+		}},
+		Actions: []Action{testAction("scoped", func(ctx *gb.ActionContext, _ json.RawMessage) (any, error) {
+			if _, ok := cache.RequestScopeFrom(ctx.Context); ok {
+				actionScopePresent.Add(1)
+			}
+			return map[string]bool{"saved": true}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	documentRecorder := httptest.NewRecorder()
+	server.ServeHTTP(documentRecorder, httptest.NewRequest(http.MethodGet, "https://example.com/scoped", nil))
+	if documentRecorder.Code != http.StatusOK {
+		t.Fatalf("document status=%d body=%s", documentRecorder.Code, documentRecorder.Body.String())
+	}
+
+	runtimeRecorder := httptest.NewRecorder()
+	server.ServeHTTP(runtimeRecorder, httptest.NewRequest(http.MethodGet, "https://example.com/_gobeyond/builds/build-1/runtime/scoped?path=%2Fscoped", nil))
+	if runtimeRecorder.Code != http.StatusOK {
+		t.Fatalf("runtime status=%d body=%s", runtimeRecorder.Code, runtimeRecorder.Body.String())
+	}
+
+	apiRecorder := httptest.NewRecorder()
+	server.ServeHTTP(apiRecorder, httptest.NewRequest(http.MethodGet, "https://example.com/api/scoped", nil))
+	if apiRecorder.Code != http.StatusOK || apiScopePresent.Load() != 1 {
+		t.Fatalf("api status=%d scopePresent=%d", apiRecorder.Code, apiScopePresent.Load())
+	}
+
+	actionRequest := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/build-1/actions/scoped", strings.NewReader(`{}`))
+	actionRequest.Header.Set("Origin", "https://example.com")
+	actionRecorder := httptest.NewRecorder()
+	server.ServeHTTP(actionRecorder, actionRequest)
+	if actionRecorder.Code != http.StatusOK || actionScopePresent.Load() != 1 {
+		t.Fatalf("action status=%d scopePresent=%d body=%s", actionRecorder.Code, actionScopePresent.Load(), actionRecorder.Body.String())
+	}
+
+	// Each request above that reaches the loader (document + runtime) calls
+	// the loader's Memo twice; every request gets its own RequestScope, so
+	// each should only invoke fn once - one call per loader-reaching request,
+	// not two.
+	documentRecorder2 := httptest.NewRecorder()
+	server.ServeHTTP(documentRecorder2, httptest.NewRequest(http.MethodGet, "https://example.com/scoped", nil))
+	if documentRecorder2.Code != http.StatusOK {
+		t.Fatalf("second document status=%d body=%s", documentRecorder2.Code, documentRecorder2.Body.String())
+	}
+	if loaderMemoCalls.Load() != 3 {
+		t.Fatalf("loaderMemoCalls = %d, want 3 (one per loader-reaching request, deduped within each)", loaderMemoCalls.Load())
+	}
+}
+
+// TestConfiguredCacheServesLoadersAcrossRequests proves the wiring end to end:
+// Config.Cache installs a handle on every RequestScope, so a loader's
+// cache.Load hits on the second request, and the privacy gate still applies -
+// a request carrying a cookie recomputes rather than reading the shared entry.
+func TestConfiguredCacheServesLoadersAcrossRequests(t *testing.T) {
+	var loads atomic.Int32
+	page := PageRoute{
+		Route: router.Route{ID: "cached", Pattern: "/cached", Mode: router.ModeDynamic},
+		Plan:  &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "cached", Root: &renderplan.Element{Kind: "element", Tag: "main"}},
+		Load: func(ctx *gb.PageContext) (LoadedPage, error) {
+			title, err := cache.Load(ctx.Context, cache.Options{
+				Name:       "catalog.title",
+				Revalidate: time.Minute,
+				Tags:       []string{"catalog"},
+			}, cache.JSONCodec[string](), func(context.Context) (string, error) {
+				loads.Add(1)
+				return "Catalog", nil
+			})
+			if err != nil {
+				return LoadedPage{}, err
+			}
+			return LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}, Metadata: gb.Metadata{Lang: "en", Title: title}}, nil
+		},
+	}
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		Pages:        []PageRoute{page},
+		Cache:        &cache.RuntimeConfig{DeployPrefix: "test-deploy"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/cached", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("document status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if loads.Load() != 1 {
+		t.Fatalf("cached loader ran %d times, want 1", loads.Load())
+	}
+
+	privateRequest := httptest.NewRequest(http.MethodGet, "https://example.com/cached", nil)
+	privateRequest.Header.Set("Cookie", "session=abc")
+	privateRecorder := httptest.NewRecorder()
+	server.ServeHTTP(privateRecorder, privateRequest)
+	if privateRecorder.Code != http.StatusOK {
+		t.Fatalf("private document status=%d", privateRecorder.Code)
+	}
+	if loads.Load() != 2 {
+		t.Fatalf("cached loader ran %d times, want a private request to bypass the cache", loads.Load())
+	}
+}
+
+func TestCacheRuntimeBuildIDMustMatchTheServer(t *testing.T) {
+	_, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		Cache:        &cache.RuntimeConfig{DeployPrefix: "test-deploy", BuildID: "build-2"},
+	})
+	if err == nil {
+		t.Fatal("expected a cache runtime configured for another build to be rejected")
 	}
 }
 

@@ -279,10 +279,14 @@ type ActionContext struct {
 }
 
 type ActionResult[T any] struct {
-	Data          T                 `json:"data,omitempty"`
-	FieldErrors   map[string]string `json:"fieldErrors,omitempty"`
-	RedirectTo    string            `json:"redirectTo,omitempty"`
-	RefreshRoutes []string          `json:"refreshRoutes,omitempty"`
+	Data        T                 `json:"data,omitempty"`
+	FieldErrors map[string]string `json:"fieldErrors,omitempty"`
+	RedirectTo  string            `json:"redirectTo,omitempty"`
+	// Deprecated: RefreshRoutes was never read by the runtime. Actions that
+	// need the client to refresh routes after a mutation should call
+	// cache.RevalidatePath / cache.RevalidateTag; the runtime emits recorded
+	// paths and tags in cache.ActionEnvelope.Refresh.
+	RefreshRoutes []string `json:"refreshRoutes,omitempty"`
 }
 
 type RequestContext struct {

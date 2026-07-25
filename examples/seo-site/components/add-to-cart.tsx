@@ -1,4 +1,4 @@
-import { fetchWithBuildGuard } from "@go-beyond/react/browser";
+import { postAction } from "@go-beyond/react/browser";
 import { useState } from "react";
 
 export interface AddToCartProps {
@@ -23,18 +23,14 @@ export function AddToCart({ productName }: AddToCartProps) {
           setPending(true);
           try {
             const actionId = `${routeId}:addToCart`;
-            const response = await fetchWithBuildGuard(
+            // postAction parses the action envelope and, when the action
+            // recorded cache.RevalidatePath calls, refreshes those routes'
+            // client-side data automatically - no hand-rolled fetch/refresh.
+            await postAction(
               `/_gobeyond/builds/${buildId}/actions/${encodeURIComponent(actionId)}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ productSlug: "trail-pack", quantity: 1 }),
-              },
+              { productSlug: "trail-pack", quantity: 1 },
               { buildId },
             );
-            if (!response.ok) {
-              throw new Error(`Action failed with ${response.status}`);
-            }
             setAdded(true);
           } finally {
             setPending(false);

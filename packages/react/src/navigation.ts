@@ -2,6 +2,7 @@ import { createElement, type ComponentType, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import type { Root } from "react-dom/client";
 import {
+  BUILD_ID_HEADER,
   BuildMismatchError,
   fetchWithBuildGuard,
   handleBuildMismatch,
@@ -9,6 +10,8 @@ import {
   shouldShowUpdateRequiredUI,
   type BuildMismatchEnvironment,
 } from "./build-mismatch.js";
+import { normalizeComparablePath, pathsIncludePathname } from "./path-utils.js";
+import { createRouterCache, type RouterCache, type RouterCacheOptions } from "./router-cache.js";
 import type {
   AlternateLanguage,
   IconMetadata,
@@ -129,6 +132,25 @@ export type RuntimeResultKind =
   | "public_error"
   | "internal_error";
 
+/** Matches gb.CacheMode (gobeyond.go). */
+export type CacheMode = "private_no_store" | "public";
+
+/**
+ * Matches gb.CachePolicy (gobeyond.go) - the edge/browser HTTP cache header
+ * a page loader chose, carried through the soft-nav runtime JSON so the
+ * client Router Cache (see router-cache.ts) can apply the same freshness
+ * rule the origin already committed to instead of guessing. `gb.OK()`
+ * defaults to `private_no_store`; only `mode: "public"` is ever cached
+ * client-side.
+ */
+export interface CachePolicy {
+  mode: CacheMode;
+  maxAge?: number;
+  sharedMaxAge?: number;
+  staleWhileRevalidate?: number;
+  staleIfError?: number;
+}
+
 export interface RuntimeNavigationResult {
   kind: RuntimeResultKind;
   props: Record<string, unknown>;
@@ -137,6 +159,8 @@ export interface RuntimeNavigationResult {
   redirectTo?: string;
   errorCode?: string;
   message?: string;
+  /** Present on every runtime response; absent only in hand-built test fixtures. */
+  cache?: CachePolicy;
 }
 
 export interface RuntimeNavigationPayload {
@@ -158,6 +182,12 @@ export type NavigationHistoryMode = "push" | "replace" | "pop";
 export interface NavigateOptions {
   history?: NavigationHistoryMode;
   scroll?: { x: number; y: number };
+  /**
+   * Skip the accessible route-change announcement and focus move. Used by
+   * `SoftNavigationController.refresh`, which updates the current route's
+   * data in place rather than navigating anywhere a user would notice.
+   */
+  silent?: boolean;
 }
 
 export interface SoftNavigationController {
@@ -166,9 +196,71 @@ export interface SoftNavigationController {
     options?: NavigateOptions,
   ): Promise<RuntimeNavigationPayload | undefined>;
   prefetch(target: string | URL): Promise<void>;
+  /**
+   * Re-fetch the currently mounted route's runtime JSON in place (no history
+   * entry, no scroll change) and re-render with the fresh props. This is the
+   * client half of the action envelope's "refresh" field (Locked decision
+   * 9): a server action that calls `cache.RevalidatePath` records the path,
+   * and the action response's `refresh.paths` tells the client which paths
+   * changed.
+   *
+   * When `paths` is provided, the refresh only runs if the current route's
+   * path is one of them; when omitted, the current route always refreshes.
+   * Either way this also invalidates the client Router Cache: with `paths`,
+   * only matching entries are dropped (they may belong to routes other than
+   * the one currently mounted); without `paths`, the entire Router Cache is
+   * cleared, since there is no narrower signal for "something changed."
+   */
+  refresh(paths?: readonly string[]): Promise<RuntimeNavigationPayload | undefined>;
+  /**
+   * Drop entries from the client Router Cache (see router-cache.ts).
+   * `refresh` already calls this for action-triggered revalidation and
+   * `destroy` clears it on teardown; call this directly for transitions
+   * this package has no built-in hook for - most importantly auth-ish
+   * transitions (login, logout, account switch) - so a subsequent
+   * back/forward never replays another session's cached page. Pass specific
+   * paths to invalidate only those (matched the same way `refresh`'s
+   * `paths` is), or omit to clear everything.
+   */
+  clearRouterCache(paths?: readonly string[]): void;
   /** Subscribe to soft-navigation lifecycle events (start / success / error). */
   subscribe(listener: NavigationLifecycleListener): () => void;
   destroy(): void;
+}
+
+function disabledSoftNavigationController(): SoftNavigationController {
+  return {
+    async navigate() {
+      return undefined;
+    },
+    async prefetch() {},
+    async refresh() {
+      return undefined;
+    },
+    clearRouterCache() {},
+    subscribe() {
+      return () => {};
+    },
+    destroy() {},
+  };
+}
+
+let activeSoftNavigation: SoftNavigationController | undefined;
+
+/**
+ * Refresh the currently mounted route's data through whichever
+ * `SoftNavigationController` `bootstrap`/`bootstrapAsync` most recently
+ * created (and has not `destroy()`ed). Lets action helpers such as
+ * `runAction` (see actions.ts) trigger a refresh without every caller
+ * threading the `bootstrap` return value through their component tree, the
+ * same decoupling `subscribeNavigation` gives lifecycle listeners. A no-op
+ * when no soft navigation is currently installed.
+ */
+export function refreshNavigation(
+  paths?: readonly string[],
+): Promise<RuntimeNavigationPayload | undefined> {
+  if (!activeSoftNavigation) return Promise.resolve(undefined);
+  return activeSoftNavigation.refresh(paths);
 }
 
 export interface SoftNavigationOptions {
@@ -194,6 +286,14 @@ export interface SoftNavigationOptions {
   onNavigationError?: (error: unknown) => void;
   hardNavigate?: (url: string) => void;
   scrollTo?: (x: number, y: number) => void;
+  /**
+   * Client Router Cache for soft-nav payloads (see router-cache.ts). Pass an
+   * instance to share one cache across controllers/tests, or tune its TTL
+   * cap via `routerCacheOptions`; otherwise a private cache is created and
+   * torn down with this controller.
+   */
+  routerCache?: RouterCache;
+  routerCacheOptions?: RouterCacheOptions;
 }
 
 interface NavigationHistoryState {
@@ -233,6 +333,37 @@ function optionalString(
     throw new Error(`${context}.${name} must be a string.`);
   }
   return value;
+}
+
+function optionalNonNegativeInt(
+  record: Record<string, unknown>,
+  name: string,
+  context: string,
+): number | undefined {
+  const value = record[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${context}.${name} must be a non-negative integer.`);
+  }
+  return value;
+}
+
+function parseCachePolicy(value: unknown): CachePolicy | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new Error("GoBeyond runtime result.cache must be an object.");
+  }
+  const mode = requiredString(value, "mode", "GoBeyond runtime result.cache");
+  if (mode !== "private_no_store" && mode !== "public") {
+    throw new Error(`GoBeyond runtime result.cache.mode is unsupported: ${mode}`);
+  }
+  return {
+    mode,
+    maxAge: optionalNonNegativeInt(value, "maxAge", "result.cache"),
+    sharedMaxAge: optionalNonNegativeInt(value, "sharedMaxAge", "result.cache"),
+    staleWhileRevalidate: optionalNonNegativeInt(value, "staleWhileRevalidate", "result.cache"),
+    staleIfError: optionalNonNegativeInt(value, "staleIfError", "result.cache"),
+  };
 }
 
 function optionalStrings(
@@ -430,6 +561,7 @@ export function parseRuntimeNavigationPayload(
       redirectTo: optionalString(value.result, "redirectTo", "runtime result"),
       errorCode: optionalString(value.result, "errorCode", "runtime result"),
       message: optionalString(value.result, "message", "runtime result"),
+      cache: parseCachePolicy(value.result.cache),
     },
   };
 }
@@ -956,6 +1088,10 @@ function isAbort(error: unknown): boolean {
   return isRecord(error) && error.name === "AbortError";
 }
 
+type ComponentResolution =
+  | { resolved: ResolvedBrowserRoute | undefined }
+  | { error: unknown };
+
 export function createSoftNavigation(
   options: SoftNavigationOptions,
 ): SoftNavigationController {
@@ -965,16 +1101,7 @@ export function createSoftNavigation(
       routeDefinition(routeId, registration) !== undefined,
   );
   if (!defaultView || !hasRoutePatterns) {
-    return {
-      async navigate() {
-        return undefined;
-      },
-      async prefetch() {},
-      subscribe() {
-        return () => {};
-      },
-      destroy() {},
-    };
+    return disabledSoftNavigationController();
   }
   const targetWindow: Window & typeof globalThis = defaultView;
 
@@ -1000,6 +1127,8 @@ export function createSoftNavigation(
   let active: AbortController | undefined;
   let destroyed = false;
   const listeners = new Set<NavigationLifecycleListener>();
+  const routerCache = options.routerCache ?? createRouterCache(options.routerCacheOptions);
+  const pendingWarms = new Map<string, Promise<void>>();
 
   function emit(event: NavigationLifecycleEvent): void {
     if (event.type === "start") {
@@ -1051,6 +1180,18 @@ export function createSoftNavigation(
     emit({ type: "start", url: href, routeId: route.routeId });
 
     try {
+      const cached = routerCache.get(routerCache.keyFor(url));
+      if (cached && cached.routeId === route.routeId) {
+        return await renderNavigationResult(
+          url,
+          href,
+          route,
+          controller,
+          navigationOptions,
+          cached,
+          startComponentResolve(route),
+        );
+      }
       return await performNavigation(
         url,
         href,
@@ -1067,8 +1208,18 @@ export function createSoftNavigation(
           error,
         });
       }
+      if (error instanceof BuildMismatchError) routerCache.clear();
       throw error;
     }
+  }
+
+  function startComponentResolve(
+    route: MatchedBrowserRoute,
+  ): Promise<ComponentResolution> {
+    return resolveBrowserRoute(options.routes[route.routeId]).then(
+      (resolved) => ({ resolved } as const),
+      (error: unknown) => ({ error } as const),
+    );
   }
 
   async function performNavigation(
@@ -1084,10 +1235,7 @@ export function createSoftNavigation(
     const runtimeURL = new URL(runtimePath, targetWindow.location.origin);
     runtimeURL.searchParams.set("path", url.pathname + url.search);
 
-    const componentResult = resolveBrowserRoute(options.routes[route.routeId]).then(
-      (resolved) => ({ resolved } as const),
-      (error: unknown) => ({ error } as const),
-    );
+    const componentResult = startComponentResolve(route);
 
     const settleHard = (): void => {
       if (active !== controller || destroyed) return;
@@ -1169,6 +1317,42 @@ export function createSoftNavigation(
     if (!payload.result.metadata) {
       throw new Error("GoBeyond runtime result is missing metadata.");
     }
+    // Cache before rendering: a payload that reaches here is validated (kind
+    // "ok", metadata present, matching build/route), which is exactly the
+    // shape `navigate`'s cache-hit fast path expects to replay later. `set`
+    // itself no-ops for private/no-store CachePolicy results.
+    routerCache.set(routerCache.keyFor(url), payload);
+    return renderNavigationResult(
+      url,
+      href,
+      route,
+      controller,
+      navigationOptions,
+      payload,
+      componentResult,
+    );
+  }
+
+  /**
+   * Render an already-fetched (or cache-hit) "ok" payload: resolve the route
+   * component, commit the DOM/history/scroll/focus side effects, and emit
+   * the success lifecycle event. Shared by `performNavigation` (fresh fetch)
+   * and `navigate`'s Router Cache fast path (see `routerCache.get` above),
+   * so a cache hit behaves identically to a network hit from here on.
+   */
+  async function renderNavigationResult(
+    url: URL,
+    href: string,
+    route: MatchedBrowserRoute,
+    controller: AbortController,
+    navigationOptions: NavigateOptions,
+    payload: RuntimeNavigationPayload,
+    componentResult: Promise<ComponentResolution>,
+  ): Promise<RuntimeNavigationPayload | undefined> {
+    const metadata = payload.result.metadata;
+    if (!metadata) {
+      throw new Error("GoBeyond runtime result is missing metadata.");
+    }
     if (active !== controller || destroyed) return undefined;
     const resolvedResult = await componentResult;
     if ("error" in resolvedResult) {
@@ -1188,7 +1372,7 @@ export function createSoftNavigation(
       options.root.render(render(resolved, payload.result.props));
     });
     options.rootElement.dataset.gobeyondRoute = route.routeId;
-    applyDocumentMetadata(payload.result.metadata, options.document);
+    applyDocumentMetadata(metadata, options.document);
 
     const nextMarker: NavigationHistoryState = {
       buildId: options.buildId,
@@ -1210,9 +1394,11 @@ export function createSoftNavigation(
       );
     }
 
-    const announcer = ensureAnnouncer(options.document);
-    announcer.textContent = `Navigated to ${payload.result.metadata.title}`;
-    focusRouteContent(options.rootElement);
+    if (!navigationOptions.silent) {
+      const announcer = ensureAnnouncer(options.document);
+      announcer.textContent = `Navigated to ${metadata.title}`;
+      focusRouteContent(options.rootElement);
+    }
     const restored = navigationOptions.scroll;
     if (restored) {
       scrollTo(restored.x, restored.y);
@@ -1241,13 +1427,107 @@ export function createSoftNavigation(
     return payload;
   }
 
+  async function refresh(
+    paths?: readonly string[],
+  ): Promise<RuntimeNavigationPayload | undefined> {
+    if (destroyed) return undefined;
+    const url = new URL(targetWindow.location.href);
+    // Drop the Router Cache before deciding whether to re-render: `paths`
+    // may name routes other than the one currently mounted, and an omitted
+    // `paths` (no narrower signal for "something changed") clears
+    // everything rather than risk replaying stale data.
+    routerCache.invalidatePaths(paths ?? []);
+    if (paths && paths.length > 0 && !pathsIncludePathname(paths, url.pathname)) {
+      return undefined;
+    }
+    const route = matchBrowserRoute(url.pathname, options.routes);
+    if (!route) return undefined;
+
+    active?.abort();
+    const controller = new AbortController();
+    active = controller;
+    const href = url.href;
+    emit({ type: "start", url: href, routeId: route.routeId });
+
+    try {
+      return await performNavigation(url, href, route, controller, {
+        history: "replace",
+        scroll: { x: targetWindow.scrollX, y: targetWindow.scrollY },
+        silent: true,
+      });
+    } catch (error) {
+      if (!isAbort(error) && !destroyed) {
+        emit({ type: "error", url: href, routeId: route.routeId, error });
+      }
+      if (error instanceof BuildMismatchError) routerCache.clear();
+      throw error;
+    }
+  }
+
+  function clearRouterCache(paths?: readonly string[]): void {
+    routerCache.invalidatePaths(paths ?? []);
+  }
+
+  /**
+   * Best-effort fetch of a route's runtime JSON into the Router Cache,
+   * deduped per key so rapid repeated hover/focus prefetches of the same
+   * link only issue one request. Silently no-ops on any failure (bad
+   * response, build/route mismatch, non-"ok" kind) or when the policy is
+   * private/no-store - `routerCache.set` already enforces the latter, this
+   * just avoids doing the fetch's error handling twice.
+   */
+  function warmRouterCache(url: URL, route: MatchedBrowserRoute): Promise<void> {
+    const key = routerCache.keyFor(url);
+    if (routerCache.get(key)) return Promise.resolve();
+    const pending = pendingWarms.get(key);
+    if (pending) return pending;
+
+    const runtimePath =
+      `/_gobeyond/builds/${encodeURIComponent(options.buildId)}/runtime/` +
+      encodeURIComponent(route.routeId);
+    const runtimeURL = new URL(runtimePath, targetWindow.location.origin);
+    runtimeURL.searchParams.set("path", url.pathname + url.search);
+    const request = options.fetch ?? targetWindow.fetch.bind(targetWindow);
+
+    const warm = (async () => {
+      const response = await request(runtimeURL, {
+        method: "GET",
+        headers: { accept: "application/json", [BUILD_ID_HEADER]: options.buildId },
+        redirect: "manual",
+      });
+      if (!response.ok) return;
+      if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+        return;
+      }
+      const payload = parseRuntimeNavigationPayload(await response.text());
+      if (
+        payload.buildId !== options.buildId ||
+        payload.routeId !== route.routeId ||
+        payload.result.kind !== "ok"
+      ) {
+        return;
+      }
+      routerCache.set(key, payload);
+    })().catch(() => {
+      // Prefetch data-warming is opportunistic; a real navigation retries.
+    });
+    pendingWarms.set(key, warm);
+    void warm.finally(() => {
+      if (pendingWarms.get(key) === warm) pendingWarms.delete(key);
+    });
+    return warm;
+  }
+
   async function prefetch(target: string | URL): Promise<void> {
     if (destroyed) return;
     const url = new URL(target, targetWindow.location.href);
     if (url.origin !== targetWindow.location.origin) return;
     const route = matchBrowserRoute(url.pathname, options.routes);
     if (!route) return;
-    await resolveBrowserRoute(options.routes[route.routeId]);
+    await Promise.all([
+      resolveBrowserRoute(options.routes[route.routeId]),
+      warmRouterCache(url, route),
+    ]);
   }
 
   function onClick(event: MouseEvent): void {
@@ -1300,9 +1580,11 @@ export function createSoftNavigation(
   targetWindow.addEventListener("scroll", saveScroll, { passive: true });
   targetWindow.addEventListener("pagehide", saveScroll);
 
-  return {
+  const publicController: SoftNavigationController = {
     navigate,
     prefetch,
+    refresh,
+    clearRouterCache,
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -1314,6 +1596,8 @@ export function createSoftNavigation(
       destroyed = true;
       active?.abort();
       listeners.clear();
+      routerCache.clear();
+      pendingWarms.clear();
       options.document.removeEventListener("click", onClick);
       options.document.removeEventListener("pointerover", onPrefetch);
       options.document.removeEventListener("focusin", onPrefetch);
@@ -1321,6 +1605,11 @@ export function createSoftNavigation(
       targetWindow.removeEventListener("scroll", saveScroll);
       targetWindow.removeEventListener("pagehide", saveScroll);
       targetWindow.history.scrollRestoration = previousScrollRestoration;
+      if (activeSoftNavigation === publicController) {
+        activeSoftNavigation = undefined;
+      }
     },
   };
+  activeSoftNavigation = publicController;
+  return publicController;
 }

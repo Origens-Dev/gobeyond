@@ -15,11 +15,13 @@ import {
   markBuildHealthy,
   matchBrowserRoute,
   parseRuntimeNavigationPayload,
+  refreshNavigation,
   resolveBrowserRoute,
   resolveRouteComponent,
   renderUpdateRequired,
   subscribeNavigation,
   type BuildMismatchEnvironment,
+  type CachePolicy,
   type RuntimeNavigationPayload,
 } from "../dist/browser.js";
 
@@ -40,6 +42,7 @@ function payload(
   routeId: string,
   props: Record<string, unknown>,
   title: string,
+  cache?: CachePolicy,
 ): RuntimeNavigationPayload {
   return {
     apiVersion: BROWSER_PROTOCOL_VERSION,
@@ -47,6 +50,7 @@ function payload(
     routeId,
     result: {
       kind: "ok",
+      cache,
       props,
       status: 200,
       metadata: {
@@ -177,6 +181,44 @@ test("runtime navigation accepts only the explicit lower-camel result DTO", () =
   );
 });
 
+test("runtime navigation parses result.cache into the CachePolicy shape", () => {
+  const withPublicCache = parseRuntimeNavigationPayload(
+    JSON.stringify(
+      payload("product", { name: "Trail" }, "Trail", {
+        mode: "public",
+        maxAge: 60,
+        sharedMaxAge: 300,
+        staleWhileRevalidate: 30,
+        staleIfError: 3600,
+      }),
+    ),
+  );
+  assert.deepEqual(withPublicCache.result.cache, {
+    mode: "public",
+    maxAge: 60,
+    sharedMaxAge: 300,
+    staleWhileRevalidate: 30,
+    staleIfError: 3600,
+  });
+
+  const withoutCache = parseRuntimeNavigationPayload(
+    JSON.stringify(payload("product", { name: "Trail" }, "Trail")),
+  );
+  assert.equal(withoutCache.result.cache, undefined);
+
+  assert.throws(
+    () =>
+      parseRuntimeNavigationPayload(
+        JSON.stringify(
+          payload("product", { name: "Trail" }, "Trail", {
+            mode: "cache-forever" as unknown as CachePolicy["mode"],
+          }),
+        ),
+      ),
+    /result\.cache\.mode is unsupported/,
+  );
+});
+
 test("route matching gives static manifest routes priority over dynamic routes", () => {
   const matched = matchBrowserRoute("/products/new", {
     catchAll: { component: Home, pattern: "/[...path]" },
@@ -248,7 +290,7 @@ test("bootstrapAsync hydrates a lazy initial route", async () => {
   }
 });
 
-test("delegated intent prefetch loads route code without route data", async () => {
+test("delegated intent prefetch loads route code and warms cacheable route data", async () => {
   const dom = documentFor();
   const restore = installDOM(dom);
   let imports = 0;
@@ -270,18 +312,81 @@ test("delegated intent prefetch loads route code without route data", async () =
         document: dom.window.document,
         fetch: async () => {
           requests += 1;
-          return new Response(JSON.stringify(payload("product", { name: "Trail" }, "Trail")));
+          return new Response(
+            JSON.stringify(
+              payload("product", { name: "Trail" }, "Trail", { mode: "public", maxAge: 60 }),
+            ),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
         },
         scrollTo() {},
       });
     });
     const link = dom.window.document.querySelector("a");
     assert.ok(link);
+    const linkTarget = link.getAttribute("href");
+    assert.ok(linkTarget);
     link.dispatchEvent(new dom.window.Event("pointerover", { bubbles: true }));
     await waitFor(() => imports === 1);
-    assert.equal(requests, 0);
-    await app?.prefetch("/products/trail");
+    await waitFor(() => requests === 1);
+    assert.equal(requests, 1, "prefetch warms the runtime data payload, not only the JS chunk");
+    await app?.prefetch(linkTarget);
     assert.equal(imports, 1);
+    assert.equal(requests, 1, "an already-warm, still-fresh entry is not re-fetched");
+
+    await act(async () => {
+      await app?.navigate(linkTarget);
+    });
+    assert.equal(
+      requests,
+      1,
+      "navigating to a warmed public route serves from the Router Cache instead of re-fetching",
+    );
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "Trail");
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("prefetch never retains private/no-store route data, so navigate still re-fetches", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let requests = 0;
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+        },
+        document: dom.window.document,
+        fetch: async () => {
+          requests += 1;
+          return new Response(
+            JSON.stringify(payload("product", { name: "Trail" }, "Trail")),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        },
+        scrollTo() {},
+      });
+    });
+    await app?.prefetch("/products/trail");
+    assert.equal(requests, 1, "prefetch still fetches to discover the route's CachePolicy");
+
+    await act(async () => {
+      await app?.navigate("/products/trail");
+    });
+    assert.equal(
+      requests,
+      2,
+      "a private/no-store payload is never retained, so navigate re-fetches",
+    );
+
     app?.destroy();
     await act(async () => app?.root.unmount());
   } finally {
@@ -648,6 +753,432 @@ test("back and forward refetch routes and restore per-entry scroll", async () =>
 
     app.destroy();
     await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("refresh re-fetches the current route in place without pushing history or moving focus", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  const scrolls: Array<[number, number]> = [];
+  let requests = 0;
+  const request: typeof fetch = async () => {
+    requests += 1;
+    return new Response(JSON.stringify(payload("home", { count: requests }, "Home")));
+  };
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+        },
+        document: dom.window.document,
+        fetch: request,
+        scrollTo: (x, y) => scrolls.push([x, y]),
+      });
+    });
+    assert.ok(app);
+    const initialHistoryLength = dom.window.history.length;
+    const previousActiveElement = dom.window.document.activeElement;
+
+    let refreshed: unknown;
+    await act(async () => {
+      refreshed = await app?.refresh();
+    });
+
+    assert.equal(requests, 1);
+    assert.equal(dom.window.history.length, initialHistoryLength, "refresh must not push history");
+    assert.equal(dom.window.location.pathname, "/");
+    assert.deepEqual(
+      scrolls,
+      [[0, 0]],
+      "refresh restores the same scroll position it started at",
+    );
+    assert.equal(
+      dom.window.document.activeElement,
+      previousActiveElement,
+      "refresh must not move focus",
+    );
+    assert.ok(refreshed);
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("refresh only re-fetches when the current path is among the given paths", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let requests = 0;
+  const request: typeof fetch = async () => {
+    requests += 1;
+    return new Response(JSON.stringify(payload("home", {}, "Home")));
+  };
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: { home: { component: Home, pattern: "/" } },
+        document: dom.window.document,
+        fetch: request,
+        scrollTo() {},
+      });
+    });
+    assert.ok(app);
+
+    const skipped = await app!.refresh(["/products/widget"]);
+    assert.equal(skipped, undefined);
+    assert.equal(requests, 0);
+
+    let matched: unknown;
+    await act(async () => {
+      matched = await app?.refresh(["/", "/products/widget"]);
+    });
+    assert.equal(requests, 1);
+    assert.ok(matched);
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("back and forward serve a warmed public route from the Router Cache without an extra fetch", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let requests = 0;
+  const request: typeof fetch = async (input) => {
+    const path = new URL(String(input)).searchParams.get("path");
+    requests += 1;
+    if (path === "/products/trail") {
+      return new Response(
+        JSON.stringify(
+          payload("product", { name: "Trail" }, "Trail", { mode: "public", maxAge: 60 }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (path === "/about") {
+      return new Response(
+        JSON.stringify(
+          payload("about", { name: "About" }, "About", { mode: "public", maxAge: 60 }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error(`unexpected runtime path ${path}`);
+  };
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+          about: { component: About, pattern: "/about" },
+        },
+        document: dom.window.document,
+        fetch: request,
+        scrollTo() {},
+      });
+    });
+    assert.ok(app);
+    await act(async () => {
+      await app.navigate("/products/trail");
+    });
+    await act(async () => {
+      await app.navigate("/about");
+    });
+    assert.equal(requests, 2, "each fresh navigation still fetches once");
+
+    await act(async () => {
+      dom.window.history.back();
+      await waitFor(() => dom.window.document.querySelector("h1")?.textContent === "Trail");
+    });
+    assert.equal(requests, 2, "back replays the warmed Router Cache entry instead of re-fetching");
+
+    await act(async () => {
+      dom.window.history.forward();
+      await waitFor(() => dom.window.document.querySelector("h1")?.textContent === "About");
+    });
+    assert.equal(
+      requests,
+      2,
+      "forward replays the warmed Router Cache entry instead of re-fetching",
+    );
+
+    app.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("clearRouterCache drops warmed entries so a later back/forward re-fetches", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let requests = 0;
+  const request: typeof fetch = async (input) => {
+    const path = new URL(String(input)).searchParams.get("path");
+    requests += 1;
+    if (path === "/products/trail") {
+      return new Response(
+        JSON.stringify(
+          payload("product", { name: "Trail" }, "Trail", { mode: "public", maxAge: 60 }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (path === "/about") {
+      return new Response(
+        JSON.stringify(
+          payload("about", { name: "About" }, "About", { mode: "public", maxAge: 60 }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error(`unexpected runtime path ${path}`);
+  };
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+          about: { component: About, pattern: "/about" },
+        },
+        document: dom.window.document,
+        fetch: request,
+        scrollTo() {},
+      });
+    });
+    await act(async () => {
+      await app?.navigate("/products/trail");
+    });
+    await act(async () => {
+      await app?.navigate("/about");
+    });
+    assert.equal(requests, 2);
+
+    app?.clearRouterCache();
+
+    await act(async () => {
+      dom.window.history.back();
+      await waitFor(() => dom.window.document.querySelector("h1")?.textContent === "Trail");
+    });
+    assert.equal(requests, 3, "clearRouterCache forces the next navigation to re-fetch");
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("refresh with explicit paths invalidates the Router Cache even for routes other than the current one", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let requests = 0;
+  const request: typeof fetch = async (input) => {
+    const path = new URL(String(input)).searchParams.get("path");
+    requests += 1;
+    if (path === "/products/trail") {
+      return new Response(
+        JSON.stringify(
+          payload("product", { name: "Trail" }, "Trail", { mode: "public", maxAge: 60 }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (path === "/about") {
+      return new Response(
+        JSON.stringify(
+          payload("about", { name: "About" }, "About", { mode: "public", maxAge: 60 }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error(`unexpected runtime path ${path}`);
+  };
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+          about: { component: About, pattern: "/about" },
+        },
+        document: dom.window.document,
+        fetch: request,
+        scrollTo() {},
+      });
+    });
+    await act(async () => {
+      await app?.navigate("/products/trail");
+    });
+    await act(async () => {
+      await app?.navigate("/about");
+    });
+    assert.equal(requests, 2);
+
+    // Currently mounted on "/about", but an action recorded a refresh for
+    // "/products/trail" - refresh() must drop that cached entry even though
+    // it does not match the mounted route.
+    let refreshed: unknown;
+    await act(async () => {
+      refreshed = await app?.refresh(["/products/trail"]);
+    });
+    assert.equal(refreshed, undefined, "refresh does not re-render a path that is not mounted");
+    assert.equal(requests, 2, "refresh itself does not fetch a path it is not mounted on");
+
+    await act(async () => {
+      dom.window.history.back();
+      await waitFor(() => dom.window.document.querySelector("h1")?.textContent === "Trail");
+    });
+    assert.equal(
+      requests,
+      3,
+      "the invalidated entry must be re-fetched instead of replayed from the Router Cache",
+    );
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("a build mismatch clears the Router Cache", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let requests = 0;
+  const request: typeof fetch = async (input) => {
+    const path = new URL(String(input)).searchParams.get("path");
+    requests += 1;
+    if (path === "/products/trail") {
+      return new Response(
+        JSON.stringify(
+          payload("product", { name: "Trail" }, "Trail", { mode: "public", maxAge: 60 }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(null, {
+      status: 409,
+      headers: { "x-gobeyond-error": "build_mismatch", "x-gobeyond-build": "build-next" },
+    });
+  };
+  const reloads: string[] = [];
+  const sessionStore = new Map<string, string>();
+  const mismatchEnvironment: BuildMismatchEnvironment = {
+    location: { reload: () => reloads.push("reload") },
+    sessionStorage: {
+      getItem: (key) => sessionStore.get(key) ?? null,
+      setItem: (key, value) => sessionStore.set(key, value),
+      removeItem: (key) => sessionStore.delete(key),
+      get length() {
+        return sessionStore.size;
+      },
+      key: (index) => [...sessionStore.keys()][index] ?? null,
+    },
+  };
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+          about: { component: About, pattern: "/about" },
+        },
+        document: dom.window.document,
+        fetch: request,
+        mismatchEnvironment,
+        scrollTo() {},
+      });
+    });
+    await act(async () => {
+      await app?.navigate("/products/trail");
+    });
+    assert.equal(requests, 1);
+
+    await act(async () => {
+      await assert.rejects(app!.navigate("/about"));
+    });
+    assert.deepEqual(reloads, ["reload"], "the guarded mismatch reload ran once");
+
+    await act(async () => {
+      await app?.navigate("/products/trail");
+    });
+    assert.equal(
+      requests,
+      3,
+      "the mismatch cleared the Router Cache, so the previously-warmed route is re-fetched",
+    );
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("refreshNavigation drives whichever soft navigation controller is currently installed", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let requests = 0;
+  const request: typeof fetch = async () => {
+    requests += 1;
+    return new Response(JSON.stringify(payload("home", {}, "Home")));
+  };
+
+  try {
+    assert.equal(await refreshNavigation(), undefined, "no-op before any controller exists");
+
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: { home: { component: Home, pattern: "/" } },
+        document: dom.window.document,
+        fetch: request,
+        scrollTo() {},
+      });
+    });
+    assert.ok(app);
+
+    await act(async () => {
+      await refreshNavigation();
+    });
+    assert.equal(requests, 1);
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+    assert.equal(
+      await refreshNavigation(),
+      undefined,
+      "no-op again once the controller is destroyed",
+    );
   } finally {
     restore();
     dom.window.close();

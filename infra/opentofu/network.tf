@@ -123,3 +123,26 @@ resource "aws_security_group" "tasks" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
+
+resource "aws_security_group" "cache" {
+  count = var.create_cache ? 1 : 0
+
+  name_prefix = "${var.name}-cache-"
+  description = "Only GoBeyond ECS tasks may reach the private Valkey cache."
+  vpc_id      = aws_vpc.this.id
+
+  ingress {
+    description     = "GoBeyond tasks to Valkey over TLS"
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.tasks.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}

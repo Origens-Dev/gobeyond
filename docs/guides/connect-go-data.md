@@ -35,6 +35,29 @@ Apple touch paths through `gb.Metadata.Icons`. See
 [Configure the public origin](public-origin.md).
 
 Cookies, authorization, or personalization make a response private and
-`no-store`. Do not vary an indexable body by authentication state. Run
-`pnpm generate --check`, `pnpm test`, then inspect the generated document with
+`no-store`. Do not vary an indexable body by authentication state. Cache reads
+skip private requests; never store secrets or viewer-specific payloads in
+`cache.Load` or props ISR entries.
+
+For shared loader work, use `cache.Load` with a deploy-unique `Name`, positive
+`Revalidate`, and invalidation `Tags`. Use `cache.Memo` for per-request
+deduplication inside one loader.
+
+To reuse loaded props across requests, declare origin ISR in the schema beside
+`page.go`:
+
+```ts
+export const page = definePage({
+  props: schema.object({ title: schema.string() }),
+  revalidate: 60,
+  tags: ["products"],
+})
+```
+
+Unknown `definePage` keys are rejected. Schema `revalidate` controls origin
+props reuse; set `gb.CachePolicy` on the loader for HTTP caching and keep both
+windows aligned deliberately (for example `gb.PublicRevalidate(60*time.Second, …)`
+beside `revalidate: 60`).
+
+Run `pnpm generate --check`, `pnpm test`, then inspect the generated document with
 JavaScript disabled before shipping.

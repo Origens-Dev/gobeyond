@@ -710,6 +710,12 @@ export async function compileProject(
         column: 1,
       })
     } else if (contractResult.ok) {
+      const isrDiagnostic = await routeCacheRequiresLoader(
+        contractResult.contract,
+        absoluteEntry,
+        schemaFile,
+      )
+      if (isrDiagnostic) projectDiagnostics.push(isrDiagnostic)
       routeContracts.push(contractResult.contract)
       if (route.kind === 'static') {
         const staticResult = await compileStaticRoute({
@@ -781,6 +787,38 @@ export async function compileProject(
       },
     },
     diagnostics: [],
+  }
+}
+
+/**
+ * Route caching is only meaningful for a route that computes something at
+ * request time, so `definePage({ revalidate })` / `{ tags }` requires the
+ * sibling `page.go` loader whose result would be cached. A purely static route
+ * is already built once per deploy; accepting the keys there would advertise
+ * an ISR window that nothing implements.
+ */
+async function routeCacheRequiresLoader(
+  contract: RouteValueContract,
+  entryFile: string,
+  schemaFile: string,
+): Promise<Diagnostic | undefined> {
+  const declared: string[] = []
+  if (contract.revalidate !== undefined) declared.push('revalidate')
+  if (contract.tags !== undefined) declared.push('tags')
+  if (declared.length === 0) return undefined
+  const loaderFile = resolve(dirname(entryFile), 'page.go')
+  if (await isFile(loaderFile)) return undefined
+  return {
+    code: 'GB1235',
+    message: `Route ${JSON.stringify(contract.routeId)} declares definePage ${declared.join(
+      ' and ',
+    )}, which requires a request-time loader at ${loaderFile}.`,
+    suggestion: 'Add a sibling page.go loader, or remove the route caching keys from page.schema.ts.',
+    fileName: schemaFile,
+    start: 0,
+    length: 1,
+    line: 1,
+    column: 1,
   }
 }
 

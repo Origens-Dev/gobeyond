@@ -33,7 +33,9 @@
           "showBuy": { "kind": "boolean" },
           "summary": { "kind": "string", "optional": true }
         }
-      }
+      },
+      "revalidate": 60,
+      "tags": ["products", "product"]
     }
   ],
   "actions": [

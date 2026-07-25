@@ -155,6 +155,70 @@ func cloneDevSnapshot(source map[string]string) map[string]string {
 	return result
 }
 
+func TestDevResponseIsRuntimeJSON(t *testing.T) {
+	if !devResponseIsRuntimeJSON("/_gobeyond/builds/b1/runtime/product") {
+		t.Fatal("runtime soft-nav path must match")
+	}
+	for _, path := range []string{
+		"/products/example",
+		"/_gobeyond/builds/b1/actions/add_to_cart",
+		"/_gobeyond/builds/b1/assets/app.js",
+		"/_gobeyond/dev/events",
+	} {
+		if devResponseIsRuntimeJSON(path) {
+			t.Fatalf("%q must not match runtime JSON", path)
+		}
+	}
+}
+
+func TestDevForceNoStore(t *testing.T) {
+	response := &http.Response{Header: http.Header{
+		"Cache-Control": {"public, max-age=60"},
+		"Etag":          {"backend-etag"},
+	}}
+	devForceNoStore(response)
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache-control = %q", response.Header.Get("Cache-Control"))
+	}
+	if response.Header.Get("ETag") != "" {
+		t.Fatalf("etag = %q", response.Header.Get("ETag"))
+	}
+}
+
+func TestDevGatewayForcesNoStoreOnRuntimeJSON(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		writer.Header().Set("Cache-Control", "public, max-age=60")
+		writer.Header().Set("ETag", "backend-etag")
+		_, _ = io.WriteString(writer, `{"kind":"ok"}`)
+	}))
+	defer backend.Close()
+
+	gateway := newDevGateway()
+	gateway.switchTarget(mustURL(t, backend.URL))
+	public := httptest.NewServer(gateway)
+	defer public.Close()
+
+	response, err := http.Get(public.URL + "/_gobeyond/builds/build-1/runtime/product?path=%2Fproducts%2Fwidget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != `{"kind":"ok"}` {
+		t.Fatalf("body = %s", body)
+	}
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache-control = %q", response.Header.Get("Cache-Control"))
+	}
+	if response.Header.Get("ETag") != "" {
+		t.Fatalf("etag = %q", response.Header.Get("ETag"))
+	}
+}
+
 func TestDevGatewayAtomicallySwitchesBackendsAndInjectsReloadClient(t *testing.T) {
 	first := devTestBackend(t, "first")
 	defer first.Close()
@@ -184,6 +248,9 @@ func TestDevGatewayAtomicallySwitchesBackendsAndInjectsReloadClient(t *testing.T
 		}
 		if response.Header.Get("Cache-Control") != "no-store" {
 			t.Fatalf("cache-control = %q", response.Header.Get("Cache-Control"))
+		}
+		if response.Header.Get("ETag") != "" {
+			t.Fatalf("etag = %q", response.Header.Get("ETag"))
 		}
 	}
 

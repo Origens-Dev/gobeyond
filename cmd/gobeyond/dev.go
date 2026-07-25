@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/internal/project"
 )
 
@@ -84,6 +85,10 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 	}
 	defer os.RemoveAll(workspace)
 
+	// Each rebuild starts a fresh backend process. In-process L1 caching
+	// (cache/memstore) lives inside that process and is discarded when the
+	// build ID changes or the process exits; switching the gateway target
+	// does not flush another backend's in-memory cache.
 	gateway := newDevGateway()
 	publicServer := &http.Server{
 		Handler:           gateway,
@@ -448,7 +453,7 @@ func newDevGateway() *devGateway {
 			request.Out.Host = request.In.Host
 			request.Out.Header.Del("Accept-Encoding")
 		},
-		ModifyResponse: gateway.injectReloadClient,
+		ModifyResponse: gateway.modifyProxiedResponse,
 		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, err error) {
 			http.Error(writer, "GoBeyond development server is restarting: "+err.Error(), http.StatusBadGateway)
 		},
@@ -491,7 +496,24 @@ func (gateway *devGateway) switchTarget(target *url.URL) {
 	gateway.target = &copyTarget
 }
 
-func (gateway *devGateway) injectReloadClient(response *http.Response) error {
+func devResponseIsRuntimeJSON(path string) bool {
+	kind, ok := buildpaths.BuildPathKind(path)
+	return ok && kind == buildpaths.KindRuntime
+}
+
+func devForceNoStore(response *http.Response) {
+	response.Header.Set("Cache-Control", "no-store")
+	response.Header.Del("ETag")
+}
+
+func (gateway *devGateway) modifyProxiedResponse(response *http.Response) error {
+	if response.Request == nil {
+		return nil
+	}
+	if devResponseIsRuntimeJSON(response.Request.URL.Path) {
+		devForceNoStore(response)
+		return nil
+	}
 	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/html") {
 		return nil
 	}
@@ -509,8 +531,7 @@ func (gateway *devGateway) injectReloadClient(response *http.Response) error {
 	response.Body = io.NopCloser(bytes.NewReader(body))
 	response.ContentLength = int64(len(body))
 	response.Header.Set("Content-Length", strconv.Itoa(len(body)))
-	response.Header.Set("Cache-Control", "no-store")
-	response.Header.Del("ETag")
+	devForceNoStore(response)
 	return nil
 }
 

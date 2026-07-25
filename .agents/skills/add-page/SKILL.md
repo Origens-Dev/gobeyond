@@ -25,6 +25,8 @@ do not create a Go package unless the page needs request-time behavior.
    the build output. Explicit `<ClientOnly>` remains available, and its
    fallback is optional.
 6. Run generation and verify static output before considering Go.
+7. Route caching (`definePage({ revalidate, tags })`) requires a sibling
+   `page.go`; see `$connect-go-data` for origin ISR and data-cache patterns.
 
 `gobeyond add page <route>` creates a portable `page.tsx` and empty
 `page.schema.ts` scaffold; `page.tsx` alone is a static route. `gobeyond add

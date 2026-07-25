@@ -17,6 +17,15 @@ import {
 import { assertPinnedReactVersions } from "./version.js";
 
 export {
+  ACTION_API_VERSION,
+  parseActionEnvelope,
+  postAction,
+  runAction,
+  type ActionEnvelope,
+  type ActionRefresh,
+  type RunActionOptions,
+} from "./actions.js";
+export {
   BUILD_ERROR_HEADER,
   BUILD_ID_HEADER,
   BUILD_MISMATCH_CODE,
@@ -44,6 +53,7 @@ export {
   createSoftNavigation,
   matchBrowserRoute,
   parseRuntimeNavigationPayload,
+  refreshNavigation,
   resolveBrowserRoute,
   resolveRouteComponent,
   routeComponent,
@@ -52,6 +62,8 @@ export {
   type BrowserRoute,
   type BrowserRouteRegistration,
   type BrowserRouteModule,
+  type CacheMode,
+  type CachePolicy,
   type LazyBrowserRoute,
   type MatchedBrowserRoute,
   type NavigateOptions,
@@ -67,6 +79,14 @@ export {
   type SoftNavigationController,
   type SoftNavigationOptions,
 } from "./navigation.js";
+export {
+  DEFAULT_ROUTER_CACHE_TTL_MS,
+  createRouterCache,
+  routerCacheKey,
+  routerCacheTTLMs,
+  type RouterCache,
+  type RouterCacheOptions,
+} from "./router-cache.js";
 export { PINNED_REACT_VERSION, assertPinnedReactVersions } from "./version.js";
 
 export const BROWSER_PROTOCOL_VERSION = "gobeyond.render/v1alpha1" as const;
@@ -222,6 +242,10 @@ function hydrate(
             return undefined;
           },
           async prefetch() {},
+          async refresh() {
+            return undefined;
+          },
+          clearRouterCache() {},
           subscribe(_listener: NavigationLifecycleListener) {
             return () => {};
           },

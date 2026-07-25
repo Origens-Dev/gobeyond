@@ -48,6 +48,21 @@ Actions are POST-only, schema-validated server side, and protected by the
 framework’s origin/CSRF policy for cookie-backed sessions. The generated
 registration rejects missing or unknown fields, invalid nested values, and
 trailing JSON before `Save` runs. It also validates the typed output before a
-success response can be delivered. Test success, validation errors,
-unauthorized requests, cancellation, and build mismatch behavior. A mismatch
-reloads safely; it never replays a mutation.
+success response can be delivered.
+
+When a mutation changes cached data or route props, invalidate from Go:
+
+```go
+_ = cache.RevalidateTag(ctx.Context, "products")
+_ = cache.RevalidatePath(ctx.Context, "/products/"+input.Slug)
+```
+
+The runtime emits a frozen envelope on success:
+`{ apiVersion, buildId, data, refresh?: { paths, tags } }`. On the client,
+`postAction` / `runAction` from `@go-beyond/react/browser` parse it and
+re-fetch the current route when `refresh.paths` is present (via
+`refreshNavigation`), which also invalidates the client Router Cache for
+those paths (or entirely, when `paths` is omitted).
+
+Test success, validation errors, unauthorized requests, cancellation, and build
+mismatch behavior. A mismatch reloads safely; it never replays a mutation.

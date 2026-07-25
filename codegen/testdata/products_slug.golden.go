@@ -40,3 +40,13 @@ type PropsProductFeaturesItem struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 }
+
+// Revalidate is how long the origin may reuse this route's computed props,
+// from definePage({ revalidate }). Zero leaves the route uncached. It is not
+// an HTTP directive: the edge Cache-Control stays the loader's gb.CachePolicy,
+// which should be derived from this window rather than drifting from it.
+const Revalidate = 60 * time.Second
+
+// Tags are this route's invalidation handles, from definePage({ tags }).
+// cache.RevalidateTag on any of them drops the route's cached props.
+var Tags = []string{"products", "product"}

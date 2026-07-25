@@ -7,6 +7,7 @@ browser
   -> CloudFront Function (static route selector)
        -> private S3 via OAC: immutable browser assets, static route data, static documents
        -> CloudFront VPC origin -> private ALB -> ECS/Fargate Go server: dynamic documents, APIs, actions
+                                      -> optional private ElastiCache Serverless (Valkey)
 ```
 
 The final ECS image is the Node-free Go server plus its rendering plans and runtime manifests. Browser JavaScript, CSS, fonts, images, static data, and static HTML are private S3 objects exposed only through CloudFront.
@@ -17,8 +18,10 @@ The final ECS image is the Node-free Go server plus its rendering plans and runt
 - a private application load balancer reachable only through AWS's CloudFront VPC-origin managed prefix list;
 - Fargate tasks with a selectable `ARM64` or `X86_64` Linux runtime platform;
 - ECS execution/task roles, CloudWatch logs, ALB health checks compatible with the scratch image, graceful rolling replacement settings, and request-count autoscaling;
+- an optional private ElastiCache Serverless cache using Valkey, TLS in transit, and AWS-owned at-rest encryption by default;
 - a private, encrypted, versioned S3 bucket with a CloudFront Origin Access Control policy;
 - a standard (not multi-tenant) CloudFront distribution, VPC origin, and CloudFront Function using `selectRequestOriginById()` to select S3 or the private ALB;
+- optional task-role permission to invalidate only this deployment's CloudFront distribution;
 - immutable one-year browser/cache headers for build-ID-addressed browser assets and manifests; and
 - cache-disabled behaviors for actions, APIs, and `/__gobeyond/*` health/runtime diagnostics; and
 - a 14-day default retention window for noncurrent static artifacts.
@@ -27,7 +30,24 @@ The selector is deliberately data-free in the MVP: `static_route_paths`, `static
 
 CloudFront's origin-selection helper can select a configured VPC origin, so the ALB remains private. The function is edge JavaScript, not a Node application runtime.
 
-Dynamic documents and `/_gobeyond/builds/*/runtime/*` data use the origin's cache headers. A page using `gb.PublicRevalidate(60*time.Second, 5*time.Minute, 24*time.Hour)` is therefore stored by CloudFront while browsers revalidate each navigation. The dynamic cache key includes all cookies, query strings, and `Authorization`; the Go runtime also downgrades cookie, authorization, `Set-Cookie`, and middleware-private responses to `private, no-store`. This is intentionally conservative for a public single-site reference. It avoids cross-visitor reuse without introducing an application cache.
+Dynamic documents and `/_gobeyond/builds/*/runtime/*` data use the origin's cache headers. A page using `gb.PublicRevalidate(60*time.Second, 5*time.Minute, 24*time.Hour)` is therefore stored by CloudFront while browsers revalidate each navigation. The dynamic cache key includes all cookies, query strings, and `Authorization`; the Go runtime also downgrades cookie, authorization, `Set-Cookie`, and middleware-private responses to `private, no-store`. This is intentionally conservative for a public single-site reference.
+
+**Security boundary:** the CloudFront dynamic cache key does **not** include `X-Gobeyond-Auth-Context` or `X-Origens-Oidc-Token`. For requests authenticated by either header, the origin's `Cache-Control: private, no-store` downgrade is the sole edge-cache isolator. Do not enable public caching for those responses or treat CloudFront's configured cache key as a second isolation layer.
+
+## Optional cache and edge invalidation
+
+The optional shared cache is disabled by default. Set `create_cache = true` to create an ElastiCache Serverless Valkey endpoint in the private subnets. Its security group accepts port 6379 only from the ECS task security group; Serverless requires TLS and exposes no public endpoint. At-rest encryption uses the AWS-owned key unless `cache_kms_key_arn` names a customer-managed KMS key.
+
+When enabled, the task receives `GOBEYOND_CACHE_ENDPOINT`, `GOBEYOND_CACHE_PORT`, and `GOBEYOND_CACHE_KEY_PREFIX`. The prefix uses `name` unless `cache_key_prefix` is set explicitly.
+
+CloudFront invalidation is also disabled by default. Set `enable_edge_invalidation = true` to attach a task-role policy allowing only `cloudfront:CreateInvalidation` on this deployment's distribution and to inject `GOBEYOND_CLOUDFRONT_DISTRIBUTION_ID`. Application invalidation should still use narrowly scoped paths rather than `/*`.
+
+New optional variables:
+
+- `create_cache` (`false`): create the private Serverless Valkey cache.
+- `cache_kms_key_arn` (`null`): use this customer-managed key for cache data at rest; `null` uses the AWS-owned key.
+- `cache_key_prefix` (`null`, effectively `name`): override the deployment-unique cache-key prefix.
+- `enable_edge_invalidation` (`false`): grant the task role distribution-scoped invalidation permission and inject the distribution ID.
 
 ## Validate
 
@@ -67,4 +87,4 @@ The Go runtime rejects an incompatible `/_gobeyond/builds/<build-id>/runtime/...
 
 ## Costs and intentional boundaries
 
-The default creates one NAT gateway because that is the least surprising runnable private-task setup; it is not a low-cost development topology. The reference does not create an ECR repository, DNS records, ACM certificates, WAF, database, secrets, CI deployment credentials, or a production multi-region strategy. Multi-tenant CloudFront, tenant routing, domain onboarding, and durable ISR belong in a separate private hosting platform. Add those explicitly for a real deployment.
+The default creates one NAT gateway because that is the least surprising runnable private-task setup; it is not a low-cost development topology. Enabling ElastiCache Serverless adds separate usage-based charges. The reference does not create an ECR repository, DNS records, ACM certificates, WAF, database, secrets, CI deployment credentials, or a production multi-region strategy. Multi-tenant CloudFront, tenant routing, domain onboarding, and durable ISR belong in a separate private hosting platform. Add those explicitly for a real deployment.

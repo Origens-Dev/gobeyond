@@ -292,6 +292,14 @@ export type ValueSchema = {
 export type RouteValueContract = {
   routeId: string
   props: ValueSchema
+  /**
+   * Origin props-ISR window in whole seconds, from `definePage({ revalidate })`.
+   * Absent when the route opts out. It never becomes an HTTP cache directive:
+   * the edge policy stays the loader's explicit `gb.CachePolicy`.
+   */
+  revalidate?: number
+  /** Invalidation handles from `definePage({ tags })`. */
+  tags?: string[]
 }
 
 export type ActionValueContract = {

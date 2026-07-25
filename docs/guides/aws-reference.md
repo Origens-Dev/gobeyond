@@ -6,6 +6,7 @@ hosting command.
 ```text
 CloudFront → private S3: immutable HTML, JS, CSS, images, static route data
            → private ALB → ECS/Fargate: Go loaders, actions, APIs, documents
+                              → optional ElastiCache Serverless Valkey (L2)
 ```
 
 Browser assets use content-hashed, build-ID paths. Go runtime/action requests
@@ -46,3 +47,11 @@ Verify S3 is private behind CloudFront origin access control, the ALB has no
 public ingress, secrets are not present in static props/manifests, cache keys
 include build versions where required, and the final production image contains
 no Node or npm executable.
+
+Optional shared cache: set OpenTofu `create_cache = true` for a private
+ElastiCache Serverless Valkey endpoint. Tasks receive `GOBEYOND_CACHE_*`
+environment variables; keys are prefixed per deployment. There is no
+application-level Redis encryption—do not cache secrets or viewer-specific data.
+CloudFront's dynamic cache key does not include OIDC or auth-context headers;
+for those requests the origin's `private, no-store` downgrade is the sole
+edge-cache isolator. See `infra/opentofu/README.md`.

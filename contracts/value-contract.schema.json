@@ -15,7 +15,14 @@
         "additionalProperties": false,
         "properties": {
           "routeId": { "type": "string", "minLength": 1 },
-          "props": { "$ref": "#/$defs/valueSchema" }
+          "props": { "$ref": "#/$defs/valueSchema" },
+          "revalidate": { "type": "integer", "minimum": 1 },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1,
+            "uniqueItems": true
+          }
         }
       }
     },

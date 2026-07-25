@@ -17,6 +17,24 @@ test('page schemas retain a machine-readable shape', () => {
   assert.equal((page.props.shape as Record<string, { kind: string }>).title.kind, 'string')
 })
 
+test('page schemas omit route caching when it is not declared', () => {
+  const page = definePage({ props: schema.object({ title: schema.string() }) })
+
+  assert.equal('revalidate' in page, false)
+  assert.equal('tags' in page, false)
+})
+
+test('page schemas carry the origin revalidate window and its tags', () => {
+  const page = definePage({
+    props: schema.object({ title: schema.string() }),
+    revalidate: 60,
+    tags: ['products', 'product'],
+  })
+
+  assert.equal(page.revalidate, 60)
+  assert.deepEqual(page.tags, ['products', 'product'])
+})
+
 test('action schemas expose input and output contracts', () => {
   const action = defineAction({
     input: schema.object({ id: schema.string() }),
