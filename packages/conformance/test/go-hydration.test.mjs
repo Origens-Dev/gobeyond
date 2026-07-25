@@ -212,6 +212,65 @@ test('dynamic index missing and out-of-range resolve like React undefined', asyn
   }
 })
 
+test('array and string length drive dynamic first-paint indexing', async () => {
+  const compiled = compileSource({
+    routeId: 'length-index',
+    sourceText: `
+      export default function Page(props) {
+        const current = props.items[
+          (props.index + props.items.length) % props.items.length
+        ]
+        return <p>{current.name}: {props.label.length}</p>
+      }
+    `,
+  })
+  assert.equal(compiled.ok, true, compiled.ok ? '' : JSON.stringify(compiled.diagnostics))
+  const props = {
+    items: [{ name: 'one' }, { name: 'two' }],
+    index: -1,
+    label: 'A😀',
+  }
+  const markup = await renderWithGo(compiled.plan, props)
+  assert.match(markup, /two<!-- -->: <!-- -->3/)
+
+  function LengthIndexPage(pageProps) {
+    const current = pageProps.items[
+      (pageProps.index + pageProps.items.length) % pageProps.items.length
+    ]
+    return createElement('p', null, current.name, ': ', pageProps.label.length)
+  }
+  const payload = JSON.stringify({
+    apiVersion: BROWSER_PROTOCOL_VERSION,
+    buildId: 'length-index-build',
+    routeId: 'length-index',
+    props,
+  }).replaceAll('<', '\\u003c')
+  const dom = new JSDOM(
+    `<!doctype html><body><div id="__gobeyond">${markup}</div>` +
+      `<script id="__GOBEYOND_DATA__" type="application/json">${payload}</script></body>`,
+    { url: 'https://example.com/' },
+  )
+  const restore = installDOM(dom)
+  const recoverable = []
+  try {
+    let result
+    const before = dom.window.document.querySelector('#__gobeyond').innerHTML
+    await act(async () => {
+      result = bootstrap({
+        routes: { 'length-index': LengthIndexPage },
+        document: dom.window.document,
+        onRecoverableError: (error) => recoverable.push(error),
+      })
+    })
+    assert.equal(dom.window.document.querySelector('#__gobeyond').innerHTML, before)
+    assert.deepEqual(recoverable, [])
+    await act(async () => result.root.unmount())
+  } finally {
+    restore()
+    dom.window.close()
+  }
+})
+
 test('class first-paint hydrates then allows post-mount setState', async () => {
   const compiled = compileSource({
     routeId: 'class-paint',

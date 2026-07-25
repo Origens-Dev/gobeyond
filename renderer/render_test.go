@@ -343,7 +343,7 @@ func TestIndexExprReturnsNullForMissingAndOutOfRange(t *testing.T) {
 	t.Parallel()
 	env := environment{
 		props: map[string]any{
-			"items": []any{"a", "b"},
+			"items":  []any{"a", "b"},
 			"sparse": []any{"only-first"},
 			"obj":    map[string]any{"present": "yes"},
 		},
@@ -415,6 +415,41 @@ func TestIndexExprReturnsNullForMissingAndOutOfRange(t *testing.T) {
 			}
 			if value != tc.want {
 				t.Fatalf("got %#v, want %#v", value, tc.want)
+			}
+		})
+	}
+}
+
+func TestArrayAndStringLengthMatchJavaScript(t *testing.T) {
+	t.Parallel()
+	env := environment{
+		props: map[string]any{
+			"items": []any{"a", "b"},
+			"label": "A😀",
+		},
+		locals: map[string]any{},
+	}
+	for _, tc := range []struct {
+		name string
+		expr renderplan.Expression
+		want int
+	}{
+		{name: "array path", expr: path("items", "length"), want: 2},
+		{name: "array dynamic property", expr: &renderplan.IndexExpr{
+			Kind: "index", Object: path("items"), Index: lit("length"),
+		}, want: 2},
+		{name: "string path uses UTF-16 units", expr: path("label", "length"), want: 3},
+		{name: "string dynamic property uses UTF-16 units", expr: &renderplan.IndexExpr{
+			Kind: "index", Object: path("label"), Index: lit("length"),
+		}, want: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := evaluate(tc.expr, env, "length")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value != tc.want {
+				t.Fatalf("got %#v, want %d", value, tc.want)
 			}
 		})
 	}

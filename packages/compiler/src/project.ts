@@ -9,6 +9,7 @@ import {
 import ts from 'typescript'
 
 import {
+  attachSharedTypeProgram,
   SourceCompiler,
   type CompilationContext,
   type ComponentImport,
@@ -53,12 +54,14 @@ const replaceableExtensions = new Set(['.js', '.jsx', '.mjs', '.cjs'])
 class SourceGraph {
   readonly context: CompilationContext
   readonly compilers = new Map<string, SourceCompiler>()
+  readonly sourceFiles = new Map<string, ts.SourceFile>()
   readonly loading = new Map<string, Promise<SourceCompiler | undefined>>()
   readonly graphDiagnostics: Diagnostic[] = []
   readonly projectRoot: string
   readonly sourceRoots: ResolvedSourceRoot[]
   readonly appDirectory: string | undefined
   readonly packageRoots = new Set<string>()
+  private typeProgramAttached = false
 
   constructor(
     projectRoot: string,
@@ -111,6 +114,7 @@ class SourceGraph {
     }
     const compiler = await this.load(entryFile, true)
     if (!compiler) return { ok: false, diagnostics: this.allDiagnostics() }
+    this.attachTypeProgram()
     let plan = compiler.compile(route.routeId, route.componentName)
     const layouts = await this.routeLayouts(entryFile)
     for (const layoutFile of [...layouts].reverse()) {
@@ -129,6 +133,20 @@ class SourceGraph {
       dateIntrinsicSites: this.context.dateIntrinsicSites.slice(dateStart),
       diagnostics: [],
     }
+  }
+
+  async prepareRoute(route: ProjectRoute): Promise<void> {
+    const entryFile = resolve(this.projectRoot, route.entryFile)
+    if (!this.isAllowedSourcePath(entryFile)) return
+    await this.load(entryFile, true)
+    const layouts = await this.routeLayouts(entryFile)
+    for (const layoutFile of layouts) await this.load(layoutFile, true)
+  }
+
+  attachTypeProgram(): void {
+    if (this.typeProgramAttached) return
+    this.typeProgramAttached = true
+    attachSharedTypeProgram([...this.compilers.values()])
   }
 
   async routeLayouts(entryFile: string): Promise<string[]> {
@@ -183,7 +201,21 @@ class SourceGraph {
       return undefined
     }
 
-    const compiler = new SourceCompiler(sourceText, fileName, this.context)
+    let sourceFile = this.sourceFiles.get(fileName)
+    if (!sourceFile) {
+      sourceFile = ts.createSourceFile(
+        fileName,
+        sourceText,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TSX,
+      )
+      this.sourceFiles.set(fileName, sourceFile)
+    }
+    const compiler = new SourceCompiler(sourceText, fileName, this.context, {
+      sourceFile,
+      deferTypeChecking: true,
+    })
     // Register before traversing imports so an import cycle terminates. A render
     // cycle is diagnosed later using the shared component stack.
     this.compilers.set(loadKey, compiler)
@@ -638,6 +670,8 @@ export async function compileFile(options: CompileFileOptions): Promise<CompileR
       : options.entryFile,
     ...(options.componentName === undefined ? {} : { componentName: options.componentName }),
   }
+  await graph.prepareRoute(route)
+  graph.attachTypeProgram()
   return graph.compileRoute(route)
 }
 
@@ -659,6 +693,9 @@ export async function compileProject(
   const dateIntrinsicSites = []
   const staticRoutes = []
   const projectDiagnostics: Diagnostic[] = []
+
+  for (const route of options.routes) await graph.prepareRoute(route)
+  graph.attachTypeProgram()
 
   for (const route of options.routes) {
     if (routeIds.has(route.routeId)) {
