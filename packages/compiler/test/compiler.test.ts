@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 import test from 'node:test'
 
 import {
@@ -2286,6 +2286,37 @@ test('keeps unmarked unsupported code and client-boundary module errors fatal', 
   const type = await compileFile({ projectRoot: typeRoot, entryFile: 'app/page.tsx', routeId: 'root' })
   assert.equal(type.ok, false)
   if (!type.ok) assert.ok(type.diagnostics.some((entry) => entry.code === 'TS2322'))
+})
+
+test('type-checks every discovered TypeScript module with the shared project program', async (t) => {
+  const projectRoot = await fixtureProject(t, {
+    'app/page.tsx': `
+      import Widget from '../components/widget.js'
+      const pageLabel: string = 42
+      export default function Page() { return <Widget label={pageLabel} /> }
+    `,
+    'components/widget.tsx': `
+      const widgetLabel: string = 42
+      export default function Widget({ label }: { label: string }) {
+        return <p>{label}{widgetLabel}</p>
+      }
+    `,
+  })
+
+  const result = await compileFile({
+    projectRoot,
+    entryFile: 'app/page.tsx',
+    routeId: 'root',
+  })
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  const typeErrorFiles = result.diagnostics
+    .filter((entry) => entry.code === 'TS2322')
+    .map((entry) => relative(projectRoot, entry.fileName))
+  assert.deepEqual(typeErrorFiles, [
+    'app/page.tsx',
+    'components/widget.tsx',
+  ])
 })
 
 test('resolves package exports and barrels to a package-authored use-client leaf', async (t) => {

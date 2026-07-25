@@ -194,9 +194,101 @@ const actionableTypeDiagnosticCodes = new Set([
   2769, // no overload matches
 ])
 
+function createPortableSourceFile(
+  fileName: string,
+  sourceText: string,
+): ts.SourceFile {
+  return ts.createSourceFile(
+    fileName,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  )
+}
+
+function isTypedSource(fileName: string): boolean {
+  return /\.(?:tsx?|mts|cts)$/i.test(fileName)
+}
+
+function portableTypeCompilerOptions(): ts.CompilerOptions {
+  return {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    jsx: ts.JsxEmit.ReactJSX,
+    strict: true,
+    noEmit: true,
+    noResolve: true,
+    skipLibCheck: true,
+  }
+}
+
+/**
+ * Attach one TypeScript Program to every typed module in a discovered source
+ * graph. SourceGraph supplies the exact parsed SourceFile objects held by each
+ * SourceCompiler, so checker queries operate on nodes owned by this Program.
+ *
+ * Keeping noResolve preserves the portable compiler's deliberately local type
+ * surface while avoiding a complete standard-library Program per module.
+ */
+export function attachSharedTypeProgram(
+  compilers: readonly SourceCompiler[],
+): void {
+  const typedCompilers = compilers.filter((compiler) =>
+    isTypedSource(compiler.fileName),
+  )
+  if (typedCompilers.length === 0) return
+
+  const sourceFiles = new Map<string, ts.SourceFile>()
+  const sourceTexts = new Map<string, string>()
+  for (const compiler of typedCompilers) {
+    const fileName = resolveTypeFileName(compiler.fileName)
+    sourceFiles.set(fileName, compiler.sourceFile)
+    sourceTexts.set(fileName, compiler.sourceText)
+  }
+
+  const options = portableTypeCompilerOptions()
+  const host = ts.createCompilerHost(options)
+  const getSourceFile = host.getSourceFile.bind(host)
+  const fileExists = host.fileExists.bind(host)
+  const readFile = host.readFile.bind(host)
+  host.getSourceFile = (
+    name,
+    languageVersion,
+    onError,
+    shouldCreateNewSourceFile,
+  ) =>
+    sourceFiles.get(resolveTypeFileName(name)) ??
+    getSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile)
+  host.fileExists = (name) =>
+    sourceFiles.has(resolveTypeFileName(name)) || fileExists(name)
+  host.readFile = (name) =>
+    sourceTexts.get(resolveTypeFileName(name)) ?? readFile(name)
+  host.resolveModuleNames = (moduleNames) =>
+    moduleNames.map(() => undefined)
+
+  const program = ts.createProgram([...sourceFiles.keys()], options, host)
+  const checker = program.getTypeChecker()
+  for (const compiler of typedCompilers) {
+    const diagnostics = program
+      .getSemanticDiagnostics(compiler.sourceFile)
+      .filter((diagnostic): diagnostic is ts.DiagnosticWithLocation =>
+        diagnostic.file === compiler.sourceFile &&
+        diagnostic.start !== undefined,
+      )
+    compiler.attachTypeChecker(checker, diagnostics)
+  }
+}
+
+function resolveTypeFileName(fileName: string): string {
+  return ts.sys.resolvePath(fileName)
+}
+
 export class SourceCompiler {
   readonly sourceFile: ts.SourceFile
-  readonly checker: ts.TypeChecker | undefined
+  private checker: ts.TypeChecker | undefined
+  private typeDiagnosticsAttached = false
   readonly diagnostics: Diagnostic[]
   readonly isClientModule: boolean
   readonly components = new Map<string, Component>()
@@ -212,6 +304,8 @@ export class SourceCompiler {
   private readonly reactHookLocals = new Map<string, ProtectedHookName>()
   /** Local names bound to the React module namespace/default. */
   private readonly reactNamespaceLocals = new Set<string>()
+  /** Local names bound to React Component or PureComponent exports. */
+  private readonly reactComponentLocals = new Set<string>()
   /** Identifiers created via createContext(...) in this module. */
   private readonly contextLocals = new Set<string>()
   /**
@@ -270,17 +364,15 @@ export class SourceCompiler {
     readonly sourceText: string,
     readonly fileName: string,
     readonly context: CompilationContext = standaloneContext(),
+    options: {
+      sourceFile?: ts.SourceFile
+      deferTypeChecking?: boolean
+    } = {},
   ) {
     this.diagnostics = context.diagnostics
-    this.sourceFile = ts.createSourceFile(
-      fileName,
-      sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TSX,
-    )
+    this.sourceFile = options.sourceFile ?? createPortableSourceFile(fileName, sourceText)
     this.collectProtectedReactHooks()
-    const typeProgram = /\.(?:tsx?|mts|cts)$/i.test(this.fileName)
+    const typeProgram = isTypedSource(this.fileName) && !options.deferTypeChecking
       ? this.createTypeChecker()
       : { checker: undefined, diagnostics: [] }
     this.checker = typeProgram.checker
@@ -304,7 +396,30 @@ export class SourceCompiler {
         column: location.character + 1,
       })
     }
-    for (const diagnostic of typeProgram.diagnostics) {
+    if (!options.deferTypeChecking) {
+      this.attachTypeDiagnostics(typeProgram.diagnostics)
+    }
+    this.isClientModule = hasClientDirective(this.sourceFile)
+    this.collectComponents()
+    this.collectDefaultProps()
+    this.collectModuleContextLocals()
+    this.collectModuleConstants()
+  }
+
+  attachTypeChecker(
+    checker: ts.TypeChecker,
+    diagnostics: readonly ts.DiagnosticWithLocation[],
+  ): void {
+    this.checker = checker
+    this.attachTypeDiagnostics(diagnostics)
+  }
+
+  private attachTypeDiagnostics(
+    diagnostics: readonly ts.DiagnosticWithLocation[],
+  ): void {
+    if (this.typeDiagnosticsAttached) return
+    this.typeDiagnosticsAttached = true
+    for (const diagnostic of diagnostics) {
       if (
         diagnostic.start === undefined ||
         !actionableTypeDiagnosticCodes.has(diagnostic.code)
@@ -323,27 +438,13 @@ export class SourceCompiler {
         column: location.character + 1,
       })
     }
-    this.isClientModule = hasClientDirective(this.sourceFile)
-    this.collectComponents()
-    this.collectDefaultProps()
-    this.collectModuleContextLocals()
-    this.collectModuleConstants()
   }
 
   private createTypeChecker(): {
     checker: ts.TypeChecker | undefined
     diagnostics: readonly ts.DiagnosticWithLocation[]
   } {
-    const options: ts.CompilerOptions = {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.NodeNext,
-      moduleResolution: ts.ModuleResolutionKind.NodeNext,
-      jsx: ts.JsxEmit.ReactJSX,
-      strict: true,
-      noEmit: true,
-      noResolve: true,
-      skipLibCheck: true,
-    }
+    const options = portableTypeCompilerOptions()
     const host = ts.createCompilerHost(options)
     const getSourceFile = host.getSourceFile.bind(host)
     const fileExists = host.fileExists.bind(host)
@@ -368,7 +469,7 @@ export class SourceCompiler {
     const program = ts.createProgram([this.fileName], options, host)
     return {
       checker: program.getTypeChecker(),
-      diagnostics: /\.(?:tsx?|mts|cts)$/i.test(this.fileName)
+      diagnostics: isTypedSource(this.fileName)
         ? program
             .getSemanticDiagnostics(this.sourceFile)
             .filter((diagnostic): diagnostic is ts.DiagnosticWithLocation =>
@@ -962,15 +1063,19 @@ export class SourceCompiler {
     )
     if (!heritage || heritage.types.length === 0) return false
     const expression = heritage.types[0]!.expression
-    const text = expression.getText(this.sourceFile)
     if (
-      text === 'Component' ||
-      text === 'PureComponent' ||
-      text === 'React.Component' ||
-      text === 'React.PureComponent'
-    ) {
-      return true
-    }
+      ts.isIdentifier(expression) &&
+      (expression.text === 'Component' ||
+        expression.text === 'PureComponent' ||
+        this.reactComponentLocals.has(expression.text))
+    ) return true
+    if (
+      ts.isPropertyAccessExpression(expression) &&
+      ts.isIdentifier(expression.expression) &&
+      this.reactNamespaceLocals.has(expression.expression.text) &&
+      (expression.name.text === 'Component' ||
+        expression.name.text === 'PureComponent')
+    ) return true
     if (!this.checker) return false
     const type = this.checker.getTypeAtLocation(expression)
     const symbol = type.getSymbol() ?? type.aliasSymbol
@@ -4825,6 +4930,12 @@ export class SourceCompiler {
       if (bindings && ts.isNamedImports(bindings)) {
         for (const element of bindings.elements) {
           const imported = (element.propertyName ?? element.name).text
+          if (
+            isProtectedReactModule(specifier) &&
+            (imported === 'Component' || imported === 'PureComponent')
+          ) {
+            this.reactComponentLocals.add(element.name.text)
+          }
           if (isProtectedHookName(imported)) {
             this.reactHookLocals.set(element.name.text, imported)
           }
