@@ -5,6 +5,7 @@ import {
   createContext,
   createElement,
   useContext,
+  useEffect,
   useState,
   type ReactNode,
 } from "react";
@@ -13,6 +14,7 @@ import { JSDOM } from "jsdom";
 import {
   BROWSER_PROTOCOL_VERSION,
   bootstrap,
+  composeRouteElement,
 } from "../dist/browser.js";
 import { ClientOnly } from "../dist/client-only.js";
 
@@ -196,6 +198,51 @@ test("nested ClientOnly waits for ancestor before mounting provider consumers", 
       });
     });
     assert.equal(dom.window.document.querySelector("p")?.textContent, "Auth ready");
+    assert.deepEqual(recoverable, []);
+    await act(async () => result?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("bootstrap hydrates the persistent layout + page tree to match SSR nesting", async () => {
+  let layoutMounts = 0;
+  function RootLayout({
+    children,
+  }: {
+    children?: ReactNode;
+  }) {
+    useEffect(() => {
+      layoutMounts += 1;
+    }, []);
+    return createElement("div", { id: "shell" }, children);
+  }
+  function HomePage() {
+    return createElement("h1", null, "Home");
+  }
+  const route = { page: HomePage, layouts: [RootLayout] };
+  const markup = renderToString(composeRouteElement(route, {}));
+  assert.match(markup, /id="shell"/);
+  assert.match(markup, />Home</);
+
+  const dom = documentFor("home", {}, markup);
+  const restore = installDOM(dom);
+  const recoverable: unknown[] = [];
+  try {
+    let result: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      result = bootstrap({
+        routes: {
+          home: { page: HomePage, layouts: [RootLayout], pattern: "/" },
+        },
+        document: dom.window.document,
+        navigation: false,
+        onRecoverableError: (error) => recoverable.push(error),
+      });
+    });
+    assert.equal(dom.window.document.querySelector("#shell h1")?.textContent, "Home");
+    assert.equal(layoutMounts, 1);
     assert.deepEqual(recoverable, []);
     await act(async () => result?.root.unmount());
   } finally {

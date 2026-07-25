@@ -202,6 +202,13 @@ func newAddTestProject(t *testing.T) string {
 	}
 	repositoryRoot := filepath.Clean(filepath.Join(workingDirectory, "..", ".."))
 	writeAddTestFile(t, filepath.Join(root, "go.mod"), "module example.com/add-test\n\ngo 1.24.0\n\nrequire github.com/Origens-Dev/gobeyond v0.0.0\n\nreplace github.com/Origens-Dev/gobeyond => "+repositoryRoot+"\n")
+	// The replaced module's own dependencies still need go.sum entries in the
+	// consuming module, so reuse the repository's go.sum.
+	repositorySum, err := os.ReadFile(filepath.Join(repositoryRoot, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAddTestFile(t, filepath.Join(root, "go.sum"), string(repositorySum))
 	return root
 }
 
@@ -209,6 +216,9 @@ func assertAddGoPackageCompiles(t *testing.T, root, packagePath string) {
 	t.Helper()
 	command := exec.Command("go", "test", packagePath)
 	command.Dir = root
+	// Allow go to record the replaced module's transitive requirements in the
+	// scaffold's go.mod instead of failing under the default -mod=readonly.
+	command.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("compile %s: %v\n%s", packagePath, err, output)

@@ -8,6 +8,9 @@ import test from 'node:test'
 import { CreateProjectError, createProject } from '../src/scaffold.js'
 
 const workspaceRoot = resolve(new URL('../../..', import.meta.url).pathname)
+const gobeyondVersion = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+).version
 
 test('scaffolds an internally consistent website-first hello world', async () => {
   const root = await mkdtemp(join(tmpdir(), 'create-gobeyond-'))
@@ -43,9 +46,10 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.equal(packageJSON.packageManager, 'pnpm@10.33.0')
   assert.equal(packageJSON.dependencies.react, '19.2.8')
   assert.equal(packageJSON.dependencies['react-dom'], '19.2.8')
-  assert.equal(packageJSON.dependencies['@go-beyond/react'], '0.1.0-alpha.0')
-  assert.equal(packageJSON.dependencies['@go-beyond/schema'], '0.1.0-alpha.0')
-  assert.equal(packageJSON.devDependencies['@go-beyond/compiler'], '0.1.0-alpha.0')
+  assert.equal(packageJSON.dependencies['@go-beyond/react'], gobeyondVersion)
+  assert.equal(packageJSON.dependencies['@go-beyond/schema'], gobeyondVersion)
+  assert.equal(packageJSON.devDependencies['@go-beyond/compiler'], gobeyondVersion)
+  assert.equal(packageJSON.devDependencies['@go-beyond/vite'], gobeyondVersion)
   assert.equal(packageJSON.devDependencies['@go-beyond/cli'], undefined)
   assert.equal(packageJSON.devDependencies.tailwindcss, undefined)
   assert.equal(packageJSON.devDependencies['@tailwindcss/postcss'], undefined)
@@ -59,7 +63,10 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(gitignore, /^\.env\.\*\.local$/m)
 
   const goMod = await readFile(join(destination, 'go.mod'), 'utf8')
-  assert.match(goMod, /github\.com\/Origens-Dev\/gobeyond v0\.1\.0-alpha\.0/)
+  assert.ok(
+    goMod.includes(`github.com/Origens-Dev/gobeyond v${gobeyondVersion}`),
+    `go.mod should require gobeyond v${gobeyondVersion}:\n${goMod}`,
+  )
 
   const dockerfile = await readFile(join(destination, 'Dockerfile'), 'utf8')
   assert.match(dockerfile, /FROM scratch/)
@@ -191,6 +198,7 @@ async function linkWorkspacePackages(destination) {
     compiler: join(workspaceRoot, 'packages/compiler'),
     react: join(workspaceRoot, 'packages/react'),
     schema: join(workspaceRoot, 'packages/schema'),
+    vite: join(workspaceRoot, 'packages/vite'),
   })) {
     await symlink(source, join(nodeModules, '@go-beyond', name), 'dir')
   }

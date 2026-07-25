@@ -108,7 +108,14 @@ Public URLs always return documents. Same-origin links whose route patterns
 are in the generated browser registry use reserved build-aware data endpoints;
 external, modified, download, error, and redirect navigation remains a normal
 document load. Successful navigation updates the React tree, metadata,
-history, scroll, focus, and an assistive-technology announcement. A mismatched
+history, scroll, focus, and an assistive-technology announcement. Nested
+`app/layout.tsx` components are composed outermost→innermost around the page
+on both SSR and hydration; soft navigation keeps shared layout module
+identities mounted and swaps only diverging layout segments plus the page.
+Apps can subscribe to soft-navigation lifecycle events (`start` / `success` /
+`error`) with `subscribeNavigation()` from `@go-beyond/react/browser` (usable
+from a layout island even when the generated client entry discards bootstrap's
+return value). A mismatched
 build receives `409 build_mismatch` before a loader/action executes; the
 browser performs at most one guarded full reload and never retries a mutation.
 

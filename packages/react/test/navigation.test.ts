@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { act, createElement, type ReactElement } from "react";
+import { act, createElement, useEffect, type ReactElement, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import { JSDOM } from "jsdom";
 import {
@@ -9,12 +9,16 @@ import {
   NAVIGATION_ANNOUNCER_ID,
   bootstrap,
   bootstrapAsync,
+  commonLayoutPrefixLength,
+  composeRouteElement,
   handleBuildMismatch,
   markBuildHealthy,
   matchBrowserRoute,
   parseRuntimeNavigationPayload,
+  resolveBrowserRoute,
   resolveRouteComponent,
   renderUpdateRequired,
+  subscribeNavigation,
   type BuildMismatchEnvironment,
   type RuntimeNavigationPayload,
 } from "../dist/browser.js";
@@ -679,4 +683,292 @@ test("a stale document reloads once and then renders persistent update-required 
   assert.equal(dom.window.document.querySelectorAll('[role="alert"]').length, 1);
   assert.equal(reloads, 1);
   dom.window.close();
+});
+
+test("composeRouteElement nests outermost layouts around the page", () => {
+  function Root({ children }: { children?: ReactNode }) {
+    return createElement("div", { id: "root" }, children);
+  }
+  function Nested({ children }: { children?: ReactNode }) {
+    return createElement("section", { id: "nested" }, children);
+  }
+  function NestedPage({ name }: { name: string }) {
+    return createElement("h1", null, name);
+  }
+  const html = renderToString(
+    composeRouteElement(
+      { page: NestedPage, layouts: [Root, Nested] },
+      { name: "Trail" },
+    ),
+  );
+  assert.equal(html, '<div id="root"><section id="nested"><h1>Trail</h1></section></div>');
+});
+
+test("commonLayoutPrefixLength compares layout identity", () => {
+  function A() {
+    return null;
+  }
+  function B() {
+    return null;
+  }
+  function C() {
+    return null;
+  }
+  assert.equal(commonLayoutPrefixLength([A, B], [A, B, C]), 2);
+  assert.equal(commonLayoutPrefixLength([A, B], [A, C]), 1);
+  assert.equal(commonLayoutPrefixLength([A], [B]), 0);
+});
+
+test("resolveBrowserRoute reads page and layouts from a lazy module", async () => {
+  function Layout({ children }: { children?: ReactNode }) {
+    return createElement("div", null, children);
+  }
+  function LazyPage() {
+    return createElement("h1", null, "Page");
+  }
+  const resolved = await resolveBrowserRoute({
+    pattern: "/page",
+    load: async () => ({ default: LazyPage, page: LazyPage, layouts: [Layout] }),
+  });
+  assert.equal(resolved?.page, LazyPage);
+  assert.deepEqual(resolved?.layouts, [Layout]);
+});
+
+test("persistent layouts survive page-only soft navigation", async () => {
+  let rootMounts = 0;
+  let productsMounts = 0;
+  let homeMounts = 0;
+  let productMounts = 0;
+
+  function RootLayout({ children }: { children?: ReactNode }) {
+    useEffect(() => {
+      rootMounts += 1;
+    }, []);
+    return createElement("div", { "data-layout": "root" }, children);
+  }
+  function ProductsLayout({ children }: { children?: ReactNode }) {
+    useEffect(() => {
+      productsMounts += 1;
+    }, []);
+    return createElement("section", { "data-layout": "products" }, children);
+  }
+  function HomePage() {
+    useEffect(() => {
+      homeMounts += 1;
+    }, []);
+    return createElement(
+      "main",
+      null,
+      createElement("h1", null, "Home"),
+      createElement("a", { href: "/products/trail" }, "Product"),
+    );
+  }
+  function ProductPage({ name }: { name: string }) {
+    useEffect(() => {
+      productMounts += 1;
+    }, []);
+    return createElement("main", null, createElement("h1", null, name));
+  }
+
+  const homeRoute = { page: HomePage, layouts: [RootLayout] };
+  const markup = renderToString(composeRouteElement(homeRoute, {}));
+  const data = JSON.stringify({
+    apiVersion: BROWSER_PROTOCOL_VERSION,
+    buildId: "build-test",
+    routeId: "home",
+    props: {},
+  }).replaceAll("<", "\\u003c");
+  const dom = new JSDOM(
+    "<!doctype html><html><head><title>Home</title></head><body>" +
+      `<div id="__gobeyond">${markup}</div>` +
+      `<script id="__GOBEYOND_DATA__" type="application/json">${data}</script></body></html>`,
+    { url: "https://example.gobeyond.dev/", pretendToBeVisual: true },
+  );
+  const restore = installDOM(dom);
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { page: HomePage, layouts: [RootLayout], pattern: "/" },
+          product: {
+            page: ProductPage,
+            layouts: [RootLayout, ProductsLayout],
+            pattern: "/products/[slug]",
+          },
+        },
+        document: dom.window.document,
+        fetch: async () =>
+          new Response(JSON.stringify(payload("product", { name: "Trail" }, "Trail"))),
+        scrollTo() {},
+      });
+    });
+    assert.equal(rootMounts, 1);
+    assert.equal(homeMounts, 1);
+    assert.equal(productsMounts, 0);
+
+    await act(async () => {
+      await app?.navigate("/products/trail");
+      await waitFor(
+        () => dom.window.document.querySelector("h1")?.textContent === "Trail",
+      );
+    });
+
+    assert.equal(rootMounts, 1, "shared root layout must stay mounted");
+    assert.equal(productsMounts, 1);
+    assert.equal(productMounts, 1);
+    assert.equal(homeMounts, 1, "home page unmounts but does not remount");
+    assert.equal(
+      dom.window.document.querySelector('[data-layout="root"] [data-layout="products"] h1')
+        ?.textContent,
+      "Trail",
+    );
+
+    await act(async () => {
+      await app?.navigate("/products/trail?view=full");
+    });
+    assert.equal(rootMounts, 1);
+    assert.equal(productsMounts, 1);
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("subscribe and onNavigationStart/Settled emit start then success", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  const events: string[] = [];
+  const optionEvents: string[] = [];
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+        },
+        document: dom.window.document,
+        fetch: async () =>
+          new Response(JSON.stringify(payload("product", { name: "Trail" }, "Trail"))),
+        scrollTo() {},
+        onNavigationStart: (event) => optionEvents.push(`start:${event.routeId}`),
+        onNavigationSettled: (event) =>
+          optionEvents.push(`${event.type}:${event.routeId}`),
+      });
+    });
+    assert.ok(app);
+    const unsubscribe = app.subscribe((event) => {
+      events.push(event.type);
+    });
+
+    await act(async () => {
+      await app?.navigate("/products/trail");
+    });
+
+    assert.deepEqual(events, ["start", "success"]);
+    assert.deepEqual(optionEvents, ["start:product", "success:product"]);
+    unsubscribe();
+    events.length = 0;
+    await act(async () => {
+      await app?.navigate("/products/trail?again=1");
+    });
+    assert.deepEqual(events, []);
+    assert.ok(optionEvents.length >= 4);
+
+    app.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test("subscribeNavigation receives events without the bootstrap return value", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  const events: string[] = [];
+  const unsubscribe = subscribeNavigation((event) => {
+    events.push(event.type);
+  });
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+        },
+        document: dom.window.document,
+        fetch: async () =>
+          new Response(JSON.stringify(payload("product", { name: "Trail" }, "Trail"))),
+        scrollTo() {},
+      });
+    });
+    await act(async () => {
+      await app?.navigate("/products/trail");
+    });
+    assert.deepEqual(events, ["start", "success"]);
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    unsubscribe();
+    restore();
+    dom.window.close();
+  }
+});
+
+test("navigation lifecycle emits error when the runtime request fails", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  const events: Array<{ type: string; error?: unknown }> = [];
+  const hardNavigations: string[] = [];
+
+  try {
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+        },
+        document: dom.window.document,
+        fetch: async () => {
+          throw new Error("runtime unavailable");
+        },
+        hardNavigate: (url) => hardNavigations.push(url),
+        scrollTo() {},
+        onNavigationError() {},
+      });
+    });
+    assert.ok(app);
+    app.subscribe((event) => {
+      events.push(
+        event.type === "error"
+          ? { type: event.type, error: event.error }
+          : { type: event.type },
+      );
+    });
+
+    await act(async () => {
+      await assert.rejects(app!.navigate("/products/trail"), /runtime unavailable/);
+    });
+
+    assert.equal(events[0]?.type, "start");
+    assert.equal(events[1]?.type, "error");
+    assert.match(String(events[1]?.error), /runtime unavailable/);
+    assert.deepEqual(hardNavigations, []);
+
+    app.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
 });

@@ -1,17 +1,16 @@
-import {
-  createElement,
-  type ComponentType,
-  type ReactElement,
-} from "react";
+import { type ReactElement } from "react";
 import { hydrateRoot, type RootOptions } from "react-dom/client";
 import {
   handleAssetLoadFailure,
   markBuildHealthy,
 } from "./build-mismatch.js";
 import {
+  composeRouteElement,
   createSoftNavigation,
-  resolveRouteComponent,
-  routeComponent,
+  resolveBrowserRoute,
+  routeParts,
+  type NavigationLifecycleListener,
+  type ResolvedBrowserRoute,
   type RouteRegistry,
   type SoftNavigationOptions,
 } from "./navigation.js";
@@ -39,11 +38,17 @@ export {
 export {
   NAVIGATION_ANNOUNCER_ID,
   applyDocumentMetadata,
+  browserRouteFromModule,
+  commonLayoutPrefixLength,
+  composeRouteElement,
   createSoftNavigation,
   matchBrowserRoute,
   parseRuntimeNavigationPayload,
+  resolveBrowserRoute,
   resolveRouteComponent,
   routeComponent,
+  routeParts,
+  subscribeNavigation,
   type BrowserRoute,
   type BrowserRouteRegistration,
   type BrowserRouteModule,
@@ -51,6 +56,9 @@ export {
   type MatchedBrowserRoute,
   type NavigateOptions,
   type NavigationHistoryMode,
+  type NavigationLifecycleEvent,
+  type NavigationLifecycleListener,
+  type ResolvedBrowserRoute,
   type RouteRegistry,
   type RuntimeMetadata,
   type RuntimeNavigationPayload,
@@ -83,13 +91,15 @@ export interface BootstrapOptions {
   rootSelector?: string;
   onRecoverableError?: RootOptions["onRecoverableError"];
   render?: (
-    page: ComponentType<Record<string, unknown>>,
+    route: ResolvedBrowserRoute,
     props: Record<string, unknown>,
   ) => ReactElement;
   navigation?: boolean;
   fetch?: SoftNavigationOptions["fetch"];
   mismatchEnvironment?: SoftNavigationOptions["mismatchEnvironment"];
   onUpdateRequired?: SoftNavigationOptions["onUpdateRequired"];
+  onNavigationStart?: SoftNavigationOptions["onNavigationStart"];
+  onNavigationSettled?: SoftNavigationOptions["onNavigationSettled"];
   onNavigationError?: SoftNavigationOptions["onNavigationError"];
   hardNavigate?: SoftNavigationOptions["hardNavigate"];
   scrollTo?: SoftNavigationOptions["scrollTo"];
@@ -122,13 +132,13 @@ export function bootstrap(options: BootstrapOptions) {
 
   const targetDocument = options.document ?? document;
   const payload = readBootstrapPayload(options, targetDocument);
-  const page = routeComponent(options.routes[payload.routeId]);
-  if (!page) {
+  const route = routeParts(options.routes[payload.routeId]);
+  if (!route) {
     throw new Error(
       `No eager browser route registered for ${payload.routeId}; use bootstrapAsync for lazy routes.`,
     );
   }
-  return hydrate(options, targetDocument, payload, page);
+  return hydrate(options, targetDocument, payload, route);
 }
 
 /** Load the initial route chunk before hydrating server-rendered markup. */
@@ -136,9 +146,9 @@ export async function bootstrapAsync(options: BootstrapOptions) {
   assertPinnedReactVersions();
   const targetDocument = options.document ?? document;
   const payload = readBootstrapPayload(options, targetDocument);
-  let page: ComponentType<any> | undefined;
+  let route: ResolvedBrowserRoute | undefined;
   try {
-    page = await resolveRouteComponent(options.routes[payload.routeId]);
+    route = await resolveBrowserRoute(options.routes[payload.routeId]);
   } catch (error) {
     options.onNavigationError?.(error);
     const targetWindow = targetDocument.defaultView;
@@ -155,10 +165,10 @@ export async function bootstrapAsync(options: BootstrapOptions) {
     });
     return undefined;
   }
-  if (!page) {
+  if (!route) {
     throw new Error(`No browser route registered for ${payload.routeId}.`);
   }
-  return hydrate(options, targetDocument, payload, page);
+  return hydrate(options, targetDocument, payload, route);
 }
 
 function readBootstrapPayload(
@@ -179,7 +189,7 @@ function hydrate(
   options: BootstrapOptions,
   targetDocument: Document,
   payload: BootstrapPayload,
-  page: ComponentType<any>,
+  route: ResolvedBrowserRoute,
 ) {
   const rootElement = targetDocument.querySelector<HTMLElement>(
     options.rootSelector ?? DEFAULT_ROOT_SELECTOR,
@@ -188,10 +198,11 @@ function hydrate(
     throw new Error("GoBeyond hydration root was not found.");
   }
 
-  const render = options.render ?? ((Page, props) => createElement(Page, props));
+  const render =
+    options.render ?? ((resolved, props) => composeRouteElement(resolved, props));
   const root = hydrateRoot(
     rootElement,
-    render(page, payload.props as Record<string, unknown>),
+    render(route, payload.props as Record<string, unknown>),
     { onRecoverableError: options.onRecoverableError },
   );
 
@@ -211,6 +222,9 @@ function hydrate(
             return undefined;
           },
           async prefetch() {},
+          subscribe(_listener: NavigationLifecycleListener) {
+            return () => {};
+          },
           destroy() {},
         }
       : createSoftNavigation({
@@ -223,6 +237,8 @@ function hydrate(
           fetch: options.fetch,
           mismatchEnvironment: options.mismatchEnvironment,
           onUpdateRequired: options.onUpdateRequired,
+          onNavigationStart: options.onNavigationStart,
+          onNavigationSettled: options.onNavigationSettled,
           onNavigationError: options.onNavigationError,
           hardNavigate: options.hardNavigate,
           scrollTo: options.scrollTo,
