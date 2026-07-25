@@ -56,10 +56,9 @@ progress. The compatibility surface remains alpha and frozen at
   `GET /_gobeyond/image` route and a disk loader behind
   `GOBEYOND_STATIC_DIR` for same-site JPEG/PNG resize/re-encode. WebP output is
   deferred. The S3 loader and platform OpenTofu for cross-account `GetObject`
-  and CloudFront caching are coded
-  ([ADR 002](https://github.com/Origens-Dev/gobeyond-internal/blob/main/docs/adr/002-image-optimizer-design-lock.md)),
-  but production S3 optimization is not complete until that infrastructure is
-  applied.
+  and CloudFront caching are outside this public single-site repository;
+  production S3 optimization is not complete until equivalent infrastructure
+  is applied.
 - Request-time caching: `cache.RequestScope`, `cache.Memo`, `cache.Load`,
   `cache.LoadRoute`, tag/path invalidation, props-only origin ISR via
   `definePage({ revalidate, tags })`, the frozen action envelope with client

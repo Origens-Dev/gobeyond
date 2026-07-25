@@ -9,6 +9,18 @@ resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true
+
+  lifecycle {
+    precondition {
+      condition     = length(var.private_subnet_cidrs) == length(var.availability_zones)
+      error_message = "private_subnet_cidrs must have one item for every availability zone."
+    }
+
+    precondition {
+      condition     = length(var.public_subnet_cidrs) == length(var.availability_zones)
+      error_message = "public_subnet_cidrs must have one item for every availability zone."
+    }
+  }
 }
 
 resource "aws_internet_gateway" "this" {
@@ -16,7 +28,10 @@ resource "aws_internet_gateway" "this" {
 }
 
 resource "aws_subnet" "public" {
-  for_each = { for index, zone in var.availability_zones : zone => var.public_subnet_cidrs[index] }
+  for_each = {
+    for index, zone in var.availability_zones :
+    zone => try(var.public_subnet_cidrs[index], "")
+  }
 
   vpc_id                  = aws_vpc.this.id
   availability_zone       = each.key
@@ -25,7 +40,10 @@ resource "aws_subnet" "public" {
 }
 
 resource "aws_subnet" "private" {
-  for_each = { for index, zone in var.availability_zones : zone => var.private_subnet_cidrs[index] }
+  for_each = {
+    for index, zone in var.availability_zones :
+    zone => try(var.private_subnet_cidrs[index], "")
+  }
 
   vpc_id            = aws_vpc.this.id
   availability_zone = each.key

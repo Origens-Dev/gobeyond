@@ -680,7 +680,7 @@ test('compiles nested component default props and scalar ternaries', () => {
   const result = compileSource({
     routeId: 'nested-defaults',
     sourceText: `
-      function Mark({ prefix = 'origens', tone }: { prefix?: string; tone?: string }) {
+      function Mark({ prefix = 'example', tone }: { prefix?: string; tone?: string }) {
         const id = tone ? \`\${prefix}-\${tone}\` : \`\${prefix}-navy\`
         return <svg id={id} />
       }
@@ -701,7 +701,7 @@ test('compiles nested component default props and scalar ternaries', () => {
   const id = result.plan.root.attributes?.find((attribute) => attribute.name === 'id')
   assert.equal(id?.value.kind, 'ternary')
   const serialized = JSON.stringify(id?.value)
-  assert.match(serialized, /"value":"origens"/)
+  assert.match(serialized, /"value":"example"/)
   assert.match(serialized, /"value":"-navy"/)
   assert.match(serialized, /"kind":"ternary"/)
 })
@@ -710,8 +710,8 @@ test('compiles portable module-level const bindings into plan expressions', () =
   const literal = compileSource({
     routeId: 'module-const-literal',
     sourceText: `
-      const NAVY_ID = 'origens-navy'
-      const BLUE_ID = 'origens-blue'
+      const NAVY_ID = 'example-navy'
+      const BLUE_ID = 'example-blue'
       export default function Page() {
         return (
           <svg>
@@ -736,13 +736,13 @@ test('compiles portable module-level const bindings into plan expressions', () =
   if (navy?.kind !== 'element') return
   assert.deepEqual(navy.attributes?.[0]?.value, {
     kind: 'literal',
-    value: 'origens-navy',
+    value: 'example-navy',
   })
 
   const derived = compileSource({
     routeId: 'module-const-derived',
     sourceText: `
-      const PREFIX = 'origens'
+      const PREFIX = 'example'
       const NAVY_ID = PREFIX + '-navy'
       const BLUE_ID = \`\${PREFIX}-blue\`
       export default function Page() {
@@ -762,7 +762,7 @@ test('compiles portable module-level const bindings into plan expressions', () =
   )
   if (!derived.ok) return
   const serialized = JSON.stringify(derived.plan.root)
-  assert.match(serialized, /"value":"origens"/)
+  assert.match(serialized, /"value":"example"/)
   assert.match(serialized, /"value":"-navy"/)
   assert.match(serialized, /"value":"-blue"/)
   assert.match(serialized, /"kind":"binary"/)
@@ -772,7 +772,7 @@ test('rejects non-portable module-level bindings used in portable expressions', 
   const dynamic = compileSource({
     routeId: 'module-const-dynamic',
     sourceText: `
-      const PREFIX = process.env.PREFIX ?? 'origens'
+      const PREFIX = process.env.PREFIX ?? 'example'
       export default function Page() {
         return <svg id={PREFIX} />
       }
@@ -787,7 +787,7 @@ test('rejects non-portable module-level bindings used in portable expressions', 
   const mutable = compileSource({
     routeId: 'module-let',
     sourceText: `
-      let PREFIX = 'origens'
+      let PREFIX = 'example'
       export default function Page() {
         return <svg id={PREFIX} />
       }

@@ -33,21 +33,11 @@ variable "availability_zones" {
 variable "private_subnet_cidrs" {
   description = "Private subnet CIDRs, one per availability zone. ECS tasks and the internal ALB live here."
   type        = list(string)
-
-  validation {
-    condition     = length(var.private_subnet_cidrs) == length(var.availability_zones)
-    error_message = "private_subnet_cidrs must have one item for every availability zone."
-  }
 }
 
 variable "public_subnet_cidrs" {
   description = "Public subnet CIDRs, one per availability zone. NAT gateways use these subnets when enabled."
   type        = list(string)
-
-  validation {
-    condition     = length(var.public_subnet_cidrs) == length(var.availability_zones)
-    error_message = "public_subnet_cidrs must have one item for every availability zone."
-  }
 }
 
 variable "create_nat_gateway" {

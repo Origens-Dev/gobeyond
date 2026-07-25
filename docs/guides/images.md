@@ -20,7 +20,7 @@ export default function Brand() {
   return (
     <img
       src={imageSrc("/brand/logo.png", { w: 256 })}
-      alt="Origens"
+      alt="Example brand"
       width={256}
       height={256}
     />
@@ -106,11 +106,11 @@ nothing.
 
 A request for `/brand/logo.png` therefore reads
 `s3://gobeyond-{env}-site-static/landing/brand/logo.png` (or the corresponding
-`app/` key). The hosting platform also codes cross-account S3 `GetObject` plus a
-CloudFront cache policy and ordered behavior for `/_gobeyond/image*` (query
-keys `url`, `w`, `q`, `f`, and trusted viewer host). That OpenTofu is not yet
-applied in AWS. Design details are locked in
-[ADR 002](https://github.com/Origens-Dev/gobeyond-internal/blob/main/docs/adr/002-image-optimizer-design-lock.md).
+`app/` key). An external hosting platform may also add cross-account S3
+`GetObject` plus a CloudFront cache policy and ordered behavior for
+`/_gobeyond/image*` (query keys `url`, `w`, `q`, `f`, and trusted viewer host).
+That infrastructure is outside the public single-site reference and has not
+been applied by this repository.
 
 The S3 loader (`imageopt/s3.Loader`) and Lambda environment wiring are present in code, but production
 availability must not be claimed until the IAM, bucket policy, Lambda

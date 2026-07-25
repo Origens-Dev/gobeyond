@@ -4,12 +4,7 @@ set -eu
 # Fail if private product/hosting markers or obsolete module paths appear in
 # the public tree. Origens-Dev/gobeyond (this repo) is the intended public
 # home; ban product hosts, AWS accounts/profiles, and private sibling repos.
-if rg -uuu \
-  --glob '!node_modules/**' \
-  --glob '!.git/**' \
-  --glob '!dist/**' \
-  --glob '!.terraform/**' \
-  --glob '!scripts/verify-public-boundaries.sh' \
+if git grep -nEI \
   -e 'github\.com/gobeyond-dev/gobeyond' \
   -e 'gobeyond-dev' \
   -e 'github\.com/holbrookab/gobeyond' \
@@ -23,7 +18,7 @@ if rg -uuu \
   -e 'origens-infra' \
   -e 'origens-staging' \
   -e 'origens-prod' \
-  .; then
+  -- . ':!scripts/verify-public-boundaries.sh'; then
   echo "obsolete or private GoBeyond dependency / product marker found" >&2
   exit 1
 fi

@@ -26,10 +26,9 @@ compressible types; immutable Cache-Control for content-addressed
 an S3-backed `imageopt.Loader` plus a CloudFront cache key covering `url`, `w`,
 `q`, `f`, and the trusted viewer host.
 
-The multi-site hosting OpenTofu codes that IAM and edge routing per
-[ADR 002](https://github.com/Origens-Dev/gobeyond-internal/blob/main/docs/adr/002-image-optimizer-design-lock.md),
-but it is not applied in AWS. This single-site reference under
-`infra/opentofu/` does not yet include those resources.
+Multi-site hosting infrastructure may add that IAM and edge routing, but it is
+outside this public single-site reference. The module under `infra/opentofu/`
+does not include those resources.
 
 For a deployment, upload immutable static artifacts first, start and validate
 the new Go target, then switch document/runtime routing. Retain previous static
