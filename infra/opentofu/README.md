@@ -32,7 +32,7 @@ CloudFront's origin-selection helper can select a configured VPC origin, so the 
 
 Dynamic documents and `/_gobeyond/builds/*/runtime/*` data use the origin's cache headers. A page using `gb.PublicRevalidate(60*time.Second, 5*time.Minute, 24*time.Hour)` is therefore stored by CloudFront while browsers revalidate each navigation. The dynamic cache key includes all cookies, query strings, and `Authorization`; the Go runtime also downgrades cookie, authorization, `Set-Cookie`, and middleware-private responses to `private, no-store`. This is intentionally conservative for a public single-site reference.
 
-**Security boundary:** the CloudFront dynamic cache key does **not** include `X-Gobeyond-Auth-Context` or `X-Origens-Oidc-Token`. For requests authenticated by either header, the origin's `Cache-Control: private, no-store` downgrade is the sole edge-cache isolator. Do not enable public caching for those responses or treat CloudFront's configured cache key as a second isolation layer.
+**Security boundary:** the CloudFront dynamic cache key does **not** include `X-Gobeyond-Auth-Context`. For viewer requests authenticated by that header, the origin's `Cache-Control: private, no-store` downgrade is the sole edge-cache isolator. `X-Origens-Oidc-Token` is application workload identity rather than viewer identity and must not vary rendered output; hosting proxies must strip inbound copies before injecting a trusted value. Do not enable public caching for viewer-authenticated responses or treat CloudFront's configured cache key as a second isolation layer.
 
 ## Optional cache and edge invalidation
 

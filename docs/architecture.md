@@ -151,10 +151,13 @@ mismatch from an omitted policy versus an explicit `private, no-store`.
 
 Privacy is fail-closed and shared across HTTP headers and every cache layer.
 `cache.IsPrivateRequest` gates reads on Cookie, Authorization,
-`X-Gobeyond-Auth-Context`, and `X-Origens-Oidc-Token`. `cache.IsPrivateResponse`
-also inspects `Set-Cookie` on the loaded result. Private requests skip cache
-reads; non-OK results and cookie-minting responses are never written. Actions
-may still call `RevalidateTag` / `RevalidatePath` from authenticated requests.
+and `X-Gobeyond-Auth-Context`. `X-Origens-Oidc-Token` is platform workload
+identity, not viewer identity, so it does not make an otherwise-public response
+private. Hosting layers must strip inbound copies before injecting a trusted
+workload token. `cache.IsPrivateResponse` also inspects `Set-Cookie` on the
+loaded result. Private requests skip cache reads; non-OK results and
+cookie-minting responses are never written. Actions may still call
+`RevalidateTag` / `RevalidatePath` from authenticated requests.
 
 Successful actions return a frozen envelope:
 `{ apiVersion, buildId, data, refresh?: { paths, tags } }`. The client helpers
@@ -180,10 +183,11 @@ Redis when an endpoint is present, starts the tag-bump watcher, and returns a
 `Close` for shutdown.
 
 At the edge, CloudFront's dynamic cache key includes cookies, query strings,
-and `Authorization`, but not OIDC or auth-context headers. For those requests,
-the origin's `Cache-Control: private, no-store` downgrade is the sole edge-cache
-isolator. See `infra/opentofu/README.md` for optional Valkey wiring and the
-edge boundary.
+and `Authorization`, but not the middleware auth-context header. For those
+viewer-authenticated requests, the origin's `Cache-Control: private, no-store`
+downgrade is the sole edge-cache isolator. Workload identity does not identify
+the viewer or vary rendered content. See `infra/opentofu/README.md` for
+optional Valkey wiring and the edge boundary.
 
 ## Browser protocol
 

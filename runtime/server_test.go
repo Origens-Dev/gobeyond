@@ -470,12 +470,11 @@ func TestRuntimeDataUsesDocumentCachePolicyAndPrivacyDowngrade(t *testing.T) {
 	}
 }
 
-// TestForwardedIdentityHeadersNeverReceivePublicCacheControl is a
-// conformance test for the shared cache.IsPrivateRequest predicate
-// (Locked decision 6): requests bearing only X-Gobeyond-Auth-Context or
-// X-Origens-Oidc-Token must never receive a public Cache-Control, even when
-// the loader returns gb.CachePublic.
-func TestForwardedIdentityHeadersNeverReceivePublicCacheControl(t *testing.T) {
+// TestViewerAndWorkloadIdentityCacheControl is a conformance test for the
+// shared cache.IsPrivateRequest predicate (Locked decision 6): middleware
+// viewer identity is private, while platform workload identity does not poison
+// otherwise-public document or soft-navigation caching.
+func TestViewerAndWorkloadIdentityCacheControl(t *testing.T) {
 	page := PageRoute{
 		Route: router.Route{ID: "public", Pattern: "/public", Mode: router.ModeDynamic},
 		Plan:  &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "public", Root: &renderplan.Element{Kind: "element", Tag: "main"}},
@@ -487,17 +486,20 @@ func TestForwardedIdentityHeadersNeverReceivePublicCacheControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantPublic := "public, max-age=0, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
 	for _, path := range []string{"/public", "/_gobeyond/builds/build-1/runtime/public?path=%2Fpublic"} {
-		for _, header := range []struct{ name, value string }{
-			{"X-Gobeyond-Auth-Context", "eyJ0ZXN0Ijp0cnVlfQ"},
-			{"X-Origens-Oidc-Token", "token"},
+		for _, header := range []struct {
+			name, value, want string
+		}{
+			{"X-Gobeyond-Auth-Context", "eyJ0ZXN0Ijp0cnVlfQ", "private, no-store"},
+			{"X-Origens-Oidc-Token", "token", wantPublic},
 		} {
 			request := httptest.NewRequest(http.MethodGet, "https://example.com"+path, nil)
 			request.Header.Set(header.name, header.value)
 			recorder := httptest.NewRecorder()
 			server.ServeHTTP(recorder, request)
-			if got := recorder.Header().Get("Cache-Control"); got != "private, no-store" {
-				t.Fatalf("%s with %s: cache = %q, want private, no-store", path, header.name, got)
+			if got := recorder.Header().Get("Cache-Control"); got != header.want {
+				t.Fatalf("%s with %s: cache = %q, want %q", path, header.name, got, header.want)
 			}
 		}
 	}

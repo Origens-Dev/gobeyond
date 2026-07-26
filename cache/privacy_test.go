@@ -15,7 +15,7 @@ func TestIsPrivateRequest(t *testing.T) {
 		{"cookie", http.Header{"Cookie": {"session=1"}}, true},
 		{"authorization", http.Header{"Authorization": {"Bearer x"}}, true},
 		{"auth-context", http.Header{"X-Gobeyond-Auth-Context": {"eyJ0ZXN0Ijp0cnVlfQ"}}, true},
-		{"oidc-token", http.Header{"X-Origens-Oidc-Token": {"token"}}, true},
+		{"workload identity", http.Header{"X-Origens-Oidc-Token": {"token"}}, false},
 		{"unrelated header", http.Header{"X-Request-Id": {"abc"}}, false},
 	}
 	for _, test := range tests {
@@ -45,7 +45,7 @@ func TestIsPrivateResponse(t *testing.T) {
 		{"set-cookie response", http.Header{}, http.Header{"Set-Cookie": {"a=1"}}, true},
 		{"both", http.Header{"Authorization": {"Bearer x"}}, http.Header{"Set-Cookie": {"a=1"}}, true},
 		{"auth-context request only", http.Header{"X-Gobeyond-Auth-Context": {"ctx"}}, http.Header{}, true},
-		{"oidc request only", http.Header{"X-Origens-Oidc-Token": {"tok"}}, http.Header{}, true},
+		{"workload identity only", http.Header{"X-Origens-Oidc-Token": {"tok"}}, http.Header{}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
