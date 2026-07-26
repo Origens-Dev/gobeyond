@@ -15,35 +15,42 @@ import (
 )
 
 func main() {
-	planDir := os.Getenv("GOBEYOND_PLAN_DIR")
-	if planDir == "" {
-		planDir = "render-plans"
+	// Pack-only runtime artifacts (ADR 004): plans and static entries are
+	// opened as immutable binary packs and decoded lazily per route. The
+	// pretty JSON the CLI writes next to them is inspection-only.
+	planPack := os.Getenv("GOBEYOND_PLAN_PACK")
+	if planPack == "" {
+		planPack = filepath.Join("dist", "server", "render-plans.gbp")
 	}
-	plans, err := seosite.LoadPlans(planDir)
+	staticPack := os.Getenv("GOBEYOND_STATIC_PACK")
+	if staticPack == "" {
+		staticPack = filepath.Join("dist", "server", "runtime-data", "static-build.gbs")
+	}
+	planStore, err := gbruntime.OpenPlanStore(planPack)
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer planStore.Close()
+	staticStore, err := gbruntime.OpenStaticStore(staticPack, filepath.Join(filepath.Dir(staticPack), "contracts.json"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer staticStore.Close()
 	origin := os.Getenv("GOBEYOND_PUBLIC_ORIGIN")
 	if origin == "" {
 		origin = "http://localhost:8080"
 	}
+	// The packs carry the build identity; GOBEYOND_BUILD_ID may confirm it
+	// but the stores are authoritative.
 	buildID := os.Getenv("GOBEYOND_BUILD_ID")
 	if buildID == "" {
-		buildID = "development"
+		buildID = planStore.BuildID()
 	}
-	assets, err := loadBrowserAssets(filepath.Join(filepath.Dir(planDir), "runtime-manifest.json"), buildID)
+	assets, err := loadBrowserAssets(filepath.Join(filepath.Dir(planPack), "runtime-manifest.json"), buildID)
 	if err != nil {
 		log.Fatal(err)
 	}
-	runtimeDataDirectory := os.Getenv("GOBEYOND_RUNTIME_DATA_DIR")
-	if runtimeDataDirectory == "" {
-		runtimeDataDirectory = filepath.Join(filepath.Dir(planDir), "runtime-data")
-	}
-	staticStore, err := gbruntime.LoadStaticStore(filepath.Join(runtimeDataDirectory, "static-build.json"), filepath.Join(runtimeDataDirectory, "contracts.json"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	handler, err := seosite.NewWithStaticStore(buildID, origin, plans, assets, staticStore)
+	handler, err := seosite.NewFromStores(buildID, origin, assets, planStore, staticStore)
 	if err != nil {
 		log.Fatal(err)
 	}

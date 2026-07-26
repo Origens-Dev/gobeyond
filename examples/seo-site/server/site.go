@@ -92,39 +92,50 @@ func New(buildID, publicOrigin string, plans map[string]*renderplan.Plan) (*Site
 // NewWithAssets creates the acceptance site with the browser assets emitted
 // by the same build. Tests may continue to use New when they do not bundle CSS.
 func NewWithAssets(buildID, publicOrigin string, plans map[string]*renderplan.Plan, assets AssetConfig) (*Site, error) {
-	return newWithStaticLoader(buildID, publicOrigin, plans, nil, assets, func(*gb.PageContext) (gbruntime.LoadedPage, error) {
+	return newSite(buildID, publicOrigin, plans, nil, assets, func(*gb.PageContext) (gbruntime.LoadedPage, error) {
 		return *homePage(publicOrigin), nil
-	}, nil)
+	}, nil, nil)
 }
 
-// NewWithStaticStore uses route-aware browser assets when the build emitted a
-// runtime manifest. A nil manifest is the one-release compatibility path for
-// older builds and uses the legacy page-level asset fields.
-func NewWithStaticStore(buildID, publicOrigin string, plans map[string]*renderplan.Plan, assets *browserassets.Manifest, staticStore *gbruntime.StaticStore) (*Site, error) {
-	if staticStore == nil {
-		return nil, errors.New("SEO site requires packaged static data")
+// NewFromStores is the production entrypoint wiring (ADR 004): render plans
+// stay cold in the plan store until a request must render, and packaged
+// static entries - including the home page and the build's value contracts -
+// come from the static-entry store. A nil browser-asset manifest is the
+// one-release compatibility path for older builds and uses the legacy
+// page-level asset fields.
+func NewFromStores(buildID, publicOrigin string, assets *browserassets.Manifest, planStore gbruntime.PlanStore, static gbruntime.StaticEntries) (*Site, error) {
+	if planStore == nil || static == nil {
+		return nil, errors.New("SEO site requires pack-backed plan and static stores")
 	}
 	legacyAssets := AssetConfig{}
 	if assets == nil {
 		legacyAssets = AssetConfig{ClientScript: buildpaths.AssetURL(buildID, "app.js"), Styles: []string{}}
 	}
-	return newWithStaticLoader(buildID, publicOrigin, plans, assets, legacyAssets, staticStore.Loader(HomeRouteID), staticStore)
+	return newSite(buildID, publicOrigin, nil, assets, legacyAssets, nil, planStore, static)
 }
 
-func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderplan.Plan, browserAssets *browserassets.Manifest, legacyAssets AssetConfig, homeLoader gbruntime.PageLoader, packaged *gbruntime.StaticStore) (*Site, error) {
-	required := []string{
-		HomeRouteID, AccountRouteID, ArticleRouteID, CategoryRouteID,
-		EnglishArticleRouteID, FrenchArticleRouteID, LocationRouteID, ProductRouteID,
-	}
-	for _, routeID := range required {
-		if plans[routeID] == nil {
-			return nil, errors.New("SEO site requires render plan " + routeID)
+// newSite assembles the runtime config shared by the test constructors
+// (inline plans, inline home loader) and the production store path (nil
+// inline plans, plan store membership checked by gbruntime.New, home page
+// served from the static-entry store).
+func newSite(buildID, publicOrigin string, plans map[string]*renderplan.Plan, browserAssets *browserassets.Manifest, legacyAssets AssetConfig, homeLoader gbruntime.PageLoader, planStore gbruntime.PlanStore, static gbruntime.StaticEntries) (*Site, error) {
+	if planStore == nil {
+		required := []string{
+			HomeRouteID, AccountRouteID, ArticleRouteID, CategoryRouteID,
+			EnglishArticleRouteID, FrenchArticleRouteID, LocationRouteID, ProductRouteID,
+		}
+		for _, routeID := range required {
+			if plans[routeID] == nil {
+				return nil, errors.New("SEO site requires render plan " + routeID)
+			}
 		}
 	}
 	runtimeConfig := gbruntime.Config{
 		BuildID:       buildID,
 		PublicOrigin:  publicOrigin,
 		BrowserAssets: browserAssets,
+		PlanStore:     planStore,
+		Static:        static,
 		Pages: []gbruntime.PageRoute{
 			{
 				Route:        router.Route{ID: HomeRouteID, Pattern: "/", Mode: router.ModeStatic},
@@ -238,17 +249,17 @@ func newWithStaticLoader(buildID, publicOrigin string, plans map[string]*renderp
 		}},
 	}
 	var closeCache func() error
-	if packaged != nil {
-		// Packaged builds carry contracts and may declare route caching in
-		// page.schema.ts. OpenFromEnv builds bounded L1 + optional Redis L2
-		// from GOBEYOND_CACHE_* (see cache/example_test.go Example_wiring).
+	if static != nil {
+		// Packaged builds carry contracts (gbruntime.New adopts them from the
+		// static store) and may declare route caching in page.schema.ts.
+		// OpenFromEnv builds bounded L1 + optional Redis L2 from
+		// GOBEYOND_CACHE_* (see cache/example_test.go Example_wiring).
 		cacheConfig, closeFn, err := siteCacheRuntimeConfig()
 		if err != nil {
 			return nil, err
 		}
 		closeCache = closeFn
 		runtimeConfig.Cache = cacheConfig
-		runtimeConfig.Contracts = packaged.Contracts()
 	}
 	runtime, err := gbruntime.New(runtimeConfig)
 	if err != nil {

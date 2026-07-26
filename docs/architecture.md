@@ -45,9 +45,11 @@ files are never shipped and user-owned `go.mod` files are never overwritten.
 
 ## Render-plan contract
 
-The canonical JSON Schema is `contracts/render-plan.schema.json`. The MVP uses
-JSON for inspection and conformance. A compact binary encoding can be added
-later without changing the semantic plan version.
+The canonical JSON Schema is `contracts/render-plan.schema.json`. Inspection and
+conformance may use JSON. Runtime packaging uses immutable pack containers
+(`.gbp` / `.gbs`) with per-record `json+zstd` payloads; a compact binary record
+codec can be added later via `recordCodec` without changing the semantic plan
+version. See `docs/adr/004-lazy-route-residency.md`.
 
 ## Build and runtime
 
@@ -94,9 +96,10 @@ Go runtime
   -> emit one complete non-streamed HTML document
 ```
 
-The renderer loads plans and packaged static props once at startup. It does
-not fetch plans or page data from S3 per request. Browser assets and manifests
-are immutable and keyed by build ID.
+The renderer opens local plan/static packs at startup and decodes records on
+demand into a bounded residency cache. It does not fetch plans or page data
+from S3 per request. Browser assets and manifests are immutable and keyed by
+build ID. Process shutdown remains the definitive full memory reclaim.
 Vite-emitted stylesheets are discovered after bundling and recorded in the
 runtime/browser manifests; both static documents and dynamic page
 registrations use those exact URLs. Copied `public/` files are listed in the
@@ -106,7 +109,7 @@ Route discovery still treats a present `server/middleware/middleware.go` as
 promoting every `page.tsx` route to dynamic, which skips static packaging for
 those routes. The `create-gobeyond` starter therefore keeps product-scoped
 request-ID middleware inline in `server/cmd/app/main.go` so `/` stays static
-and loads props from the packaged `static-build.json` store.
+and loads props from the packaged `static-build.gbs` store.
 
 When the Go process serves origin static files itself (local preview, or an
 origin without CloudFront in front), wrap the server with

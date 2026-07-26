@@ -156,8 +156,20 @@ type Config struct {
 	// it: cached props cross JSON, and only the contract says which strings
 	// were renderplan.SafeHTML before they did, so decoding without it would
 	// either lose the trust marker or restore it blindly. A server with a
-	// cache and a route that sets Revalidate must supply it.
+	// cache and a route that sets Revalidate must supply it. When nil and
+	// Static is set, it defaults to Static.Contracts().
 	Contracts *codegen.Document
+	// PlanStore supplies render plans on demand for pages that omit an
+	// inline Plan (ADR 004). New verifies membership per page and that the
+	// store's build ID equals BuildID exactly; the decode itself is deferred
+	// to the first request that must render the route. An inline
+	// PageRoute.Plan always wins over the store.
+	PlanStore PlanStore
+	// Static supplies packaged static page data on demand for pages that
+	// ship neither inline Static data nor a loader. Its build ID must be
+	// empty (build-agnostic adapters such as the eager StaticStore) or equal
+	// BuildID.
+	Static StaticEntries
 }
 
 type Server struct {
@@ -218,17 +230,41 @@ func New(config Config) (*Server, error) {
 			return nil, errors.New("browser asset manifest build ID mismatch")
 		}
 	}
+	// Stores are immutable per-build artifacts, so their identity is checked
+	// once here and never per request. The plan store must carry exactly this
+	// build; a static store may also be build-agnostic (empty build ID, the
+	// eager JSON adapter used by tests and tiny apps).
+	if config.PlanStore != nil && config.PlanStore.BuildID() != config.BuildID {
+		return nil, errors.New("plan store build ID mismatch")
+	}
+	if config.Static != nil {
+		if staticBuildID := config.Static.BuildID(); staticBuildID != "" && staticBuildID != config.BuildID {
+			return nil, errors.New("static entry store build ID mismatch")
+		}
+		if config.Contracts == nil {
+			config.Contracts = config.Static.Contracts()
+		}
+	}
 	pageRoutes := make([]router.Route, len(config.Pages))
 	pages := make(map[string]PageRoute, len(config.Pages))
 	for i, page := range config.Pages {
-		if page.Route.ID == "" || page.Plan == nil {
-			return nil, errors.New("page routes require an ID and render plan")
+		if page.Route.ID == "" {
+			return nil, errors.New("page routes require an ID")
 		}
-		if page.Plan.RouteID != page.Route.ID {
+		if page.Plan == nil {
+			// New only proves membership; the plan bytes stay cold until a
+			// request actually renders the route (ADR 004).
+			if config.PlanStore == nil || !config.PlanStore.Has(page.Route.ID) {
+				return nil, fmt.Errorf("page %s requires an inline render plan or a plan store that carries it", page.Route.ID)
+			}
+		} else if page.Plan.RouteID != page.Route.ID {
 			return nil, fmt.Errorf("page %s render-plan route ID mismatch", page.Route.ID)
 		}
 		if page.Static == nil && page.Load == nil {
-			return nil, fmt.Errorf("page %s requires static data or a loader", page.Route.ID)
+			if config.Static == nil || !config.Static.Has(page.Route.ID) {
+				return nil, fmt.Errorf("page %s requires static data or a loader", page.Route.ID)
+			}
+			page.Load = staticEntryLoader(config.Static, page.Route.ID)
 		}
 		if config.BrowserAssets != nil {
 			if _, err := config.BrowserAssets.ForRoute(page.Route.ID); err != nil {
@@ -507,12 +543,24 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	if err := jsvalue.Validate(loaded.Props); err != nil {
 		return gb.Response{}, fmt.Errorf("page props are not JavaScript-compatible: %w", err)
 	}
+	// Rendering is now unavoidable: the loader ran and did not redirect or
+	// fail. Only here does a page without an inline plan touch the plan
+	// store, so routes that answer with redirects or cached responses never
+	// pay for a decode (ADR 004). New already proved the store has the route.
+	plan := page.Plan
+	if plan == nil {
+		stored, planErr := s.config.PlanStore.Plan(ctx.Context, route.ID)
+		if planErr != nil {
+			return gb.Response{}, fmt.Errorf("plan store: route %s: %w", route.ID, planErr)
+		}
+		plan = stored
+	}
 	renderStarted := time.Now()
 	body, renderNow, err := renderer.New().WithNavigation(renderer.NavigationMeta{
 		RouteID:  route.ID,
 		Pathname: ctx.Request.URL.Path,
 		Params:   params,
-	}).RenderAt(page.Plan, loaded.Props, time.Time{})
+	}).RenderAt(plan, loaded.Props, time.Time{})
 	if err != nil {
 		return gb.Response{}, err
 	}

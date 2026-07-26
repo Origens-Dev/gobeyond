@@ -98,11 +98,7 @@ function projectFiles(projectName, { tailwind }) {
     'Dockerfile': dockerfile()
       .replace('RUN gobeyond build', 'RUN pnpm build')
       .replace('COPY --from=build /src/dist/static /app/dist/static\n', '')
-      .replace('ENV GOBEYOND_STATIC_DIR=/app/dist/static\n', '')
-      .replace(
-        'ENV GOBEYOND_PLAN_DIR=/app/dist/server/render-plans',
-        'ENV GOBEYOND_PLAN_DIR=/app/dist/server/render-plans\nENV GOBEYOND_RUNTIME_DATA_DIR=/app/dist/server/runtime-data',
-      ),
+      .replace('ENV GOBEYOND_STATIC_DIR=/app/dist/static\n', ''),
     '.github/workflows/verify.yml': workflow(),
     'vite.config.ts': viteConfig().replace(
       '  publicDir: false,',
@@ -199,7 +195,7 @@ function starterReadme(projectName) {
     'Tailwind is optional. Start a new Tailwind v4 project with `create-gobeyond --tailwind my-site`; it adds `tailwindcss`, `@tailwindcss/postcss`, a project-owned `postcss.config.mjs`, and the CSS import. Existing projects can opt in by adding those same dependencies and PostCSS config. GoBeyond does not add a Tailwind runtime layer.', '',
     '## What is where', '',
     '- `app/page.tsx`: static React content.',
-    '- `app/page.metadata.ts`: build-time document metadata packaged into `static-build.json`.',
+    '- `app/page.metadata.ts`: build-time document metadata packaged into the static-entry pack (`static-build.gbs`).',
     '- `app/products/[slug]/page.tsx`: the React view; this route is static without its sibling Go file.',
     '- `app/products/[slug]/page.go`: request-time props and metadata, using the generated Go contract.',
     '- `app/products/[slug]/actions.go`: typed Go mutation handler beside its browser contract.',
@@ -209,7 +205,7 @@ function starterReadme(projectName) {
     'Run `pnpm generate` after changing schemas/routes. It commits the deterministic route registry and Go contracts under `internal/gobeyondgen/`; check them with `pnpm generate:check`.', '',
     'Generation also creates ignored, managed `go.mod` sidecars in route folders so `gopls` can type-check names such as `[slug]`. The production server imports only the safe generated packages.', '',
     '## Production', '',
-    'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, rendering plans, runtime data, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN separately.', '',
+    'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN separately.', '',
     'Add a square `app/icon.png` to generate 16/32 favicons and an Apple touch icon. Put authored social cards under `public/social/` and reference them with absolute HTTPS metadata URLs.', '',
     'GoBeyond generates the browser page/layout registry and safe Go route projections during `pnpm build`. The runtime imports those generated projections rather than source directories in `app/`. See `AGENTS.md` for the cross-language rules.', '',
   ].join('\n')
@@ -247,9 +243,10 @@ type Props = InferPageProps<typeof page>
 
 declare const process: { env: Record<string, string | undefined> }
 
-// Packaged into static-build.json. Canonical/social URLs must match the
-// runtime PublicOrigin used at serve time (and therefore the build-time
-// GOBEYOND_PUBLIC_ORIGIN when you bake a deployment-specific origin).
+// Packaged into the static-entry pack (static-build.gbs). Canonical/social
+// URLs must match the runtime PublicOrigin used at serve time (and therefore
+// the build-time GOBEYOND_PUBLIC_ORIGIN when you bake a deployment-specific
+// origin).
 export function metadata(_props: Props): DocumentMetadata {
   const origin = process.env.GOBEYOND_PUBLIC_ORIGIN ?? 'http://localhost:8080'
   const title = 'Welcome to GoBeyond'
@@ -270,9 +267,10 @@ export function metadata(_props: Props): DocumentMetadata {
 }
 
 // serverMain emits the starter's explicit runtime registry. It mirrors the
-// examples/seo-site production entrypoint: packaged static props and contracts
-// from GOBEYOND_RUNTIME_DATA_DIR, the supported cache constructor, generated
-// contract constants for route ISR, and the shared static file handler.
+// examples/seo-site production entrypoint: pack-backed render plans and
+// packaged static entries opened from GOBEYOND_PLAN_PACK / GOBEYOND_STATIC_PACK,
+// the supported cache constructor, generated contract constants for route ISR,
+// and the shared static file handler.
 //
 // Deliberately omit server/middleware/middleware.go: Discover treats that file
 // as promoting every page.tsx route to dynamic, which skips static packaging
@@ -298,7 +296,6 @@ import (
   "github.com/Origens-Dev/gobeyond/buildpaths"
   cacheenv "github.com/Origens-Dev/gobeyond/cache/openfromenv"
   gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
-  "github.com/Origens-Dev/gobeyond/renderplan"
   "github.com/Origens-Dev/gobeyond/router"
   gbruntime "github.com/Origens-Dev/gobeyond/runtime"
   productsapi "${modulePath}/internal/gobeyondgen/api/r_api_products_3637094a"
@@ -310,19 +307,23 @@ import (
 
 func main() {
   origin := env("GOBEYOND_PUBLIC_ORIGIN", "http://localhost:8080")
-  planDirectory := env("GOBEYOND_PLAN_DIR", "dist/server/render-plans")
+  planPack := env("GOBEYOND_PLAN_PACK", filepath.Join("dist", "server", "render-plans.gbp"))
+  staticPack := env("GOBEYOND_STATIC_PACK", filepath.Join("dist", "server", "runtime-data", "static-build.gbs"))
   staticDirectory := env("GOBEYOND_STATIC_DIR", "dist/static")
-  runtimeDataDirectory := env("GOBEYOND_RUNTIME_DATA_DIR", filepath.Join(filepath.Dir(planDirectory), "runtime-data"))
-  plans, err := loadPlans(planDirectory, routes.RouteRoot, routes.RouteProductsSlug)
+
+  // Pack-only runtime artifacts: render plans and packaged static entries
+  // stay cold inside these immutable containers until a request needs them.
+  // The pretty JSON gobeyond build writes beside them is inspection-only.
+  planStore, err := gbruntime.OpenPlanStore(planPack)
   if err != nil { log.Fatal(err) }
-  browserAssets, err := loadBrowserAssets(filepath.Join(filepath.Dir(planDirectory), "runtime-manifest.json"), routes.BuildID)
+  defer planStore.Close()
+  staticStore, err := gbruntime.OpenStaticStore(staticPack, filepath.Join(filepath.Dir(staticPack), "contracts.json"))
+  if err != nil { log.Fatal(err) }
+  defer staticStore.Close()
+
+  browserAssets, err := loadBrowserAssets(filepath.Join(filepath.Dir(planPack), "runtime-manifest.json"), routes.BuildID)
   if err != nil { log.Fatal(err) }
   legacyClientScript, legacyStyles := legacyBrowserAssets(routes.BuildID, browserAssets)
-
-  // Packaged build data: static route props for static pages and soft
-  // navigation, plus the value contracts cached props are decoded against.
-  staticStore, err := gbruntime.LoadStaticStore(filepath.Join(runtimeDataDirectory, "static-build.json"), filepath.Join(runtimeDataDirectory, "contracts.json"))
-  if err != nil { log.Fatal(err) }
 
   // Bounded in-process L1, plus a shared Redis L2 and its tag-bump watcher
   // when the deployment injects GOBEYOND_CACHE_*.
@@ -332,14 +333,18 @@ func main() {
 
   server, err := gbruntime.New(gbruntime.Config{
     BuildID: routes.BuildID, PublicOrigin: origin, BrowserAssets: browserAssets,
-    Cache: cacheConfig, Contracts: staticStore.Contracts(),
+    Cache: cacheConfig,
+    // PlanStore serves each route's render plan on first render; Static
+    // serves packaged static pages (home) and carries the value contracts
+    // cached props are decoded against.
+    PlanStore: planStore, Static: staticStore,
     Pages: []gbruntime.PageRoute{
       // / stays ModeStatic (no page.go, no server/middleware/middleware.go),
-      // so Discover packages home props/metadata into static-build.json.
-      {Route: router.Route{ID: routes.RouteRoot, Pattern: "/", Mode: router.ModeStatic}, Plan: plans[routes.RouteRoot], Load: staticStore.Loader(routes.RouteRoot), Indexable: true, ClientScript: legacyClientScript, Styles: legacyStyles},
+      // so Discover packages home props/metadata into the static-entry pack.
+      {Route: router.Route{ID: routes.RouteRoot, Pattern: "/", Mode: router.ModeStatic}, Indexable: true, ClientScript: legacyClientScript, Styles: legacyStyles},
       // Revalidate/Tags come from app/products/[slug]/page.schema.ts through
       // the generated contract, so the schema stays the single source of truth.
-      {Route: router.Route{ID: routes.RouteProductsSlug, Pattern: "/products/[slug]", Mode: router.ModeDynamic}, Plan: plans[routes.RouteProductsSlug], Load: productLoader, Revalidate: productcontract.Revalidate, Tags: productcontract.Tags, Indexable: true, ClientScript: legacyClientScript, Styles: legacyStyles},
+      {Route: router.Route{ID: routes.RouteProductsSlug, Pattern: "/products/[slug]", Mode: router.ModeDynamic}, Load: productLoader, Revalidate: productcontract.Revalidate, Tags: productcontract.Tags, Indexable: true, ClientScript: legacyClientScript, Styles: legacyStyles},
     },
     Actions: []gbruntime.Action{actioncontract.Register(productroute.AddToCart)},
     APIs: []gbruntime.APIRoute{{Route: router.Route{ID: "api_products", Pattern: "/api/products", Mode: router.ModeAPI}, Methods: map[string]gb.Handler{http.MethodGet: productsapi.GET}}},
@@ -373,18 +378,6 @@ func productLoader(ctx *gb.PageContext) (gbruntime.LoadedPage, error) {
   return gbruntime.LoadedPage{Kind: result.Kind, Props: result.Props, Metadata: result.Metadata, Status: result.Status, Cache: result.Cache, RedirectTo: result.RedirectTo, ErrorCode: result.ErrorCode, Message: result.Message}, err
 }
 
-func loadPlans(directory string, routeIDs ...string) (map[string]*renderplan.Plan, error) {
-  plans := make(map[string]*renderplan.Plan, len(routeIDs))
-  for _, routeID := range routeIDs {
-    source, err := os.ReadFile(filepath.Join(directory, routeID+".json"))
-    if err != nil { return nil, err }
-    plan, err := renderplan.Parse(source)
-    if err != nil { return nil, err }
-    plans[routeID] = plan
-  }
-  return plans, nil
-}
-
 ${runtimeAssetHelpers()}
 
 func env(key, fallback string) string { if value := os.Getenv(key); value != "" { return value }; return fallback }
@@ -392,7 +385,7 @@ func env(key, fallback string) string { if value := os.Getenv(key); value != "" 
 }
 
 function dockerfile() {
-  return `# Node and Go exist only in this build stage.\nFROM golang:1.24-alpine AS build\nARG GOBEYOND_VERSION=${GOBEYOND_VERSION}\nRUN apk add --no-cache nodejs npm && corepack enable\nRUN go install github.com/Origens-Dev/gobeyond/cmd/gobeyond@v${GOBEYOND_VERSION}\nWORKDIR /src\nCOPY package.json pnpm-lock.yaml* ./\nRUN pnpm install --frozen-lockfile\nCOPY . .\nRUN gobeyond build\n\n# Production is deliberately Node-free.\nFROM scratch\nCOPY --from=build /src/dist/server/gobeyond-server /gobeyond-server\n# dist/server carries render plans and runtime-data (static-build.json,\n# contracts.json) the server loads at startup.\nCOPY --from=build /src/dist/server /app/dist/server\nCOPY --from=build /src/dist/static /app/dist/static\nENV GOBEYOND_PLAN_DIR=/app/dist/server/render-plans\nENV GOBEYOND_STATIC_DIR=/app/dist/static\nEXPOSE 8080\nENTRYPOINT [\"/gobeyond-server\"]\n`
+  return `# Node and Go exist only in this build stage.\nFROM golang:1.24-alpine AS build\nARG GOBEYOND_VERSION=${GOBEYOND_VERSION}\nRUN apk add --no-cache nodejs npm && corepack enable\nRUN go install github.com/Origens-Dev/gobeyond/cmd/gobeyond@v${GOBEYOND_VERSION}\nWORKDIR /src\nCOPY package.json pnpm-lock.yaml* ./\nRUN pnpm install --frozen-lockfile\nCOPY . .\nRUN gobeyond build\n\n# Production is deliberately Node-free.\nFROM scratch\nCOPY --from=build /src/dist/server/gobeyond-server /gobeyond-server\n# dist/server carries the immutable render-plan and static-entry packs plus\n# contracts.json; the server opens the packs lazily at startup and never\n# reads the inspection-only JSON dumps beside them.\nCOPY --from=build /src/dist/server /app/dist/server\nCOPY --from=build /src/dist/static /app/dist/static\nENV GOBEYOND_PLAN_PACK=/app/dist/server/render-plans.gbp\nENV GOBEYOND_STATIC_PACK=/app/dist/server/runtime-data/static-build.gbs\nENV GOBEYOND_STATIC_DIR=/app/dist/static\nEXPOSE 8080\nENTRYPOINT [\"/gobeyond-server\"]\n`
 }
 
 function workflow() {
