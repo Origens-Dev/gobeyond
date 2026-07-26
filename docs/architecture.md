@@ -109,7 +109,7 @@ Route discovery still treats a present `server/middleware/middleware.go` as
 promoting every `page.tsx` route to dynamic, which skips static packaging for
 those routes. The `create-gobeyond` starter therefore keeps product-scoped
 request-ID middleware inline in `server/cmd/app/main.go` so `/` stays static
-and loads props from the packaged `static-build.json` store.
+and loads props from the packaged `static-build.gbs` store.
 
 When the Go process serves origin static files itself (local preview, or an
 origin without CloudFront in front), wrap the server with
