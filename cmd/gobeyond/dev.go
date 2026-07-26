@@ -25,6 +25,7 @@ import (
 
 	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/internal/project"
+	"github.com/Origens-Dev/gobeyond/pack"
 )
 
 const (
@@ -353,7 +354,8 @@ func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin str
 		"GOBEYOND_ADDR="+address,
 		"GOBEYOND_BUILD_ID="+manifest.BuildID,
 		"GOBEYOND_PUBLIC_ORIGIN="+publicOrigin,
-		"GOBEYOND_PLAN_DIR="+filepath.Join(buildDirectory, "server", "render-plans"),
+		"GOBEYOND_PLAN_PACK="+filepath.Join(buildDirectory, "server", "render-plans"+pack.ExtPlans),
+		"GOBEYOND_STATIC_PACK="+filepath.Join(buildDirectory, "server", "runtime-data", "static-build"+pack.ExtStatic),
 		"GOBEYOND_RUNTIME_DATA_DIR="+filepath.Join(buildDirectory, "server", "runtime-data"),
 		"GOBEYOND_STATIC_DIR="+filepath.Join(buildDirectory, "static"),
 	)

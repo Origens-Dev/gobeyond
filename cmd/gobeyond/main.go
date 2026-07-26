@@ -1583,7 +1583,6 @@ func preview(root string, args []string) error {
 		"GOBEYOND_PUBLIC_ORIGIN=http://"+host,
 		"GOBEYOND_PLAN_PACK="+filepath.Join(root, "dist", "server", "render-plans"+pack.ExtPlans),
 		"GOBEYOND_STATIC_PACK="+filepath.Join(root, "dist", "server", "runtime-data", "static-build"+pack.ExtStatic),
-		"GOBEYOND_PLAN_DIR="+filepath.Join(root, "dist", "server", "render-plans"),
 		"GOBEYOND_RUNTIME_DATA_DIR="+filepath.Join(root, "dist", "server", "runtime-data"),
 		"GOBEYOND_STATIC_DIR="+filepath.Join(root, "dist", "static"),
 	)
