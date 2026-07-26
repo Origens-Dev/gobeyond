@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -78,39 +79,84 @@ func LoadStaticStore(buildPath, contractsPath string) (*StaticStore, error) {
 	store := &StaticStore{routes: make(map[string][]LoadedPageEntry, len(artifact.Routes)), contracts: contracts}
 	for _, route := range artifact.Routes {
 		for _, entry := range route.Entries {
-			decoder := json.NewDecoder(bytes.NewReader(entry.Props))
-			decoder.UseNumber()
-			var props any
-			if err := decoder.Decode(&props); err != nil {
-				return nil, fmt.Errorf("decode static props for %s: %w", route.RouteID, err)
-			}
-			props, err = codegen.TrustStaticSafeHTML(contracts, route.RouteID, props)
+			page, err := decodeStaticEntry(contracts, route.RouteID, entry.Props, entry.Metadata)
 			if err != nil {
 				return nil, err
 			}
-			metadata := gb.Metadata{Lang: "en", Title: "Not found", Robots: "noindex, nofollow"}
-			if len(entry.Metadata) > 0 && string(entry.Metadata) != "null" {
-				if err := json.Unmarshal(entry.Metadata, &metadata); err != nil {
-					return nil, fmt.Errorf("decode static metadata for %s: %w", route.RouteID, err)
-				}
-			}
-			store.routes[route.RouteID] = append(store.routes[route.RouteID], LoadedPageEntry{
-				Params: entry.Params,
-				Page:   LoadedPage{Kind: gb.ResultOK, Props: props, Metadata: metadata, Status: 200, Cache: gb.CachePolicy{Mode: gb.CachePublic, MaxAge: 300}},
-			})
+			store.routes[route.RouteID] = append(store.routes[route.RouteID], LoadedPageEntry{Params: entry.Params, Page: page})
 		}
 	}
 	return store, nil
 }
 
-func (s *StaticStore) Loader(routeID string) PageLoader {
-	return func(ctx *gb.PageContext) (LoadedPage, error) {
-		for _, entry := range s.routes[routeID] {
-			if staticParamsMatch(entry.Params, ctx.Params) {
-				return entry.Page, nil
-			}
+// decodeStaticEntry rebuilds one packaged page from its props and metadata
+// JSON, re-marking contract-declared SafeHTML strings before the renderer can
+// see them. It is the single decode path for build data: LoadStaticStore runs
+// it eagerly for every entry, PackStaticStore lazily per requested entry.
+func decodeStaticEntry(contracts codegen.Document, routeID string, rawProps, rawMetadata json.RawMessage) (LoadedPage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(rawProps))
+	decoder.UseNumber()
+	var props any
+	if err := decoder.Decode(&props); err != nil {
+		return LoadedPage{}, fmt.Errorf("decode static props for %s: %w", routeID, err)
+	}
+	props, err := codegen.TrustStaticSafeHTML(contracts, routeID, props)
+	if err != nil {
+		return LoadedPage{}, err
+	}
+	metadata := gb.Metadata{Lang: "en", Title: "Not found", Robots: "noindex, nofollow"}
+	if len(rawMetadata) > 0 && string(rawMetadata) != "null" {
+		if err := json.Unmarshal(rawMetadata, &metadata); err != nil {
+			return LoadedPage{}, fmt.Errorf("decode static metadata for %s: %w", routeID, err)
 		}
-		return LoadedPage{Kind: gb.ResultNotFound, Status: 404, Cache: gb.CachePolicy{Mode: gb.CachePrivateNoStore}, Metadata: gb.Metadata{Lang: "en", Title: "Not found", Robots: "noindex, nofollow"}}, nil
+	}
+	return LoadedPage{Kind: gb.ResultOK, Props: props, Metadata: metadata, Status: 200, Cache: gb.CachePolicy{Mode: gb.CachePublic, MaxAge: 300}}, nil
+}
+
+// staticNotFoundPage is the packaged not-found shape served when a URL
+// matches a static route but no entry was packaged for its params.
+func staticNotFoundPage() LoadedPage {
+	return LoadedPage{Kind: gb.ResultNotFound, Status: 404, Cache: gb.CachePolicy{Mode: gb.CachePrivateNoStore}, Metadata: gb.Metadata{Lang: "en", Title: "Not found", Robots: "noindex, nofollow"}}
+}
+
+// BuildID identifies the eager store as build-agnostic: the JSON artifact
+// carries no build header, so New accepts it alongside any Config.BuildID.
+func (s *StaticStore) BuildID() string { return "" }
+
+// Has reports whether the store carries at least one entry for routeID.
+func (s *StaticStore) Has(routeID string) bool {
+	_, ok := s.routes[routeID]
+	return ok
+}
+
+// Entry returns the packaged page for (routeID, params). Everything is
+// already decoded at load time, so the context is unused.
+func (s *StaticStore) Entry(_ context.Context, routeID string, params map[string]string) (LoadedPage, bool, error) {
+	for _, entry := range s.routes[routeID] {
+		if staticParamsMatch(entry.Params, params) {
+			return entry.Page, true, nil
+		}
+	}
+	return LoadedPage{}, false, nil
+}
+
+func (s *StaticStore) Loader(routeID string) PageLoader {
+	return staticEntryLoader(s, routeID)
+}
+
+// staticEntryLoader adapts a StaticEntries store to a PageLoader for pages
+// that ship neither inline static data nor a loader. A URL that matches the
+// route but has no packaged entry renders the packaged not-found shape.
+func staticEntryLoader(entries StaticEntries, routeID string) PageLoader {
+	return func(ctx *gb.PageContext) (LoadedPage, error) {
+		page, ok, err := entries.Entry(ctx.Context, routeID, ctx.Params)
+		if err != nil {
+			return LoadedPage{}, err
+		}
+		if !ok {
+			return staticNotFoundPage(), nil
+		}
+		return page, nil
 	}
 }
 
