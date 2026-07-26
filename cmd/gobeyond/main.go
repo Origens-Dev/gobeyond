@@ -28,6 +28,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/codegen"
 	"github.com/Origens-Dev/gobeyond/document"
 	"github.com/Origens-Dev/gobeyond/internal/project"
+	"github.com/Origens-Dev/gobeyond/pack"
 	"github.com/Origens-Dev/gobeyond/renderer"
 	"github.com/Origens-Dev/gobeyond/renderplan"
 )
@@ -263,6 +264,27 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := renderStaticDocuments(staticDir, planDir, manifest.BuildID, manifest.Routes, compiled.StaticBuild, contractDocument, browserAssets); err != nil {
 		return err
 	}
+	// Pack-only runtime artifacts (ADR 004): the Go runtime loads render
+	// plans and packaged static entries exclusively from these two immutable
+	// containers. The pretty JSON written alongside them (render-plans/*.json,
+	// runtime-data/static-build.json) stays for human inspection and
+	// conformance tooling only; nothing at runtime reads it.
+	const planPackFile = "server/render-plans" + pack.ExtPlans
+	const staticPackFile = "server/runtime-data/static-build" + pack.ExtStatic
+	planPayloads, err := planPayloadsByRoute(compiled.Plans)
+	if err != nil {
+		return err
+	}
+	if err := pack.WritePlans(filepath.Join(dist, filepath.FromSlash(planPackFile)), manifest.BuildID, planPayloads); err != nil {
+		return fmt.Errorf("write render-plan pack: %w", err)
+	}
+	staticEntries, err := staticPackEntries(compiled.StaticBuild)
+	if err != nil {
+		return err
+	}
+	if err := pack.WriteStatic(filepath.Join(dist, filepath.FromSlash(staticPackFile)), manifest.BuildID, staticEntries); err != nil {
+		return fmt.Errorf("write static-entry pack: %w", err)
+	}
 	portableRoutes := portableRouteManifest(projectRoot, manifest.Routes)
 	manifestOutput := map[string]any{
 		"apiVersion": "gobeyond.runtime/v1alpha1",
@@ -275,11 +297,15 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		return err
 	}
 	artifacts := map[string]any{
-		"apiVersion":    "gobeyond.artifacts/v1alpha1",
-		"buildId":       manifest.BuildID,
-		"staticDir":     "static",
-		"server":        "server/gobeyond-server",
+		"apiVersion": "gobeyond.artifacts/v1alpha1",
+		"buildId":    manifest.BuildID,
+		"staticDir":  "static",
+		"server":     "server/gobeyond-server",
+		// renderPlans points at the inspection-only JSON dumps; the runtime
+		// artifacts are the two packs below.
 		"renderPlans":   "server/render-plans",
+		"planPack":      planPackFile,
+		"staticPack":    staticPackFile,
 		"browserAssets": browserAssets,
 		"publicAssets":  publicAssets,
 	}
@@ -306,6 +332,8 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		"compilerProject":   "gobeyond.compiler-project/v1alpha1",
 		"productionRuntime": "go",
 		"assetLayout":       assetLayout,
+		"planPack":          pack.PlanPackCapability,
+		"staticPack":        pack.StaticPackCapability,
 	}); err != nil {
 		return err
 	}
@@ -1017,6 +1045,88 @@ type compilerStaticEntry struct {
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
+// planPayloadsByRoute keys the compiler's render plans by route ID for
+// pack.WritePlans, which re-validates every plan before packing.
+func planPayloadsByRoute(plans []json.RawMessage) (map[string][]byte, error) {
+	byRoute := make(map[string][]byte, len(plans))
+	for _, raw := range plans {
+		var identity struct {
+			RouteID string `json:"routeId"`
+		}
+		if err := json.Unmarshal(raw, &identity); err != nil || identity.RouteID == "" {
+			return nil, errors.New("compiler emitted a render plan without a route ID")
+		}
+		byRoute[identity.RouteID] = raw
+	}
+	return byRoute, nil
+}
+
+// staticPackRecord is the JSON stored per static-pack record: the
+// static-build entry (params, props, metadata) plus the route ID so a cold
+// decode can verify entry identity against its pack key.
+type staticPackRecord struct {
+	RouteID  string          `json:"routeId"`
+	Params   map[string]any  `json:"params"`
+	Props    json.RawMessage `json:"props"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+}
+
+// staticPackEntries flattens the compiler's static build into pack records
+// keyed by pack.StaticEntryKey. Duplicate keys surface as pack build errors.
+func staticPackEntries(artifact compilerStaticBuild) (map[string][]byte, error) {
+	entries := make(map[string][]byte)
+	for _, route := range artifact.Routes {
+		for _, entry := range route.Entries {
+			keyParams, err := staticEntryKeyParams(route.RouteID, entry.Params)
+			if err != nil {
+				return nil, err
+			}
+			key := pack.StaticEntryKey(route.RouteID, keyParams)
+			if _, exists := entries[key]; exists {
+				return nil, fmt.Errorf("static route %s has duplicate entry %q", route.RouteID, key)
+			}
+			encoded, err := json.Marshal(staticPackRecord{
+				RouteID:  route.RouteID,
+				Params:   entry.Params,
+				Props:    entry.Props,
+				Metadata: entry.Metadata,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("encode static entry %q: %w", key, err)
+			}
+			entries[key] = encoded
+		}
+	}
+	return entries, nil
+}
+
+// staticEntryKeyParams projects the compiler's params (strings, or string
+// arrays for catch-all segments) onto the flat string map StaticEntryKey
+// requires. Catch-all values join with "/", matching runtime route params;
+// an optional catch-all matched with zero segments stays present and empty.
+func staticEntryKeyParams(routeID string, params map[string]any) (map[string]string, error) {
+	converted := make(map[string]string, len(params))
+	for name, raw := range params {
+		switch value := raw.(type) {
+		case string:
+			converted[name] = value
+		case []any:
+			segments := make([]string, len(value))
+			for index, segment := range value {
+				text, ok := segment.(string)
+				if !ok {
+					return nil, fmt.Errorf("static route %s parameter %s must contain strings", routeID, name)
+				}
+				segments[index] = text
+			}
+			converted[name] = strings.Join(segments, "/")
+		default:
+			return nil, fmt.Errorf("static route %s parameter %s must be a string or an array of strings", routeID, name)
+		}
+	}
+	return converted, nil
+}
+
 func compilePortableProject(root, website, compilerCLI string, manifest project.Manifest, planDir string, environment []string) (*compilerProjectOutput, error) {
 	temporary, err := os.MkdirTemp("", "gobeyond-compiler-")
 	if err != nil {
@@ -1471,6 +1581,8 @@ func preview(root string, args []string) error {
 		"GOBEYOND_ADDR="+*address,
 		"GOBEYOND_BUILD_ID="+manifest.BuildID,
 		"GOBEYOND_PUBLIC_ORIGIN=http://"+host,
+		"GOBEYOND_PLAN_PACK="+filepath.Join(root, "dist", "server", "render-plans"+pack.ExtPlans),
+		"GOBEYOND_STATIC_PACK="+filepath.Join(root, "dist", "server", "runtime-data", "static-build"+pack.ExtStatic),
 		"GOBEYOND_PLAN_DIR="+filepath.Join(root, "dist", "server", "render-plans"),
 		"GOBEYOND_RUNTIME_DATA_DIR="+filepath.Join(root, "dist", "server", "runtime-data"),
 		"GOBEYOND_STATIC_DIR="+filepath.Join(root, "dist", "static"),

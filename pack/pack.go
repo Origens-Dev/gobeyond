@@ -28,6 +28,14 @@ const (
 	ExtStatic = ".gbs"
 )
 
+// Capability identifiers a build publishes in its deploy metadata
+// (compatibility.json / artifacts.json) to declare the pack artifacts it
+// emitted. Hosting and tooling key off these strings, not file extensions.
+const (
+	PlanPackCapability   = "gobeyond.plan-pack/v1"
+	StaticPackCapability = "gobeyond.static-pack/v1"
+)
+
 // Size limits enforced when opening a pack, before any record is decoded.
 const (
 	MaxBuildIDLen       = 256
