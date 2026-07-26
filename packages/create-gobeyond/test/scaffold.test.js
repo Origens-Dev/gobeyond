@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, mkdtemp, mkdir, readFile, rm, symlink } from 'node:fs/promises'
+import { access, copyFile, mkdtemp, mkdir, readFile, rm, symlink } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -73,6 +73,9 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(dockerfile, /Production is deliberately Node-free/)
   assert.match(dockerfile, /RUN pnpm build/)
   assert.doesNotMatch(dockerfile, /COPY --from=build \/src\/dist\/static/)
+  assert.match(dockerfile, /ENV GOBEYOND_PLAN_PACK=\/app\/dist\/server\/render-plans\.gbp/)
+  assert.match(dockerfile, /ENV GOBEYOND_STATIC_PACK=\/app\/dist\/server\/runtime-data\/static-build\.gbs/)
+  assert.doesNotMatch(dockerfile, /GOBEYOND_PLAN_DIR/)
 
   const client = await readFile(join(destination, 'client.tsx'), 'utf8')
   assert.match(client, /@go-beyond\/react\/browser/)
@@ -91,16 +94,23 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(main, /actioncontract\.Register\(productroute\.AddToCart\)/)
   assert.match(main, /internal\/gobeyondgen\/routes\/r_products__slug_3e2e8eb9/)
   assert.match(main, /internal\/gobeyondgen\/api\/r_api_products_3637094a/)
-  // Modern shape: packaged static store, contracts, cache constructor, ISR
-  // constants from the generated contract, and the shared static handler.
-  // Home uses packaged static props only (no withHomeFallback); product-scoped
-  // request-ID middleware is inline so Discover does not promote / to dynamic.
-  assert.match(main, /GOBEYOND_RUNTIME_DATA_DIR/)
-  assert.match(main, /gbruntime\.LoadStaticStore/)
-  assert.match(main, /Load: staticStore\.Loader\(routes\.RouteRoot\)/)
+  // Modern shape: pack-backed plan/static stores (ADR 004), cache
+  // constructor, ISR constants from the generated contract, and the shared
+  // static handler. Home renders from the static-entry store (no inline
+  // loader); product-scoped request-ID middleware is inline so Discover does
+  // not promote / to dynamic. The runtime never loads the JSON dumps.
+  assert.match(main, /GOBEYOND_PLAN_PACK/)
+  assert.match(main, /GOBEYOND_STATIC_PACK/)
+  assert.match(main, /gbruntime\.OpenPlanStore\(planPack\)/)
+  assert.match(main, /gbruntime\.OpenStaticStore\(staticPack/)
+  assert.match(main, /PlanStore: planStore, Static: staticStore/)
+  assert.doesNotMatch(main, /GOBEYOND_PLAN_DIR/)
+  assert.doesNotMatch(main, /GOBEYOND_RUNTIME_DATA_DIR/)
+  assert.doesNotMatch(main, /LoadStaticStore/)
+  assert.doesNotMatch(main, /loadPlans/)
+  assert.doesNotMatch(main, /static-build\.json/)
   assert.doesNotMatch(main, /withHomeFallback/)
   assert.doesNotMatch(main, /startermiddleware/)
-  assert.match(main, /Contracts: staticStore\.Contracts\(\)/)
   assert.match(main, /cacheenv\.OpenFromEnv\(\)/)
   assert.match(main, /Revalidate: productcontract\.Revalidate/)
   assert.match(main, /Tags: productcontract\.Tags/)
@@ -145,6 +155,11 @@ test('local workspace integration generates contracts and type-checks the starte
   await linkWorkspacePackages(destination)
 
   await run('go', ['mod', 'edit', '-replace', `github.com/Origens-Dev/gobeyond=${workspaceRoot}`], destination)
+  // Seed the starter with the workspace go.sum so the replaced module's own
+  // dependencies (for example the pack container's zstd codec) resolve from
+  // the local module cache without touching the network; the later
+  // `go mod tidy` prunes it back down to what the starter actually uses.
+  await copyFile(join(workspaceRoot, 'go.sum'), join(destination, 'go.sum'))
   await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'generate'], destination)
   await run('go', ['mod', 'tidy'], destination)
   await run(join(nodeModules, '.bin', 'tsc'), ['-p', 'tsconfig.json', '--noEmit'], destination)
