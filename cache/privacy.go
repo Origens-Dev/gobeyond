@@ -2,16 +2,23 @@ package cache
 
 import "net/http"
 
-// Header names checked by IsPrivateRequest / IsPrivateResponse. AuthContextHeader
-// and OIDCTokenHeader mirror middleware/proxy's contract: AuthContextHeader
-// is proxy.AuthContextHeader (asserted exclusively by the middleware hop) and
-// OIDCTokenHeader is "X-Origens-Oidc-Token" from proxy.PreservedHeaders. This
-// package does not import middleware/proxy to avoid pulling its reverse-proxy
-// dependency into every cache consumer; the header names are a stable wire
-// contract, not an implementation detail of that package.
+// Header names shared with the middleware/proxy contract. AuthContextHeader is
+// asserted exclusively by the middleware hop and represents viewer identity.
+// WorkloadIdentityHeader carries a platform-issued credential for the deployed
+// application itself; it does not identify the viewer and therefore must not
+// make otherwise-public content private.
+//
+// This package does not import middleware/proxy to avoid pulling its
+// reverse-proxy dependency into every cache consumer; the header names are a
+// stable wire contract, not an implementation detail of that package.
 const (
-	AuthContextHeader = "X-Gobeyond-Auth-Context"
-	OIDCTokenHeader   = "X-Origens-Oidc-Token"
+	AuthContextHeader      = "X-Gobeyond-Auth-Context"
+	WorkloadIdentityHeader = "X-Origens-Oidc-Token"
+
+	// OIDCTokenHeader is retained for source compatibility. The token is
+	// workload identity, not a viewer-privacy signal.
+	// Deprecated: use WorkloadIdentityHeader.
+	OIDCTokenHeader = WorkloadIdentityHeader
 )
 
 // IsPrivateRequest is the Get-gate (Locked decision 6): it reports whether
@@ -20,19 +27,21 @@ const (
 // should be captured once, before middleware or a loader can strip or add
 // headers, so later privacy checks stay consistent for the whole request.
 //
-// A request is private when it carries a Cookie, an Authorization header, a
-// non-empty AuthContextHeader, or a non-empty OIDCTokenHeader. Forged or
-// stray copies of these headers still trip the gate: fail-closed privacy
-// treats "we cannot prove this is anonymous" as private (design principle:
-// forged auth headers => private).
+// A request is private when it carries a Cookie, an Authorization header, or a
+// non-empty AuthContextHeader. Forged or stray copies of viewer-auth headers
+// still trip the gate: fail-closed privacy treats "we cannot prove this is
+// anonymous" as private (design principle: forged auth headers => private).
+//
+// WorkloadIdentityHeader is intentionally excluded. Hosting layers inject it
+// after stripping any inbound copy, and it authenticates the application to
+// downstream services rather than personalizing the response for a viewer.
 func IsPrivateRequest(header http.Header) bool {
 	if header == nil {
 		return false
 	}
 	return header.Get("Cookie") != "" ||
 		header.Get("Authorization") != "" ||
-		header.Get(AuthContextHeader) != "" ||
-		header.Get(OIDCTokenHeader) != ""
+		header.Get(AuthContextHeader) != ""
 }
 
 // IsPrivateResponse is the Set-gate (Locked decision 6): the Get-gate signals
