@@ -1,9 +1,10 @@
 // Package lambdaurl adapts an http.Handler to an AWS Lambda Function URL
 // (payload format 2.0) entrypoint.
 //
-// Package as provided.al2023 with a bootstrap binary. Ship render plans and
-// runtime manifests beside bootstrap; do not include dist/static in the zip—
-// hashed assets and SSG HTML belong on S3 behind CloudFront.
+// Package as provided.al2023 with a bootstrap binary. Ship the render-plan
+// pack (.gbp), static-entry pack (.gbs), contracts, and runtime manifest
+// beside bootstrap; do not include dist/static in the zip—hashed assets and
+// SSG HTML belong on S3 behind CloudFront.
 package lambdaurl
 
 import (

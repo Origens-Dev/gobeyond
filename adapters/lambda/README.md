@@ -28,16 +28,21 @@ func main() {
 | Item | Include in zip? |
 | --- | --- |
 | `bootstrap` (linux/arm64 binary of this entrypoint) | yes |
-| `dist/server/render-plans/**` | yes |
-| `dist/server/runtime-data/**` | yes |
+| `dist/server/render-plans.gbp` (render-plan pack) | yes |
+| `dist/server/runtime-data/static-build.gbs` (static-entry pack) | yes |
+| `dist/server/runtime-data/contracts.json` | yes |
 | `dist/server/runtime-manifest.json` | yes |
+| `dist/server/render-plans/**` (inspection-only JSON dumps) | no |
 | `dist/static/**` (assets, SSG HTML, robots) | **no** — sync to object storage / CDN |
 
 Runtime: `provided.al2023`, handler `bootstrap`, architecture `arm64`.
 
-Set `GOBEYOND_PLAN_DIR` (default `dist/server/render-plans`) so the binary
-finds packaged plans when the working directory is the unzipped deployment
-root (place plans next to `bootstrap` or adjust env).
+Set `GOBEYOND_PLAN_PACK` (default `dist/server/render-plans.gbp`) and
+`GOBEYOND_STATIC_PACK` (default `dist/server/runtime-data/static-build.gbs`)
+so the binary opens the packs when the working directory is the unzipped
+deployment root (place the packs next to `bootstrap` or adjust env). The
+runtime never loads the per-route JSON plan dumps; they exist for human
+inspection and conformance tooling only.
 
 ## Edge split
 
