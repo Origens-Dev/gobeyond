@@ -20,6 +20,7 @@ package listen
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -28,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -42,6 +44,16 @@ const (
 	// EnvShutdownGrace is the graceful-drain budget injected by the
 	// supervisor (Go duration string).
 	EnvShutdownGrace = "GOBEYOND_SHUTDOWN_GRACE"
+	// EnvReadinessNonce is a one-use hosted-start nonce. When present, the
+	// first successful health request must prove it in ReadinessNonceHeader.
+	EnvReadinessNonce = "GOBEYOND_READINESS_NONCE"
+	// EnvReadinessSignal is an optional slot-private unixgram target. Serve
+	// sends the readiness nonce once after installing the health handler and
+	// starting the HTTP server. The supervisor still verifies health.
+	EnvReadinessSignal = "GOBEYOND_READINESS_SIGNAL"
+	// ReadinessNonceHeader carries EnvReadinessNonce on the supervisor's
+	// initial readiness request.
+	ReadinessNonceHeader = "x-gobeyond-readiness-nonce"
 	// HealthzPath is the readiness endpoint served before app routing.
 	HealthzPath = "/_gobeyond/healthz"
 	// DefaultShutdownGrace applies when GOBEYOND_SHUTDOWN_GRACE is unset
@@ -123,6 +135,11 @@ func Listener(target string) (net.Listener, error) {
 // WithHealthz answers GET/HEAD /_gobeyond/healthz before app routing and
 // independent of the Host header; everything else reaches next.
 func WithHealthz(next http.Handler) http.Handler {
+	expectedNonce := os.Getenv(EnvReadinessNonce)
+	var proven atomic.Bool
+	if expectedNonce == "" {
+		proven.Store(true)
+	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != HealthzPath {
 			next.ServeHTTP(writer, request)
@@ -132,6 +149,17 @@ func WithHealthz(next http.Handler) http.Handler {
 			writer.Header().Set("Allow", http.MethodGet)
 			writer.WriteHeader(http.StatusMethodNotAllowed)
 			return
+		}
+		if !proven.Load() {
+			provided := request.Header.Get(ReadinessNonceHeader)
+			if len(provided) != len(expectedNonce) ||
+				subtle.ConstantTimeCompare([]byte(provided), []byte(expectedNonce)) != 1 {
+				writer.Header().Set("Cache-Control", "no-store")
+				http.Error(writer, "readiness proof required", http.StatusForbidden)
+				return
+			}
+			// Only the first valid proof transitions the process to ready.
+			proven.CompareAndSwap(false, true)
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		writer.Header().Set("Cache-Control", "no-store")
@@ -187,6 +215,9 @@ func ServeContext(ctx context.Context, listener net.Listener, handler http.Handl
 	}
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
+	// Advisory wake-up only: an older platform or a transient signal failure
+	// falls back to nonce-bound adaptive health probing.
+	_ = signalReadiness(os.Getenv(EnvReadinessSignal), os.Getenv(EnvReadinessNonce))
 	select {
 	case err := <-served:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -201,4 +232,35 @@ func ServeContext(ctx context.Context, listener net.Listener, handler http.Handl
 		_ = server.Shutdown(drainCtx)
 		return nil
 	}
+}
+
+func signalReadiness(target, nonce string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil
+	}
+	const prefix = "unixgram://"
+	if !strings.HasPrefix(target, prefix) {
+		return errors.New("readiness signal target must use unixgram://")
+	}
+	path := strings.TrimPrefix(target, prefix)
+	if !strings.HasPrefix(path, "/") {
+		return errors.New("readiness signal target must use an absolute path")
+	}
+	if nonce == "" {
+		return errors.New("readiness signal requires a nonce")
+	}
+	address, err := net.ResolveUnixAddr("unixgram", path)
+	if err != nil {
+		return err
+	}
+	connection, err := net.DialUnix("unixgram", nil, address)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	if _, err := connection.Write([]byte(nonce)); err != nil {
+		return err
+	}
+	return nil
 }

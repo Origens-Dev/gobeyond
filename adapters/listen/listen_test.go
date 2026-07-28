@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,6 +143,97 @@ func TestServeContextOverUnixSocket(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("ServeContext did not return after cancellation")
+	}
+}
+
+func TestServeContextSignalsReadinessAfterInstallingHealthHandler(t *testing.T) {
+	appSocket := shortSocketPath(t)
+	signalSocket := filepath.Join(filepath.Dir(appSocket), "ready.sock")
+	signalAddress, err := net.ResolveUnixAddr("unixgram", signalSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signalListener, err := net.ListenUnixgram("unixgram", signalAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer signalListener.Close()
+	t.Setenv(listen.EnvReadinessNonce, "one-use-proof")
+	t.Setenv(listen.EnvReadinessSignal, "unixgram://"+signalSocket)
+
+	listener, err := listen.Listener("unix://" + appSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- listen.ServeContext(ctx, listener, http.NotFoundHandler())
+	}()
+
+	_ = signalListener.SetReadDeadline(time.Now().Add(time.Second))
+	buffer := make([]byte, 128)
+	count, _, err := signalListener.ReadFromUnix(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buffer[:count]); got != "one-use-proof" {
+		t.Fatalf("readiness signal = %q", got)
+	}
+
+	request, _ := http.NewRequest(http.MethodGet, "http://placeholder"+listen.HealthzPath, nil)
+	request.Header.Set(listen.ReadinessNonceHeader, "one-use-proof")
+	response, err := udsClient(appSocket).Do(request)
+	if err != nil {
+		t.Fatalf("immediate post-signal health: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("immediate post-signal health = %d", response.StatusCode)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHealthzRequiresOneUseHostedReadinessNonce(t *testing.T) {
+	t.Setenv(listen.EnvReadinessNonce, "one-use-proof")
+	appCalled := false
+	handler := listen.WithHealthz(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		appCalled = true
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, listen.HealthzPath, nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || appCalled {
+		t.Fatalf("unproved health response=%d appCalled=%v", response.Code, appCalled)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, listen.HealthzPath, nil)
+	request.Header.Set(listen.ReadinessNonceHeader, "wrong")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("wrong proof response=%d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, listen.HealthzPath, nil)
+	request.Header.Set(listen.ReadinessNonceHeader, "one-use-proof")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid proof response=%d", response.Code)
+	}
+
+	// Once the startup proof succeeds, ordinary health checks used after
+	// pause/resume do not need to retain the secret nonce.
+	request = httptest.NewRequest(http.MethodGet, listen.HealthzPath, nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("post-proof health response=%d", response.Code)
 	}
 }
 
