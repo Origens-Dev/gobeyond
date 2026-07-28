@@ -901,7 +901,9 @@ export function applyDocumentMetadata(
     targetDocument,
     'link[rel="icon"]',
     () => targetDocument.createElement("link"),
-    metadata.icons?.icon,
+    // Match document.Render: default to /favicon.ico when the page omits icons
+    // so client navigations do not strip the browser tab icon.
+    metadata.icons?.icon?.trim() || "/favicon.ico",
     (element, value) => {
       element.setAttribute("rel", "icon");
       element.setAttribute("href", value);

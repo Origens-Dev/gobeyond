@@ -100,3 +100,22 @@ func TestPrivateDocumentForcesNoIndex(t *testing.T) {
 		t.Fatalf("private document must be noindex: %s", output.String())
 	}
 }
+
+func TestRenderDefaultsFaviconWhenIconsOmitted(t *testing.T) {
+	var output bytes.Buffer
+	err := Render(&output, Input{
+		PublicOrigin: "https://example.com",
+		Metadata:     gb.Metadata{Lang: "en", Title: "Home"},
+		Hydration:    HydrationData{BuildID: "build-1", RouteID: "home", Props: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := output.String()
+	if !strings.Contains(document, `rel="icon" href="/favicon.ico"`) {
+		t.Fatalf("expected default favicon link: %s", document)
+	}
+	if strings.Contains(document, `rel="apple-touch-icon"`) {
+		t.Fatalf("apple-touch-icon must stay omitted when unset: %s", document)
+	}
+}
