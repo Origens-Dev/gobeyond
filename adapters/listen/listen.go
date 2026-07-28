@@ -220,6 +220,9 @@ func ServeContext(ctx context.Context, listener net.Listener, handler http.Handl
 	}
 	acceptLoop := make(chan struct{})
 	served := make(chan error, 1)
+	resumeSignals := make(chan os.Signal, 1)
+	signal.Notify(resumeSignals, syscall.SIGCONT)
+	defer signal.Stop(resumeSignals)
 	go func() { served <- server.Serve(&acceptNotifyingListener{Listener: listener, started: acceptLoop}) }()
 	select {
 	case <-acceptLoop:
@@ -242,9 +245,6 @@ func ServeContext(ctx context.Context, listener net.Listener, handler http.Handl
 		return nil
 	}
 
-	resumeSignals := make(chan os.Signal, 1)
-	signal.Notify(resumeSignals, syscall.SIGCONT)
-	defer signal.Stop(resumeSignals)
 	go func() {
 		for {
 			select {
