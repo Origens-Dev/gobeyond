@@ -64,7 +64,11 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 		if check && path != manifestPath {
 			existing, readErr := os.ReadFile(path)
 			if readErr != nil || !bytes.Equal(existing, content) {
-				return fmt.Errorf("generated output is stale: %s", path)
+				return fmt.Errorf(
+					"generated output is stale: %s (expected build ID %s)",
+					path,
+					buildID,
+				)
 			}
 			continue
 		}

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -194,6 +195,49 @@ func TestServeContextSignalsReadinessAfterInstallingHealthHandler(t *testing.T) 
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServeContextResignalsReadinessOnSIGCONT(t *testing.T) {
+	appSocket := shortSocketPath(t)
+	signalSocket := filepath.Join(filepath.Dir(appSocket), "resume.sock")
+	signalListener, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: signalSocket, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer signalListener.Close()
+	t.Setenv(listen.EnvReadinessNonce, "resume-proof")
+	t.Setenv(listen.EnvReadinessSignal, "unixgram://"+signalSocket)
+
+	listener, err := listen.Listener("unix://" + appSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- listen.ServeContext(ctx, listener, http.NotFoundHandler()) }()
+	readReadinessDatagram(t, signalListener, "resume-proof")
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGCONT); err != nil {
+		t.Fatal(err)
+	}
+	readReadinessDatagram(t, signalListener, "resume-proof")
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readReadinessDatagram(t *testing.T, listener *net.UnixConn, want string) {
+	t.Helper()
+	_ = listener.SetReadDeadline(time.Now().Add(time.Second))
+	buffer := make([]byte, 128)
+	count, _, err := listener.ReadFromUnix(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buffer[:count]); got != want {
+		t.Fatalf("readiness signal = %q, want %q", got, want)
 	}
 }
 
