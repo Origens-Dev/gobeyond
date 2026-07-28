@@ -78,7 +78,13 @@ func Render(writer io.Writer, input Input) error {
 	for _, alternate := range input.Metadata.Alternates {
 		writeLink(&output, "alternate", alternate.Language, alternate.URL)
 	}
-	writeLink(&output, "icon", "", input.Metadata.Icons.Icon)
+	// Sites that ship public/favicon.ico but omit Metadata.Icons still need an
+	// explicit <link rel="icon"> so browsers (and client navigations) keep it.
+	icon := strings.TrimSpace(input.Metadata.Icons.Icon)
+	if icon == "" {
+		icon = "/favicon.ico"
+	}
+	writeLink(&output, "icon", "", icon)
 	writeLink(&output, "apple-touch-icon", "", input.Metadata.Icons.AppleTouch)
 	writePropertyMeta(&output, "og:type", input.Metadata.OpenGraph.Type)
 	writePropertyMeta(&output, "og:title", input.Metadata.OpenGraph.Title)

@@ -4,6 +4,7 @@ import { act, createElement, useEffect, type ReactElement, type ReactNode } from
 import { renderToString } from "react-dom/server";
 import { JSDOM } from "jsdom";
 import {
+  applyDocumentMetadata,
   BROWSER_PROTOCOL_VERSION,
   BUILD_ID_HEADER,
   NAVIGATION_ANNOUNCER_ID,
@@ -159,6 +160,28 @@ async function waitFor(check: () => boolean): Promise<void> {
   }
   assert.fail("condition was not reached");
 }
+
+test("applyDocumentMetadata defaults favicon when icons are omitted", () => {
+  const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", {
+    url: "https://example.gobeyond.dev/",
+  });
+  applyDocumentMetadata(
+    {
+      lang: "en",
+      title: "Home",
+      description: "A site",
+      robots: "index, follow",
+      canonical: "https://example.gobeyond.dev/",
+    },
+    dom.window.document,
+  );
+  assert.equal(
+    dom.window.document.querySelector('link[rel="icon"]')?.getAttribute("href"),
+    "/favicon.ico",
+  );
+  assert.equal(dom.window.document.querySelector('link[rel="apple-touch-icon"]'), null);
+  dom.window.close();
+});
 
 test("runtime navigation accepts only the explicit lower-camel result DTO", () => {
   assert.equal(
