@@ -7,9 +7,11 @@
 //     (local dev). When GOBEYOND_LISTEN is unset, Serve falls back to a
 //     TCP listener on GOBEYOND_ADDR (default ":8080") so existing local
 //     workflows keep working;
-//   - answers GET /_gobeyond/healthz with 200 before app routing and
-//     independent of the Host header (readiness = socket accepts AND
-//     healthz returns 200);
+//   - sends its process-generation readiness nonce to the slot-private
+//     GOBEYOND_READINESS_SIGNAL unixgram socket after the primary listener
+//     has entered its accept loop. This is the hosted readiness contract;
+//     GET /_gobeyond/healthz remains available for compatibility and local
+//     development;
 //   - on SIGTERM stops accepting, drains in-flight requests up to
 //     GOBEYOND_SHUTDOWN_GRACE (duration string, default 20s), then
 //     returns nil so the process exits 0.
@@ -44,12 +46,13 @@ const (
 	// EnvShutdownGrace is the graceful-drain budget injected by the
 	// supervisor (Go duration string).
 	EnvShutdownGrace = "GOBEYOND_SHUTDOWN_GRACE"
-	// EnvReadinessNonce is a one-use hosted-start nonce. When present, the
-	// first successful health request must prove it in ReadinessNonceHeader.
+	// EnvReadinessNonce is the hosted process-generation nonce. It is sent to
+	// EnvReadinessSignal at initial startup and after each SIGCONT resume. The
+	// compatibility health endpoint also accepts it as a one-use proof.
 	EnvReadinessNonce = "GOBEYOND_READINESS_NONCE"
 	// EnvReadinessSignal is an optional slot-private unixgram target. Serve
-	// sends the readiness nonce once after installing the health handler and
-	// starting the HTTP server. The supervisor still verifies health.
+	// sends the readiness nonce after the primary listener has entered its
+	// accept loop and after each SIGCONT resume.
 	EnvReadinessSignal = "GOBEYOND_READINESS_SIGNAL"
 	// ReadinessNonceHeader carries EnvReadinessNonce on the supervisor's
 	// initial readiness request.
@@ -203,7 +206,9 @@ func Serve(handler http.Handler) error {
 }
 
 // ServeContext serves handler on listener until ctx is cancelled, then
-// drains in-flight requests up to ShutdownGrace before returning nil.
+// drains in-flight requests up to ShutdownGrace before returning nil. In
+// hosted mode it sends readiness only after net/http has called Accept on the
+// primary listener, which proves the server has entered its accept loop.
 func ServeContext(ctx context.Context, listener net.Listener, handler http.Handler) error {
 	server := &http.Server{
 		Handler:           WithHealthz(handler),
@@ -213,11 +218,46 @@ func ServeContext(ctx context.Context, listener net.Listener, handler http.Handl
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	acceptLoop := make(chan struct{})
 	served := make(chan error, 1)
-	go func() { served <- server.Serve(listener) }()
-	// Advisory wake-up only: an older platform or a transient signal failure
-	// falls back to nonce-bound adaptive health probing.
-	_ = signalReadiness(os.Getenv(EnvReadinessSignal), os.Getenv(EnvReadinessNonce))
+	go func() { served <- server.Serve(&acceptNotifyingListener{Listener: listener, started: acceptLoop}) }()
+	select {
+	case <-acceptLoop:
+		// The platform-owned unixgram listener validates the nonce. Do not use
+		// HTTP as a fallback: a configured signal that cannot be delivered must
+		// leave the process unready.
+		if err := signalReadiness(os.Getenv(EnvReadinessSignal), os.Getenv(EnvReadinessNonce)); err != nil {
+			_ = server.Close()
+			return fmt.Errorf("signal initial readiness: %w", err)
+		}
+	case err := <-served:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		drainCtx, cancel := context.WithTimeout(context.Background(), ShutdownGrace())
+		defer cancel()
+		_ = server.Shutdown(drainCtx)
+		return nil
+	}
+
+	resumeSignals := make(chan os.Signal, 1)
+	signal.Notify(resumeSignals, syscall.SIGCONT)
+	defer signal.Stop(resumeSignals)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-resumeSignals:
+				// A failed resume signal deliberately leaves the platform waiter
+				// pending until its readiness deadline; it must not silently
+				// degrade to an HTTP probe.
+				_ = signalReadiness(os.Getenv(EnvReadinessSignal), os.Getenv(EnvReadinessNonce))
+			}
+		}
+	}()
 	select {
 	case err := <-served:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -232,6 +272,23 @@ func ServeContext(ctx context.Context, listener net.Listener, handler http.Handl
 		_ = server.Shutdown(drainCtx)
 		return nil
 	}
+}
+
+// acceptNotifyingListener closes started immediately before the HTTP server's
+// first blocking Accept. This is stronger than knowing server.Serve was
+// launched: the application has entered its primary listener's accept loop
+// before it is allowed to publish readiness.
+type acceptNotifyingListener struct {
+	net.Listener
+	started chan<- struct{}
+	once    atomic.Bool
+}
+
+func (l *acceptNotifyingListener) Accept() (net.Conn, error) {
+	if l.once.CompareAndSwap(false, true) {
+		close(l.started)
+	}
+	return l.Listener.Accept()
 }
 
 func signalReadiness(target, nonce string) error {
