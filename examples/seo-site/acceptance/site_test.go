@@ -1,4 +1,4 @@
-package seosite
+package acceptance
 
 import (
 	"encoding/json"
@@ -8,16 +8,16 @@ import (
 	"testing"
 
 	gb "github.com/Origens-Dev/gobeyond"
-	actioncontract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	actioncontract "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	registry "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/registry"
+	routes "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/routes"
+	shared "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/site"
 	"github.com/Origens-Dev/gobeyond/renderplan"
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
 
 func TestLiveNoJavaScriptSEOArticle(t *testing.T) {
-	server, err := New("test-build", "https://example.com", testPlans())
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newTestSite(t, "", nil)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/articles/portable-react", nil))
 	if recorder.Code != http.StatusOK {
@@ -37,14 +37,7 @@ func TestLiveNoJavaScriptSEOArticle(t *testing.T) {
 }
 
 func TestDynamicDocumentsLinkExactBuildStyles(t *testing.T) {
-	assets := AssetConfig{
-		ClientScript: "/_gobeyond/builds/test-build/assets/app.js",
-		Styles:       []string{"/_gobeyond/builds/test-build/assets/assets/site-a1b2.css"},
-	}
-	server, err := NewWithAssets("test-build", "https://example.com", testPlans(), assets)
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newTestSite(t, "/_gobeyond/builds/test-build/assets/app.js", []string{"/_gobeyond/builds/test-build/assets/assets/site-a1b2.css"})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/products/trail-pack", nil))
 	if recorder.Code != http.StatusOK {
@@ -61,10 +54,7 @@ func TestDynamicDocumentsLinkExactBuildStyles(t *testing.T) {
 }
 
 func TestLiveSEOFixturesExposeCrawlerContent(t *testing.T) {
-	server, err := New("test-build", "https://example.com", testPlans())
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newTestSite(t, "", nil)
 	tests := []struct {
 		path     string
 		contains []string
@@ -89,10 +79,7 @@ func TestLiveSEOFixturesExposeCrawlerContent(t *testing.T) {
 }
 
 func TestLocalizedRoutesAreReciprocalAndAccountIsPrivate(t *testing.T) {
-	server, err := New("test-build", "https://example.com", testPlans())
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newTestSite(t, "", nil)
 	for _, test := range []struct {
 		path, lang, canonical, alternate string
 	}{
@@ -120,10 +107,7 @@ func TestLocalizedRoutesAreReciprocalAndAccountIsPrivate(t *testing.T) {
 }
 
 func TestCrawlerControlDocuments(t *testing.T) {
-	server, err := New("test-build", "https://example.com", testPlans())
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newTestSite(t, "", nil)
 	for _, test := range []struct{ path, contentType, contains string }{
 		{"/robots.txt", "text/plain", "Disallow: /account"},
 		{"/sitemap.xml", "application/xml", "https://example.com/fr/articles/react-portable"},
@@ -137,10 +121,7 @@ func TestCrawlerControlDocuments(t *testing.T) {
 }
 
 func TestLiveSEOStatusAndRedirectSemantics(t *testing.T) {
-	server, err := New("test-build", "https://example.com", testPlans())
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newTestSite(t, "", nil)
 	tests := []struct {
 		path     string
 		status   int
@@ -159,10 +140,7 @@ func TestLiveSEOStatusAndRedirectSemantics(t *testing.T) {
 }
 
 func TestLiveTypedActionContract(t *testing.T) {
-	server, err := New("test-build", "https://example.com", testPlans())
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newTestSite(t, "", nil)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"https://example.com/_gobeyond/builds/test-build/actions/"+actioncontract.ActionID,
@@ -250,6 +228,43 @@ func TestLiveActionRejectsInvalidOutputBeforeDelivery(t *testing.T) {
 	}
 }
 
+func newTestSite(t *testing.T, clientScript string, styles []string) http.Handler {
+	t.Helper()
+	handler, closeFn, err := registry.Handler(registry.Options{
+		BuildID:      "test-build",
+		PublicOrigin: "https://example.com",
+		Plans:        testPlans(),
+		Loads: map[string]gbruntime.PageLoader{
+			routes.RouteRoot: func(ctx *gb.PageContext) (gbruntime.LoadedPage, error) {
+				shared.WithPublicOrigin(ctx, "https://example.com")
+				return *homePage("https://example.com"), nil
+			},
+		},
+		ClientScript: clientScript,
+		Styles:       styles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeFn != nil {
+			_ = closeFn()
+		}
+	})
+	return handler
+}
+
+func homePage(origin string) *gbruntime.LoadedPage {
+	canonical := origin + "/"
+	return &gbruntime.LoadedPage{
+		Kind: gb.ResultOK, Status: http.StatusOK, Cache: gb.CachePolicy{Mode: gb.CachePublic, MaxAge: 300},
+		Props: map[string]any{"featuredArticleHref": "/articles/portable-react", "featuredProductHref": "/products/trail-pack"},
+		Metadata: shared.PublicMetadata("en", "GoBeyond Field Guide", "Practical notes and equipment for building beyond the usual path.", canonical, "website", origin+"/social/home.svg", gb.JSONLD{
+			"@context": "https://schema.org", "@type": "WebSite", "name": "GoBeyond Field Guide", "url": canonical,
+		}),
+	}
+}
+
 func testPlans() map[string]*renderplan.Plan {
 	text := func(value renderplan.Expression) renderplan.Node {
 		return &renderplan.Text{Kind: "text", Value: value}
@@ -276,15 +291,15 @@ func testPlans() map[string]*renderplan.Plan {
 	link := func(href renderplan.Expression, children ...renderplan.Node) *renderplan.Element {
 		return &renderplan.Element{Kind: "element", Tag: "a", Attributes: []renderplan.Attribute{attr("href", href, renderplan.AttributeURL)}, Children: children}
 	}
-	home := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: HomeRouteID, Root: element("article",
+	home := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: routes.RouteRoot, Root: element("article",
 		element("h1", text(literal("GoBeyond Field Guide"))),
 		element("p", text(literal("Practical notes and equipment for building beyond the usual path."))),
 		element("ul", element("li", link(path("featuredArticleHref"), text(literal("Read the featured article")))), element("li", link(path("featuredProductHref"), text(literal("See the featured product"))))),
 	)}
-	account := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: AccountRouteID, Root: element("section", element("h1", text(literal("Your account"))), element("p", text(literal("Signed in as ")), text(path("displayName"))))}
+	account := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: routes.RouteAccount, Root: element("section", element("h1", text(literal("Your account"))), element("p", text(literal("Signed in as ")), text(path("displayName"))))}
 	articleTime := element("time", text(path("publishedLabel")))
 	articleTime.Attributes = []renderplan.Attribute{attr("dateTime", path("publishedAt"), renderplan.AttributeString)}
-	article := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: ArticleRouteID, Root: element("article",
+	article := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: routes.RouteArticlesSlug, Root: element("article",
 		element("header",
 			element("h1", text(path("title"))),
 			element("p", text(path("description"))),
@@ -292,7 +307,7 @@ func testPlans() map[string]*renderplan.Plan {
 		),
 		&renderplan.Each{Kind: "each", Items: path("paragraphs"), Item: "paragraph", Key: path("paragraph"), Body: element("p", text(path("paragraph")))},
 	)}
-	category := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: CategoryRouteID, Root: element("section",
+	category := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: routes.RouteCategoryPage, Root: element("section",
 		element("h1", text(literal("Field notes · page ")), text(path("currentPage"))),
 		element("ol", &renderplan.Each{Kind: "each", Items: path("items"), Item: "item", Key: local("item", "href"), Body: element("li", element("h2", link(local("item", "href"), text(local("item", "name")))), element("p", text(local("item", "summary"))))}),
 		&renderplan.Element{Kind: "element", Tag: "nav", Attributes: []renderplan.Attribute{attr("aria-label", literal("Category pages"), renderplan.AttributeString)}, Children: []renderplan.Node{
@@ -314,7 +329,7 @@ func testPlans() map[string]*renderplan.Plan {
 			navigation,
 		)}
 	}
-	location := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: LocationRouteID, Root: element("article",
+	location := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: routes.RouteLocationsSlug, Root: element("article",
 		element("h1", text(path("name"))), element("p", text(path("description"))),
 		element("address", text(path("streetAddress")), element("br"), text(path("locality")), text(literal(", ")), text(path("region")), text(literal(" ")), text(path("postalCode")), element("br"), link(path("phoneHref"), text(path("phone")))),
 		element("h2", text(literal("Hours"))), element("ul", &renderplan.Each{Kind: "each", Items: path("hours"), Item: "hours", Key: path("hours"), Body: element("li", text(path("hours")))}),
@@ -324,14 +339,14 @@ func testPlans() map[string]*renderplan.Plan {
 	productImage.Attributes = []renderplan.Attribute{attr("src", path("image"), renderplan.AttributeURL), attr("alt", path("imageAlt"), renderplan.AttributeString), attr("width", literal(1200), renderplan.AttributeString), attr("height", literal(800), renderplan.AttributeString)}
 	price := element("data", text(path("priceLabel")))
 	price.Attributes = []renderplan.Attribute{attr("value", path("price"), renderplan.AttributeString)}
-	product := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: ProductRouteID, Root: element("article",
+	product := &renderplan.Plan{APIVersion: "gobeyond.render/v1alpha1", RouteID: routes.RouteProductsSlug, Root: element("article",
 		element("h1", text(path("name"))), productImage, element("p", text(path("description"))), element("p", price),
 		&renderplan.Conditional{Kind: "conditional", Test: &renderplan.Binary{Kind: "binary", Operator: "==", Left: path("availability"), Right: literal("InStock")}, Consequent: element("p", text(literal("In stock"))), Alternate: element("p", text(literal("Out of stock")))},
 	)}
 	return map[string]*renderplan.Plan{
-		HomeRouteID: home, AccountRouteID: account, ArticleRouteID: article, CategoryRouteID: category,
-		EnglishArticleRouteID: localizedPlan(EnglishArticleRouteID, "Languages", "alternateFrench"),
-		FrenchArticleRouteID:  localizedPlan(FrenchArticleRouteID, "Langues", "alternateEnglish"),
-		LocationRouteID:       location, ProductRouteID: product,
+		routes.RouteRoot: home, routes.RouteAccount: account, routes.RouteArticlesSlug: article, routes.RouteCategoryPage: category,
+		routes.RouteEnArticlesSlug: localizedPlan(routes.RouteEnArticlesSlug, "Languages", "alternateFrench"),
+		routes.RouteFrArticlesSlug: localizedPlan(routes.RouteFrArticlesSlug, "Langues", "alternateEnglish"),
+		routes.RouteLocationsSlug:  location, routes.RouteProductsSlug: product,
 	}
 }

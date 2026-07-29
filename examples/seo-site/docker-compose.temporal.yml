@@ -1,0 +1,10 @@
+# Contained Temporal for gobeyond local World (ADR 006).
+# Usage from examples/seo-site:
+#   docker compose -f docker-compose.temporal.yml up -d
+services:
+  temporal:
+    image: temporalio/temporal:1.28.1
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/home/temporal/temporal.db"]
+    ports:
+      - "7233:7233"
+      - "8233:8233"

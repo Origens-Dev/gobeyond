@@ -1,5 +1,5 @@
 // Package gobeyond defines the public request-time contracts used by GoBeyond
-// page loaders, actions, API handlers, and middleware.
+// page loaders, actions, API handlers, middleware, and durable workers.
 package gobeyond
 
 import (

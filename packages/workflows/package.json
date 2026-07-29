@@ -1,13 +1,13 @@
 {
-  "name": "@go-beyond/schema",
+  "name": "@go-beyond/workflows",
   "version": "0.1.0-alpha.11",
-  "description": "Serializable page and action schema contracts for GoBeyond",
+  "description": "Portable durable workflow client for GoBeyond (requires a configured World)",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Origens-Dev/gobeyond.git",
-    "directory": "packages/schema"
+    "directory": "packages/workflows"
   },
   "publishConfig": {
     "access": "public",

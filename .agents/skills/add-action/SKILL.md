@@ -16,7 +16,7 @@ non-page HTTP contract.
 2. Generate bindings, then implement the matching Go function in the sibling
    `app/<route>/actions.go`.
 3. The runtime imports the generated-safe route projection under
-   `internal/gobeyondgen/routes/<route-ID>/`, never the source `app/`
+   `.generated/routes/<route-ID>/`, never the source `app/`
    directory.
 4. Validate business rules in Go even though the browser client validates
    schema shape.

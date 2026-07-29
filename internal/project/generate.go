@@ -56,7 +56,7 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 	manifestPath := filepath.Join(root, ".gobeyond", "routes.json")
 	outputs := map[string][]byte{
 		manifestPath: manifestBytes,
-		filepath.Join(root, "internal", "gobeyondgen", "routes", "routes_gen.go"): goBytes,
+		filepath.Join(root, GeneratedDir, "routes", "routes_gen.go"): goBytes,
 	}
 	for path, content := range outputs {
 		// .gobeyond is ignored and may be absent in a clean clone. Check mode
@@ -193,7 +193,9 @@ func ignoredBuildDirectory(relative, name string) bool {
 	case ".git", ".gobeyond", ".terraform", "node_modules", "dist", "coverage":
 		return true
 	}
-	if strings.HasPrefix(name, ".tmp") || strings.Contains(relative, "/internal/gobeyondgen") || strings.HasPrefix(relative, "internal/gobeyondgen") {
+	if strings.HasPrefix(name, ".tmp") ||
+		strings.Contains(relative, "/internal/gobeyondgen") || strings.HasPrefix(relative, "internal/gobeyondgen") ||
+		strings.Contains(relative, "/"+GeneratedDir) || strings.HasPrefix(relative, GeneratedDir) {
 		return true
 	}
 	return false
@@ -203,7 +205,8 @@ func ignoredBuildFile(file, relative, name string) bool {
 	if name == ".DS_Store" || strings.HasPrefix(name, ".env") || name == "page.schema.go" || name == "page.schema.ts" || strings.HasSuffix(name, ".gobeyond_gen.go") {
 		return true
 	}
-	if strings.HasPrefix(relative, "internal/gobeyondgen/") || strings.Contains(relative, "/internal/gobeyondgen/") {
+	if strings.HasPrefix(relative, "internal/gobeyondgen/") || strings.Contains(relative, "/internal/gobeyondgen/") ||
+		strings.HasPrefix(relative, GeneratedDir+"/") || strings.Contains(relative, "/"+GeneratedDir+"/") {
 		return true
 	}
 	return name == "go.mod" && isManagedRouteModule(file)

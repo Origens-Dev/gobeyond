@@ -5,6 +5,7 @@ package shared
 
 import (
 	"errors"
+	"strings"
 
 	gb "github.com/Origens-Dev/gobeyond"
 )
@@ -12,11 +13,14 @@ import (
 const PublicOriginValue = "gobeyond.public_origin"
 
 func PublicOrigin(ctx *gb.PageContext) (string, error) {
+	if ctx != nil && strings.TrimSpace(ctx.PublicOrigin) != "" {
+		return strings.TrimSuffix(ctx.PublicOrigin, "/"), nil
+	}
 	origin, ok := ctx.Values[PublicOriginValue].(string)
 	if !ok || origin == "" {
 		return "", errors.New("configured public origin is missing from page context")
 	}
-	return origin, nil
+	return strings.TrimSuffix(origin, "/"), nil
 }
 
 func PublicMetadata(lang, title, description, canonical, kind, image string, jsonLD gb.JSONLD, alternates ...gb.Alternate) gb.Metadata {

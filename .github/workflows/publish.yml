@@ -59,6 +59,7 @@ jobs:
           --filter @go-beyond/compiler
           --filter @go-beyond/react
           --filter @go-beyond/vite
+          --filter @go-beyond/workflows
           build
 
       - name: Resolve publish tag
@@ -107,4 +108,5 @@ jobs:
           publish_one @go-beyond/compiler
           publish_one @go-beyond/react
           publish_one @go-beyond/vite
+          publish_one @go-beyond/workflows
           publish_one @go-beyond/create-gobeyond

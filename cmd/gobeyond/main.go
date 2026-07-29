@@ -205,6 +205,10 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
+	workerTargets, err := workerBuildTargets(projectRoot)
+	if err != nil {
+		return err
+	}
 	var publicAssets []string
 	tasks := []buildTask{
 		{
@@ -242,6 +246,19 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 			},
 		})
 	}
+	for _, workerTarget := range workerTargets {
+		wt := workerTarget
+		workerOutput := filepath.Join(dist, buildpaths.WorkersDir, wt.ID, buildpaths.WorkerEntryName)
+		if err := os.MkdirAll(filepath.Dir(workerOutput), 0o755); err != nil {
+			return err
+		}
+		tasks = append(tasks, buildTask{
+			name: "build worker " + wt.ID,
+			run: func() error {
+				return runCommandWithEnvironment(root, withEnvironment(environment, "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", workerOutput, wt.PackageDir)
+			},
+		})
+	}
 	if err := runBuildTasks(tasks...); err != nil {
 		return err
 	}
@@ -253,6 +270,28 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 			"v":        1,
 			"entry":    buildpaths.MiddlewareEntryName,
 			"matchers": []string{"/*"},
+		}); err != nil {
+			return err
+		}
+	}
+	if len(workerTargets) > 0 {
+		assetLayout = buildpaths.AssetLayoutV3
+		workerEntries := make([]map[string]any, 0, len(workerTargets))
+		for _, workerTarget := range workerTargets {
+			queue, queueErr := gb.TaskQueueName(workerTarget.ID, gb.LocalEnvironment)
+			if queueErr != nil {
+				return queueErr
+			}
+			workerEntries = append(workerEntries, map[string]any{
+				"id":        workerTarget.ID,
+				"key":       workerTarget.Key,
+				"entry":     path.Join(buildpaths.WorkersDir, workerTarget.ID, buildpaths.WorkerEntryName),
+				"taskQueue": queue,
+			})
+		}
+		if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.WorkersManifest), map[string]any{
+			"v":       1,
+			"workers": workerEntries,
 		}); err != nil {
 			return err
 		}
@@ -1249,7 +1288,7 @@ func syncContractFiles(website string, contracts json.RawMessage, check bool) er
 			return err
 		}
 	}
-	generatedRoot := filepath.Join(website, "internal", "gobeyondgen", "contracts")
+	generatedRoot := filepath.Join(website, project.GeneratedDir, "contracts")
 	if err := filepath.WalkDir(generatedRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if errors.Is(walkErr, os.ErrNotExist) {
@@ -1519,15 +1558,11 @@ func browserNodeEnvironment(mode string) string {
 }
 
 func serverBuildTarget(website string) (string, error) {
-	target := filepath.Join(website, "server", "cmd", "app")
-	if _, err := os.Stat(target); err == nil {
+	target := filepath.Join(website, project.GeneratedDir, "cmd", "site")
+	if info, err := os.Stat(target); err == nil && info.IsDir() {
 		return target, nil
 	}
-	target = filepath.Join(website, "server", "cmd", "site")
-	if _, err := os.Stat(target); err == nil {
-		return target, nil
-	}
-	return "", errors.New("production server entry is missing; add server/cmd/app or server/cmd/site")
+	return "", errors.New("production server entry missing; run gobeyond generate (expected .generated/cmd/site)")
 }
 
 // middlewareBuildTarget reports the optional middleware artifact entry
@@ -1545,6 +1580,40 @@ func middlewareBuildTarget(website string) (string, error) {
 		return "", errors.New("server/cmd/middleware must be a directory containing the middleware main package")
 	}
 	return target, nil
+}
+
+type workerBuildTargetInfo struct {
+	ID         string
+	Key        string
+	PackageDir string
+}
+
+// workerBuildTargets resolves generated per-worker Go main packages under
+// .generated/cmd/workers/<id>.
+func workerBuildTargets(website string) ([]workerBuildTargetInfo, error) {
+	workers, err := project.DiscoverWorkers(website)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, nil
+	}
+	var targets []workerBuildTargetInfo
+	for _, worker := range workers {
+		dir := filepath.Join(website, project.GeneratedDir, "cmd", "workers", worker.ID)
+		info, statErr := os.Stat(dir)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("worker %q entry missing; run gobeyond generate (expected %s)", worker.ID, dir)
+			}
+			return nil, statErr
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("worker entry %s must be a directory", dir)
+		}
+		targets = append(targets, workerBuildTargetInfo{ID: worker.ID, Key: worker.Key, PackageDir: dir})
+	}
+	return targets, nil
 }
 
 func runCommand(directory, name string, args ...string) error {

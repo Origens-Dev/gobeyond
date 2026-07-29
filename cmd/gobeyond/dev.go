@@ -228,6 +228,11 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 		return devRebuildFull
 	}
 	internalPrefix := strings.TrimSuffix(filepath.ToSlash(internalRoot), "/") + "/"
+	workersRoot, err := filepath.Rel(root, filepath.Join(website, "workers"))
+	if err != nil {
+		return devRebuildFull
+	}
+	workersPrefix := strings.TrimSuffix(filepath.ToSlash(workersRoot), "/") + "/"
 	changed := false
 	for path, previousDigest := range previous {
 		nextDigest, exists := next[path]
@@ -238,7 +243,7 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 			continue
 		}
 		changed = true
-		if !devGoOnlyPath(path, serverPrefix, appPrefix, internalPrefix) {
+		if !devGoOnlyPath(path, serverPrefix, appPrefix, internalPrefix, workersPrefix) {
 			return devRebuildFull
 		}
 	}
@@ -253,8 +258,11 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 	return devRebuildNone
 }
 
-func devGoOnlyPath(file, serverPrefix, appPrefix, internalPrefix string) bool {
+func devGoOnlyPath(file, serverPrefix, appPrefix, internalPrefix, workersPrefix string) bool {
 	if (strings.HasPrefix(file, serverPrefix) || strings.HasPrefix(file, internalPrefix)) && filepath.Ext(file) == ".go" {
+		return true
+	}
+	if strings.HasPrefix(file, workersPrefix) && path.Base(file) == "durables.go" {
 		return true
 	}
 	if !strings.HasPrefix(file, appPrefix) {

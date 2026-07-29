@@ -17,7 +17,7 @@ authorization, a request-specific status, or SEO metadata.
 2. Add the sibling `app/<route>/page.go`. `page.tsx` alone is static; this
    file opts the route into request-time Go behavior.
 3. Run generation before compiling. The generated-safe runtime package lives
-   at `internal/gobeyondgen/routes/<route-ID>/`; runtime code imports that
+   at `.generated/routes/<route-ID>/`; runtime code imports that
    package, never an `app/` source directory.
 4. Return the generated props type, not maps or untyped JSON. Derive data from
    `ctx.Params`, `ctx.Request`, and context values.
