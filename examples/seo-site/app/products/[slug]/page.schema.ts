@@ -3,7 +3,8 @@ import { definePage, schema } from "@go-beyond/schema";
 
 export const page = definePage({
   props: schema.object({
-    availability: schema.string(),
+    availability: schema.enum(["InStock",
+    "OutOfStock"]),
     canonical: schema.string(),
     currency: schema.string(),
     description: schema.string(),

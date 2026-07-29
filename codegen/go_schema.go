@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -206,6 +207,11 @@ func (r *goSchemaResolver) expression(pkg *goSchemaPackage, expression ast.Expr)
 		}
 		r.visiting[key] = true
 		defer delete(r.visiting, key)
+		if primitive, ok := definition.Type.(*ast.Ident); ok && primitive.Name == "string" {
+			if values := stringConstantsForType(pkg, node.Name); len(values) > 0 {
+				return "schema.enum([" + quoteStrings(values) + "])", nil
+			}
+		}
 		return r.expression(pkg, definition.Type)
 	case *ast.StructType:
 		fields := make([]string, 0, len(node.Fields.List))
@@ -266,6 +272,28 @@ func (r *goSchemaResolver) expression(pkg *goSchemaPackage, expression ast.Expr)
 	default:
 		return "", fmt.Errorf("unsupported Go type expression %T", expression)
 	}
+}
+
+func stringConstantsForType(pkg *goSchemaPackage, typeName string) []string {
+	values := make([]string, 0)
+	for _, declaration := range pkg.values {
+		if declared, ok := declaration.Type.(*ast.Ident); !ok || declared.Name != typeName {
+			continue
+		}
+		for _, value := range declaration.Values {
+			literal, ok := value.(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return nil
+			}
+			decoded, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				return nil
+			}
+			values = append(values, decoded)
+		}
+	}
+	sort.Strings(values)
+	return values
 }
 
 func jsonFieldName(field *ast.Field) string {

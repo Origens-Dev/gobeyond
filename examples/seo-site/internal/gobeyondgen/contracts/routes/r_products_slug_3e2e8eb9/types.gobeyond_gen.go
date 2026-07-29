@@ -10,17 +10,24 @@ import (
 const RouteID = "r_products__slug_3e2e8eb9"
 
 type Props struct {
-	Availability string  `json:"availability"`
-	Canonical    string  `json:"canonical"`
-	Currency     string  `json:"currency"`
-	Description  string  `json:"description"`
-	Image        string  `json:"image"`
-	ImageAlt     string  `json:"imageAlt"`
-	Name         string  `json:"name"`
-	Price        float64 `json:"price"`
-	PriceLabel   string  `json:"priceLabel"`
-	Slug         string  `json:"slug"`
+	Availability PropsAvailability `json:"availability"`
+	Canonical    string            `json:"canonical"`
+	Currency     string            `json:"currency"`
+	Description  string            `json:"description"`
+	Image        string            `json:"image"`
+	ImageAlt     string            `json:"imageAlt"`
+	Name         string            `json:"name"`
+	Price        float64           `json:"price"`
+	PriceLabel   string            `json:"priceLabel"`
+	Slug         string            `json:"slug"`
 }
+
+type PropsAvailability string
+
+const (
+	PropsAvailabilityInStock    PropsAvailability = "InStock"
+	PropsAvailabilityOutOfStock PropsAvailability = "OutOfStock"
+)
 
 // Revalidate is how long the origin may reuse this route's computed props,
 // from definePage({ revalidate }). Zero leaves the route uncached. It is not
