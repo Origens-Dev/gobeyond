@@ -108,5 +108,5 @@ jobs:
           publish_one @go-beyond/compiler
           publish_one @go-beyond/react
           publish_one @go-beyond/vite
-          publish_one @go-beyond/workflows
           publish_one @go-beyond/create-gobeyond
+          publish_one @go-beyond/workflows
