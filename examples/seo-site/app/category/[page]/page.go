@@ -12,6 +12,20 @@ import (
 
 type Params struct{ Page string }
 
+type Props struct {
+	Canonical    string           `json:"canonical"`
+	CurrentPage  int64            `json:"currentPage"`
+	Items        []PropsItemsItem `json:"items"`
+	NextHref     *string          `json:"nextHref,omitempty"`
+	PreviousHref *string          `json:"previousHref,omitempty"`
+}
+
+type PropsItemsItem struct {
+	Href    string `json:"href"`
+	Name    string `json:"name"`
+	Summary string `json:"summary"`
+}
+
 func Page(ctx *gb.PageContext, params Params) (gbruntime.LoadedPage, error) {
 	origin, err := shared.PublicOrigin(ctx)
 	if err != nil {

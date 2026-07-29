@@ -9,18 +9,20 @@ Start with the scaffold rather than an empty directory:
 gobeyond add page articles/[slug]
 ```
 
-It creates both `page.tsx` and `page.schema.ts`. The command is idempotent for
-an unchanged scaffold and refuses to overwrite either file after you edit it.
+It creates `page.tsx` and its authored static-route `page.schema.ts`. The
+command is idempotent for an unchanged scaffold and refuses to overwrite either
+file after you edit it.
 `page.tsx` alone is a static route. Use `gobeyond add dynamic articles/[slug]`
-when the page also needs request-time Go data; it adds a typed sibling
-`app/articles/[slug]/page.go` that imports the deterministic generated route
-contract. Run `gobeyond generate` before compiling the Go server. The build
-projects the route source into a generated Go package that the runtime
-registers by route ID; never import an `app/` directory directly.
+when the page also needs request-time Go data; it adds a sibling
+`app/articles/[slug]/page.go`. Define its `Props` type using your app's normal
+Go domain packages, then run `gobeyond generate`. Generation writes the
+ignored `page.schema.ts` consumed by the React page, so do not hand-edit that
+file. The build projects route source into a generated Go package that the
+runtime registers by route ID; never import an `app/` directory directly.
 
 ```text
 app/articles/[slug]/page.tsx        React content and composition
-app/articles/[slug]/page.schema.ts  serializable component props
+app/articles/[slug]/page.schema.ts  generated React component props (dynamic)
 app/articles/[slug]/page.build.ts   optional build-time data
 app/articles/[slug]/page.go         optional request-time data and metadata
 ```

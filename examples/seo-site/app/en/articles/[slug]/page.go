@@ -12,6 +12,20 @@ import (
 
 type Params struct{ Slug string }
 
+type Props struct {
+	AlternateEnglish string    `json:"alternateEnglish"`
+	AlternateFrench  string    `json:"alternateFrench"`
+	AuthorName       string    `json:"authorName"`
+	Canonical        string    `json:"canonical"`
+	Description      string    `json:"description"`
+	Paragraphs       []string  `json:"paragraphs"`
+	PublishedAt      time.Time `json:"publishedAt"`
+	PublishedLabel   string    `json:"publishedLabel"`
+	Slug             string    `json:"slug"`
+	SocialImage      string    `json:"socialImage"`
+	Title            string    `json:"title"`
+}
+
 func Page(ctx *gb.PageContext, params Params) (gbruntime.LoadedPage, error) {
 	origin, err := shared.PublicOrigin(ctx)
 	if err != nil {

@@ -219,9 +219,54 @@ function clientEntry() {
   return `import './app/site.css'\nimport { bootstrap } from '@go-beyond/react/browser'\nimport HomePage from './app/page.js'\nimport ProductPage from './app/products/[slug]/page.js'\n\nbootstrap({\n  routes: {\n    r_route_8a5edab2: HomePage,\n    r_products__slug_3e2e8eb9: ProductPage,\n  },\n})\n`
 }
 
-function dynamicPage(modulePath) {
+function legacyDynamicPage(modulePath) {
   return `// Package products_slug supplies request-time props for app/products/[slug]/page.tsx.\npackage products_slug\n\nimport (\n  \"os\"\n  \"strings\"\n\n  gb \"github.com/Origens-Dev/gobeyond\"\n  contract \"${modulePath}/server/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9\"\n)\n\n// Page receives only request-time concerns. React remains the source of truth\n// for markup in app/products/[slug]/page.tsx.\nfunc Page(ctx *gb.PageContext) (gb.PageResult[contract.Props], error) {\n  slug := ctx.Params[\"slug\"]\n  if slug != \"portable-react\" {\n    return gb.NotFound[contract.Props](gb.Metadata{Lang: \"en\", Title: \"Product not found\", Robots: \"noindex, nofollow\"}), nil\n  }\n  origin := os.Getenv(\"GOBEYOND_PUBLIC_ORIGIN\")\n  if origin == \"\" { origin = \"http://localhost:8080\" }\n  canonical := origin + \"/products/portable-react\"\n  image := origin + \"/portable-react.jpg\"\n  socialImage := strings.Replace(origin, \"http://\", \"https://\", 1) + \"/portable-react.jpg\"\n  return gb.OK(contract.Props{\n    Name: \"Portable React\", Description: \"Crawler-visible React markup rendered by Go.\",\n    Price: \"$49\", Availability: \"In stock\", ImageURL: image,\n  }, gb.Metadata{\n    Lang: \"en\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", Canonical: canonical, Robots: \"index, follow\",\n    OpenGraph: gb.OpenGraph{Type: \"product\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", URL: canonical, Images: []string{socialImage}},\n    Twitter: gb.Twitter{Card: \"summary_large_image\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", Images: []string{socialImage}},\n    JSONLD: []gb.JSONLD{{\"@context\": \"https://schema.org\", \"@type\": \"Product\", \"name\": \"Portable React\", \"offers\": map[string]any{\"@type\": \"Offer\", \"price\": \"49\", \"priceCurrency\": \"USD\", \"availability\": \"https://schema.org/InStock\"}}},\n  }), nil\n}\n`
     .replaceAll('/server/internal/gobeyondgen/', '/internal/gobeyondgen/')
+}
+
+function dynamicPage() {
+  return `// Package products_slug supplies request-time props for app/products/[slug]/page.tsx.
+package products_slug
+
+import (
+  "os"
+  "strings"
+
+  gb "github.com/Origens-Dev/gobeyond"
+)
+
+// Props is the JSON payload passed from this Go loader to React.
+type Props struct {
+  Name         string ` + "`json:\"name\"`" + `
+  Description  string ` + "`json:\"description\"`" + `
+  Price        string ` + "`json:\"price\"`" + `
+  Availability string ` + "`json:\"availability\"`" + `
+  ImageURL     string ` + "`json:\"imageURL\"`" + `
+}
+
+var Config = gb.PageConfig{Revalidate: 60, Tags: []string{"products"}}
+
+func Page(ctx *gb.PageContext) (gb.PageResult[Props], error) {
+  slug := ctx.Params["slug"]
+  if slug != "portable-react" {
+    return gb.NotFound(Props{}, gb.Metadata{Lang: "en", Title: "Product not found", Robots: "noindex, nofollow"}), nil
+  }
+  origin := os.Getenv("GOBEYOND_PUBLIC_ORIGIN")
+  if origin == "" { origin = "http://localhost:8080" }
+  canonical := origin + "/products/portable-react"
+  image := origin + "/portable-react.jpg"
+  socialImage := strings.Replace(origin, "http://", "https://", 1) + "/portable-react.jpg"
+  return gb.OK(Props{
+    Name: "Portable React", Description: "Crawler-visible React markup rendered by Go.",
+    Price: "$49", Availability: "In stock", ImageURL: image,
+  }, gb.Metadata{
+    Lang: "en", Title: "Portable React", Description: "A Go-rendered product page.", Canonical: canonical, Robots: "index, follow",
+    OpenGraph: gb.OpenGraph{Type: "product", Title: "Portable React", Description: "A Go-rendered product page.", URL: canonical, Images: []string{socialImage}},
+    Twitter: gb.Twitter{Card: "summary_large_image", Title: "Portable React", Description: "A Go-rendered product page.", Images: []string{socialImage}},
+    JSONLD: []gb.JSONLD{{"@context": "https://schema.org", "@type": "Product", "name": "Portable React", "offers": map[string]any{"@type": "Offer", "price": "49", "priceCurrency": "USD", "availability": "https://schema.org/InStock"}}},
+  }), nil
+}
+`
 }
 
 function actionHandler(modulePath) {

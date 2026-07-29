@@ -20,9 +20,9 @@ remain fatal.
   `app/api/**/route.go` stay beside the route they serve.
 - `internal/`: reusable Go services, policy, and integrations that are not
   owned by one route.
-- `internal/gobeyondgen/`: committed generated contracts and registries,
-  plus ignored safe Go projection packages. The runtime imports projections,
-  never source directories below `app/`.
+- `internal/gobeyondgen/`: generated contracts and registries, plus ignored
+  safe Go projection packages. The runtime imports projections, never source
+  directories below `app/`. Authored `page.go` never imports those internals.
 - `render-plans/`: versioned language-neutral render artifacts packaged with the server.
 
 The same URL is represented by a React route directory and, only when needed,
@@ -35,6 +35,12 @@ app/products/[slug]/page.go        request-time loader for /products/[slug]
 
 Generated stable IDs join those trees; filesystem paths and Go package names
 are never inferred from one another at runtime.
+
+For request-time routes, the serializable boundary is authored in Go:
+`type Props struct { ... }` plus an optional `gb.PageConfig`. Generation derives
+the ignored sibling `page.schema.ts` that React imports for `InferPageProps`.
+This keeps domain types (CMS, database DTOs, and application policy) in the
+application's Go packages instead of under a framework namespace.
 
 Go import paths cannot contain route brackets. Generation therefore writes an
 ignored, marker-protected `go.mod` beside every route as an editor-only package
@@ -140,13 +146,13 @@ bag, and a refresh recorder actions use to accumulate invalidation targets.
 | `cache.Load(ctx, Options{…}, codec, fn)` | Shared data cache keyed by deploy prefix, build ID, name, and args. |
 | `cache.LoadRoute(…)` | Props ISR keyed by route ID, path, raw query, and public origin. |
 | `cache.RevalidateTag` / `cache.RevalidatePath` | Bump tag versions, drop matching L1 entries, and record paths/tags on the scope. |
-| `definePage({ revalidate, tags })` | Origin props ISR window and invalidation tags in `page.schema.ts`; requires a sibling `page.go`. Unknown keys are rejected. |
-| `gb.CachePolicy` on loader results | HTTP `Cache-Control` only; not inferred from schema `revalidate`. |
+| `gb.PageConfig` | Origin props ISR window and invalidation tags for a Go-owned page payload; generation writes them into `page.schema.ts`. |
+| `gb.CachePolicy` on loader results | HTTP `Cache-Control` only; not inferred from `PageConfig.Revalidate`. |
 
-Schema `revalidate` and loader `gb.CachePolicy` are separate knobs. When both
+`PageConfig.Revalidate` and loader `gb.CachePolicy` are separate knobs. When both
 apply, keep them aligned deliberately—for example
 `gb.PublicRevalidate(revalidate, k*revalidate, staleIfError)` beside
-`definePage({ revalidate: 60, … })`. The runtime cannot detect an accidental
+`gb.PageConfig{Revalidate: 60, …}`. The runtime cannot detect an accidental
 mismatch from an omitted policy versus an explicit `private, no-store`.
 
 Privacy is fail-closed and shared across HTTP headers and every cache layer.

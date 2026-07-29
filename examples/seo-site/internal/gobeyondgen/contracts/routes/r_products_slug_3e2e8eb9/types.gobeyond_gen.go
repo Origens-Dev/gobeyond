@@ -10,31 +10,24 @@ import (
 const RouteID = "r_products__slug_3e2e8eb9"
 
 type Props struct {
-	Availability PropsAvailability `json:"availability"`
-	Canonical    string            `json:"canonical"`
-	Currency     string            `json:"currency"`
-	Description  string            `json:"description"`
-	Image        string            `json:"image"`
-	ImageAlt     string            `json:"imageAlt"`
-	Name         string            `json:"name"`
-	Price        float64           `json:"price"`
-	PriceLabel   string            `json:"priceLabel"`
-	Slug         string            `json:"slug"`
+	Availability string  `json:"availability"`
+	Canonical    string  `json:"canonical"`
+	Currency     string  `json:"currency"`
+	Description  string  `json:"description"`
+	Image        string  `json:"image"`
+	ImageAlt     string  `json:"imageAlt"`
+	Name         string  `json:"name"`
+	Price        float64 `json:"price"`
+	PriceLabel   string  `json:"priceLabel"`
+	Slug         string  `json:"slug"`
 }
-
-type PropsAvailability string
-
-const (
-	PropsAvailabilityInStock    PropsAvailability = "InStock"
-	PropsAvailabilityOutOfStock PropsAvailability = "OutOfStock"
-)
 
 // Revalidate is how long the origin may reuse this route's computed props,
 // from definePage({ revalidate }). Zero leaves the route uncached. It is not
 // an HTTP directive: the edge Cache-Control stays the loader's gb.CachePolicy,
 // which should be derived from this window rather than drifting from it.
-const Revalidate = 60 * time.Second
+const Revalidate = 0 * time.Second
 
 // Tags are this route's invalidation handles, from definePage({ tags }).
 // cache.RevalidateTag on any of them drops the route's cached props.
-var Tags = []string{"products"}
+var Tags []string

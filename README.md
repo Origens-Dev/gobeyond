@@ -21,7 +21,7 @@ Start with the page. Add Go only when the page crosses a request-time boundary.
 
 ```text
 app/products/[slug]/page.tsx        React content, composition, interaction
-app/products/[slug]/page.schema.ts  serializable props contract
+app/products/[slug]/page.schema.ts  generated React props contract (Go-owned routes)
 app/products/[slug]/actions.ts      browser-visible action contract
 app/products/[slug]/page.go         request-time data, status, metadata, cache
 app/products/[slug]/actions.go       authorization and mutations
@@ -35,6 +35,14 @@ second Go template. GoBeyond also creates ignored, managed `go.mod` sidecars in
 route folders so `gopls` can type-check names such as `[slug]`; production code
 imports only the generated packages under `internal/gobeyondgen/`.
 
+For a request-time route, `page.go` owns the JSON payload: declare `Props` with
+ordinary Go imports (for example, an app-owned CMS package) and return
+`gb.PageResult[Props]`. `gobeyond generate` derives the ignored sibling
+`page.schema.ts` from that Go type, which keeps React's
+`InferPageProps<typeof page>` aligned with the value Go actually serializes.
+Declare `var Config = gb.PageConfig{...}` beside `Props` when the route uses
+origin props caching. Do not edit generated `page.schema.ts` files.
+
 ## What the MVP proves
 
 - Cross-file project React components compile to versioned rendering plans.
@@ -45,7 +53,8 @@ imports only the generated packages under `internal/gobeyondgen/`.
   behavior may downgrade only at the nearest marked boundary, is reported in a
   deterministic manifest, and is transformed at that exact browser call site.
   Unmarked unsupported code and non-portability failures remain fatal.
-- TypeScript page/action schemas generate deterministic, committed Go types.
+- Go-owned page props generate deterministic React contracts; TypeScript action
+  schemas continue to generate deterministic Go action types.
 - Go produces full metadata, canonical URLs, JSON-LD, semantic body HTML,
   hydration data, real redirects, and real `404` responses.
 - Same-origin links use build-aware soft navigation, reconcile SEO metadata,

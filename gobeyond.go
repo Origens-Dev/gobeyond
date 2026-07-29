@@ -38,6 +38,14 @@ type CachePolicy struct {
 	StaleIfError         int       `json:"staleIfError,omitempty"`
 }
 
+// PageConfig declares the compiler-visible cache contract for a Go-owned page
+// payload. GoBeyond generates the sibling page.schema.ts from this value and
+// the page's Props type.
+type PageConfig struct {
+	Revalidate int
+	Tags       []string
+}
+
 func (p CachePolicy) HeaderValue() string {
 	if p.Mode != CachePublic {
 		return "private, no-store"
@@ -247,9 +255,10 @@ func OK[T any](props T, metadata Metadata) PageResult[T] {
 	}
 }
 
-func NotFound[T any](metadata Metadata) PageResult[T] {
+func NotFound[T any](props T, metadata Metadata) PageResult[T] {
 	return PageResult[T]{
 		Kind:     ResultNotFound,
+		Props:    props,
 		Metadata: metadata,
 		Status:   http.StatusNotFound,
 		Cache:    CachePolicy{Mode: CachePrivateNoStore},
