@@ -30,10 +30,12 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 	}
 	outputs := make(map[string][]byte)
 	moduleOutputs := make(map[string][]byte)
-	generatedRoot := filepath.Join(root, "internal", "gobeyondgen")
+	generatedRoot := filepath.Join(root, GeneratedDir)
 	routeTree := filepath.Join(generatedRoot, "routes")
 	apiTree := filepath.Join(generatedRoot, "api")
 	workerTree := filepath.Join(generatedRoot, "workers")
+	cmdTree := filepath.Join(generatedRoot, "cmd")
+	registryTree := filepath.Join(generatedRoot, "registry")
 
 	websiteRelative, err := filepath.Rel(moduleRoot, root)
 	if err != nil || websiteRelative == ".." || strings.HasPrefix(websiteRelative, ".."+string(filepath.Separator)) {
@@ -70,14 +72,12 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 			packageName = parsed.Name.Name
 			target := filepath.Join(routeTree, route.ID, name)
 			if name == "page.go" {
-				contractImport := path.Join(websiteImport, "internal/gobeyondgen/contracts/routes", route.ID)
-				contractFile := filepath.Join(generatedRoot, "contracts", "routes", route.ID, "types.gobeyond_gen.go")
-				if _, statErr := os.Stat(contractFile); statErr == nil {
+				if contractImport, found, findErr := findRouteContract(root, websiteImport, route.ID); findErr != nil {
+					err = findErr
+				} else if found {
 					outputs[target], err = projectedPageSource(root, authorFile, content, contractImport)
-				} else if errors.Is(statErr, os.ErrNotExist) {
-					outputs[target], err = projectedSource(root, authorFile, content)
 				} else {
-					err = statErr
+					outputs[target], err = projectedSource(root, authorFile, content)
 				}
 			} else {
 				outputs[target], err = projectedSource(root, authorFile, content)
@@ -147,6 +147,19 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 		if err != nil {
 			return err
 		}
+		mainSource, mainErr := generatedWorkerMain(websiteImport, worker)
+		if mainErr != nil {
+			return mainErr
+		}
+		outputs[filepath.Join(cmdTree, "workers", worker.ID, "main.go")] = mainSource
+	}
+
+	siteOutputs, err := generateSiteArtifacts(root, websiteImport, routes)
+	if err != nil {
+		return err
+	}
+	for file, content := range siteOutputs {
+		outputs[file] = content
 	}
 
 	// Projections and route-local modules are ignored, ephemeral build/tooling
@@ -164,6 +177,12 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 	if err := cleanGeneratedTree(workerTree, outputs, false, false); err != nil {
 		return err
 	}
+	if err := cleanGeneratedTree(registryTree, outputs, false, false); err != nil {
+		return err
+	}
+	if err := cleanGeneratedTree(cmdTree, outputs, false, false); err != nil {
+		return err
+	}
 	if err := syncManagedFiles(moduleOutputs, generatedModuleMarker, false); err != nil {
 		return err
 	}
@@ -173,7 +192,10 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 	if err := cleanManagedModules(filepath.Join(root, "workers"), moduleOutputs, false); err != nil {
 		return err
 	}
-	return cleanLegacyGeneratedRoot(filepath.Join(root, "server", "internal", "gobeyondgen"), check)
+	if err := cleanLegacyGeneratedRoot(filepath.Join(root, "server", "internal", "gobeyondgen"), check); err != nil {
+		return err
+	}
+	return cleanLegacyGeneratedRoot(filepath.Join(root, LegacyGeneratedDir), check)
 }
 
 func projectedSource(root, authorFile string, content []byte) ([]byte, error) {
@@ -252,6 +274,8 @@ func parseRouteSource(root, file string, content []byte, websiteImport string) (
 		}
 		if importPath == websiteImport+"/app" || strings.HasPrefix(importPath, websiteImport+"/app/") ||
 			strings.HasPrefix(importPath, websiteImport+"/workers/") || importPath == websiteImport+"/workers" ||
+			strings.HasPrefix(importPath, websiteImport+"/"+GeneratedDir+"/routes/") ||
+			strings.HasPrefix(importPath, websiteImport+"/"+GeneratedDir+"/workers/") ||
 			strings.HasPrefix(importPath, websiteImport+"/internal/gobeyondgen/routes/") ||
 			strings.HasPrefix(importPath, websiteImport+"/internal/gobeyondgen/workers/") {
 			position := files.Position(imported.Path.Pos())

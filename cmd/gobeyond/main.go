@@ -1288,7 +1288,7 @@ func syncContractFiles(website string, contracts json.RawMessage, check bool) er
 			return err
 		}
 	}
-	generatedRoot := filepath.Join(website, "internal", "gobeyondgen", "contracts")
+	generatedRoot := filepath.Join(website, project.GeneratedDir, "contracts")
 	if err := filepath.WalkDir(generatedRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if errors.Is(walkErr, os.ErrNotExist) {
@@ -1558,15 +1558,11 @@ func browserNodeEnvironment(mode string) string {
 }
 
 func serverBuildTarget(website string) (string, error) {
-	target := filepath.Join(website, "server", "cmd", "app")
-	if _, err := os.Stat(target); err == nil {
+	target := filepath.Join(website, project.GeneratedDir, "cmd", "site")
+	if info, err := os.Stat(target); err == nil && info.IsDir() {
 		return target, nil
 	}
-	target = filepath.Join(website, "server", "cmd", "site")
-	if _, err := os.Stat(target); err == nil {
-		return target, nil
-	}
-	return "", errors.New("production server entry is missing; add server/cmd/app or server/cmd/site")
+	return "", errors.New("production server entry missing; run gobeyond generate (expected .generated/cmd/site)")
 }
 
 // middlewareBuildTarget reports the optional middleware artifact entry
@@ -1592,9 +1588,8 @@ type workerBuildTargetInfo struct {
 	PackageDir string
 }
 
-// workerBuildTargets resolves per-worker Go main packages.
-// Prefer server/cmd/workers/<id>; if a site has exactly one worker and
-// server/cmd/worker exists, use that as a shorthand.
+// workerBuildTargets resolves generated per-worker Go main packages under
+// .generated/cmd/workers/<id>.
 func workerBuildTargets(website string) ([]workerBuildTargetInfo, error) {
 	workers, err := project.DiscoverWorkers(website)
 	if err != nil {
@@ -1605,37 +1600,20 @@ func workerBuildTargets(website string) ([]workerBuildTargetInfo, error) {
 	}
 	var targets []workerBuildTargetInfo
 	for _, worker := range workers {
-		dir := filepath.Join(website, "server", "cmd", "workers", worker.ID)
+		dir := filepath.Join(website, project.GeneratedDir, "cmd", "workers", worker.ID)
 		info, statErr := os.Stat(dir)
-		if statErr == nil && info.IsDir() {
-			targets = append(targets, workerBuildTargetInfo{ID: worker.ID, Key: worker.Key, PackageDir: dir})
-			continue
-		}
-		if !errors.Is(statErr, os.ErrNotExist) {
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("worker %q entry missing; run gobeyond generate (expected %s)", worker.ID, dir)
+			}
 			return nil, statErr
 		}
-	}
-	if len(targets) == len(workers) {
-		return targets, nil
-	}
-	if len(workers) == 1 && len(targets) == 0 {
-		dir := filepath.Join(website, "server", "cmd", "worker")
-		info, statErr := os.Stat(dir)
-		if statErr == nil && info.IsDir() {
-			return []workerBuildTargetInfo{{
-				ID:         workers[0].ID,
-				Key:        workers[0].Key,
-				PackageDir: dir,
-			}}, nil
+		if !info.IsDir() {
+			return nil, fmt.Errorf("worker entry %s must be a directory", dir)
 		}
-		if !errors.Is(statErr, os.ErrNotExist) {
-			return nil, statErr
-		}
+		targets = append(targets, workerBuildTargetInfo{ID: worker.ID, Key: worker.Key, PackageDir: dir})
 	}
-	if len(targets) == 0 {
-		return nil, fmt.Errorf("workers declared but no server/cmd/workers/<id> (or server/cmd/worker for a single worker) entrypoint")
-	}
-	return nil, fmt.Errorf("missing server/cmd/workers/<id> for one or more workers")
+	return targets, nil
 }
 
 func runCommand(directory, name string, args ...string) error {

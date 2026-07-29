@@ -14,7 +14,7 @@ Keep React page mutations in `$add-action` instead.
 
 1. Create `app/api/<route>/route.go`; its route is `/api/...`.
 2. Run generation before compiling. The runtime imports the generated-safe API
-   projection under `internal/gobeyondgen/api/<route-ID>/`, never the source
+   projection under `.generated/api/<route-ID>/`, never the source
    directory below `app/`.
 3. Implement only the required uppercase HTTP-method functions (`GET`, `POST`,
    and so on) using `*gobeyond.RequestContext` and `gobeyond.Response`.

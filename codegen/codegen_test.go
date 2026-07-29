@@ -20,11 +20,11 @@ func TestProductAndActionGoldens(t *testing.T) {
 	}
 
 	assertGolden(t, files,
-		"internal/gobeyondgen/contracts/routes/products_slug/types.gobeyond_gen.go",
+		".generated/contracts/routes/products_slug/types.gobeyond_gen.go",
 		"products_slug.golden.go",
 	)
 	assertGolden(t, files,
-		"internal/gobeyondgen/contracts/actions/add_to_cart/types.gobeyond_gen.go",
+		".generated/contracts/actions/add_to_cart/types.gobeyond_gen.go",
 		"add_to_cart.golden.go",
 	)
 	for generatedPath, source := range files {
@@ -66,7 +66,7 @@ func TestOptionalAndNullableRepresentations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(files["internal/gobeyondgen/contracts/routes/profile/types.gobeyond_gen.go"])
+	source := string(files[".generated/contracts/routes/profile/types.gobeyond_gen.go"])
 	for _, pattern := range []string{
 		`Avatar\s+\*\[\]byte\s+` + "`json:\"avatar,omitempty\"`" + ` // MVP: absent and null both decode as nil\.`,
 		`Bio\s+\*string\s+` + "`json:\"bio\"`",
@@ -95,7 +95,7 @@ func TestNestedArraysObjectsAndEnums(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(files["internal/gobeyondgen/contracts/routes/catalog/types.gobeyond_gen.go"])
+	source := string(files[".generated/contracts/routes/catalog/types.gobeyond_gen.go"])
 	for _, expected := range []string{
 		"[]PropsGroupsItem",
 		"[]PropsGroupsItemItemsItem",
@@ -130,7 +130,7 @@ func TestRouteCacheMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cached := string(files["internal/gobeyondgen/contracts/routes/cached/types.gobeyond_gen.go"])
+	cached := string(files[".generated/contracts/routes/cached/types.gobeyond_gen.go"])
 	for _, expected := range []string{
 		"const Revalidate = 60 * time.Second",
 		`var Tags = []string{"products", "product"}`,
@@ -139,7 +139,7 @@ func TestRouteCacheMetadata(t *testing.T) {
 			t.Errorf("missing %q:\n%s", expected, cached)
 		}
 	}
-	uncached := string(files["internal/gobeyondgen/contracts/routes/uncached/types.gobeyond_gen.go"])
+	uncached := string(files[".generated/contracts/routes/uncached/types.gobeyond_gen.go"])
 	for _, expected := range []string{
 		"const Revalidate = 0 * time.Second",
 		"var Tags []string",

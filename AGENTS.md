@@ -15,6 +15,8 @@ workers under `workers/`.
   `workers/durables.go` for the default worker). Do not import one worker from
   another; share code via `internal/`. Task queues are
   `{workerId}__{environment}` (local environment is `local`).
+- Authors write `app/`, `workers/`, and `internal/` only. Generated
+  projections, contracts, registries, and process mains live under `.generated/`.
 - Do not move React component composition into Go handlers.
 - Initial Go-rendered markup must stay inside the documented portable profile.
 - Always attempt portable compilation, including inside `use client` modules.

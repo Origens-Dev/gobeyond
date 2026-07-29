@@ -82,7 +82,7 @@ function projectFiles(projectName, { tailwind }) {
       },
     }),
     'go.mod': `module ${modulePath}\n\ngo 1.24.0\n\nrequire github.com/Origens-Dev/gobeyond v${GOBEYOND_VERSION}\n`,
-    '.gitignore': `.gobeyond/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n`,
+    '.gitignore': `.gobeyond/\n**/.generated/routes/*/\n**/.generated/api/\n**/.generated/workers/\n**/.generated/cmd/\n**/.generated/registry/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n**/app/**/go.mod\n**/workers/**/go.mod\n`,
     '.env.example': `GOBEYOND_PUBLIC_ORIGIN=http://localhost:8080\n`,
     'tsconfig.json': json({
       compilerOptions: {
@@ -126,7 +126,7 @@ function projectFiles(projectName, { tailwind }) {
       .replace('return gb.ActionResult[contract.Output]{}, errors.New', 'return contract.Output{}, errors.New')
       .replace('return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil', 'return contract.Output{Added: true}, nil'),
     'app/api/products/route.go': apiHandler(),
-    'server/cmd/app/main.go': serverMain(modulePath),
+    'internal/site/hooks.go': siteHooks(),
   }
 }
 
@@ -201,8 +201,9 @@ function starterReadme(projectName) {
     '- `app/products/[slug]/actions.go`: typed Go mutation handler beside its browser contract.',
     '- `app/api/products/route.go`: Go HTTP API.',
     '- `internal/`: reusable Go services and policy.',
-    '- `server/cmd/app/main.go`: explicit runtime registry. It is the one place Go connects route IDs, loaders, actions, APIs, middleware, and assets. The starter keeps product-scoped middleware inline here; a `server/middleware/middleware.go` file would make Discover promote every `page.tsx` route to dynamic and skip static packaging for `/`.', '',
-    'Run `pnpm generate` after changing schemas/routes. It commits the deterministic route registry and Go contracts under `internal/gobeyondgen/`; check them with `pnpm generate:check`.', '',
+    '- `internal/site/hooks.go`: optional site hooks (middleware, wrap, cache).',
+    '- `.generated/`: gobeyond-owned projections, contracts, registry, and process mains.', '',
+    'Run `pnpm generate` after changing schemas/routes. It commits the route registry and Go contracts under `.generated/`; check them with `pnpm generate:check`.', '',
     'Generation also creates ignored, managed `go.mod` sidecars in route folders so `gopls` can type-check names such as `[slug]`. The production server imports only the safe generated packages.', '',
     '## Production', '',
     'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN separately.', '',
@@ -221,7 +222,7 @@ function clientEntry() {
 
 function legacyDynamicPage(modulePath) {
   return `// Package products_slug supplies request-time props for app/products/[slug]/page.tsx.\npackage products_slug\n\nimport (\n  \"os\"\n  \"strings\"\n\n  gb \"github.com/Origens-Dev/gobeyond\"\n  contract \"${modulePath}/server/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9\"\n)\n\n// Page receives only request-time concerns. React remains the source of truth\n// for markup in app/products/[slug]/page.tsx.\nfunc Page(ctx *gb.PageContext) (gb.PageResult[contract.Props], error) {\n  slug := ctx.Params[\"slug\"]\n  if slug != \"portable-react\" {\n    return gb.NotFound[contract.Props](gb.Metadata{Lang: \"en\", Title: \"Product not found\", Robots: \"noindex, nofollow\"}), nil\n  }\n  origin := os.Getenv(\"GOBEYOND_PUBLIC_ORIGIN\")\n  if origin == \"\" { origin = \"http://localhost:8080\" }\n  canonical := origin + \"/products/portable-react\"\n  image := origin + \"/portable-react.jpg\"\n  socialImage := strings.Replace(origin, \"http://\", \"https://\", 1) + \"/portable-react.jpg\"\n  return gb.OK(contract.Props{\n    Name: \"Portable React\", Description: \"Crawler-visible React markup rendered by Go.\",\n    Price: \"$49\", Availability: \"In stock\", ImageURL: image,\n  }, gb.Metadata{\n    Lang: \"en\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", Canonical: canonical, Robots: \"index, follow\",\n    OpenGraph: gb.OpenGraph{Type: \"product\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", URL: canonical, Images: []string{socialImage}},\n    Twitter: gb.Twitter{Card: \"summary_large_image\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", Images: []string{socialImage}},\n    JSONLD: []gb.JSONLD{{\"@context\": \"https://schema.org\", \"@type\": \"Product\", \"name\": \"Portable React\", \"offers\": map[string]any{\"@type\": \"Offer\", \"price\": \"49\", \"priceCurrency\": \"USD\", \"availability\": \"https://schema.org/InStock\"}}},\n  }), nil\n}\n`
-    .replaceAll('/server/internal/gobeyondgen/', '/internal/gobeyondgen/')
+    .replaceAll('/server/internal/gobeyondgen/', '/.generated/')
 }
 
 function dynamicPage() {
@@ -270,8 +271,7 @@ func Page(ctx *gb.PageContext) (gb.PageResult[Props], error) {
 }
 
 function actionHandler(modulePath) {
-  return `// Package products_slug implements the action declared in app/products/[slug]/actions.ts.\npackage products_slug\n\nimport (\n  \"errors\"\n\n  gb \"github.com/Origens-Dev/gobeyond\"\n  contract \"${modulePath}/server/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart\"\n)\n\nfunc AddToCart(_ *gb.ActionContext, input contract.Input) (gb.ActionResult[contract.Output], error) {\n  if input.ProductName == \"\" { return gb.ActionResult[contract.Output]{}, errors.New(\"productName is required\") }\n  return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil\n}\n`
-    .replaceAll('/server/internal/gobeyondgen/', '/internal/gobeyondgen/')
+  return `// Package products_slug implements the action declared in app/products/[slug]/actions.ts.\npackage products_slug\n\nimport (\n  \"errors\"\n\n  gb \"github.com/Origens-Dev/gobeyond\"\n  contract \"${modulePath}/.generated/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart\"\n)\n\nfunc AddToCart(_ *gb.ActionContext, input contract.Input) (gb.ActionResult[contract.Output], error) {\n  if input.ProductName == \"\" { return gb.ActionResult[contract.Output]{}, errors.New(\"productName is required\") }\n  return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil\n}\n`
 }
 
 function apiHandler() {
@@ -311,121 +311,59 @@ export function metadata(_props: Props): DocumentMetadata {
 `
 }
 
-// serverMain emits the starter's explicit runtime registry. It mirrors the
-// examples/seo-site production entrypoint: pack-backed render plans and
-// packaged static entries opened from GOBEYOND_PLAN_PACK / GOBEYOND_STATIC_PACK,
-// the supported cache constructor, generated contract constants for route ISR,
-// and the shared static file handler.
-//
-// Deliberately omit server/middleware/middleware.go: Discover treats that file
-// as promoting every page.tsx route to dynamic, which skips static packaging
-// for /. Product-scoped request-ID middleware stays inline below instead.
-function serverMain(modulePath) {
-  return `// Command app starts the generated GoBeyond production server.
-package main
+
+function siteHooks() {
+  return `// Package shared holds optional site hooks used by the generated registry.
+package shared
 
 import (
-  "context"
-  "encoding/json"
-  "errors"
-  "log"
   "net/http"
-  "os"
-  "os/signal"
-  "path/filepath"
-  "syscall"
-  "time"
 
   gb "github.com/Origens-Dev/gobeyond"
-  browserassets "github.com/Origens-Dev/gobeyond/browserassets"
-  "github.com/Origens-Dev/gobeyond/buildpaths"
-  cacheenv "github.com/Origens-Dev/gobeyond/cache/openfromenv"
+  "github.com/Origens-Dev/gobeyond/cache/openfromenv"
   gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
-  "github.com/Origens-Dev/gobeyond/router"
   gbruntime "github.com/Origens-Dev/gobeyond/runtime"
-  productsapi "${modulePath}/internal/gobeyondgen/api/r_api_products_3637094a"
-  actioncontract "${modulePath}/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
-  productcontract "${modulePath}/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9"
-  routes "${modulePath}/internal/gobeyondgen/routes"
-  productroute "${modulePath}/internal/gobeyondgen/routes/r_products__slug_3e2e8eb9"
 )
 
-func main() {
-  origin := env("GOBEYOND_PUBLIC_ORIGIN", "http://localhost:8080")
-  planPack := env("GOBEYOND_PLAN_PACK", filepath.Join("dist", "server", "render-plans.gbp"))
-  staticPack := env("GOBEYOND_STATIC_PACK", filepath.Join("dist", "server", "runtime-data", "static-build.gbs"))
-  staticDirectory := env("GOBEYOND_STATIC_DIR", "dist/static")
+// WithPublicOrigin stores the configured origin for loaders that still read Values.
+func WithPublicOrigin(ctx *gb.PageContext, origin string) {
+  if ctx.Values == nil {
+    ctx.Values = map[string]any{}
+  }
+  ctx.Values["gobeyond.public_origin"] = origin
+}
 
-  // Pack-only runtime artifacts: render plans and packaged static entries
-  // stay cold inside these immutable containers until a request needs them.
-  // The pretty JSON gobeyond build writes beside them is inspection-only.
-  planStore, err := gbruntime.OpenPlanStore(planPack)
-  if err != nil { log.Fatal(err) }
-  defer planStore.Close()
-  staticStore, err := gbruntime.OpenStaticStore(staticPack, filepath.Join(filepath.Dir(staticPack), "contracts.json"))
-  if err != nil { log.Fatal(err) }
-  defer staticStore.Close()
-
-  browserAssets, err := loadBrowserAssets(filepath.Join(filepath.Dir(planPack), "runtime-manifest.json"), routes.BuildID)
-  if err != nil { log.Fatal(err) }
-  legacyClientScript, legacyStyles := legacyBrowserAssets(routes.BuildID, browserAssets)
-
-  // Bounded in-process L1, plus a shared Redis L2 and its tag-bump watcher
-  // when the deployment injects GOBEYOND_CACHE_*.
-  cacheConfig, closeCache, err := cacheenv.OpenFromEnv()
-  if err != nil { log.Fatal(err) }
-  defer closeCache()
-
-  server, err := gbruntime.New(gbruntime.Config{
-    BuildID: routes.BuildID, PublicOrigin: origin, BrowserAssets: browserAssets,
-    Cache: cacheConfig,
-    // PlanStore serves each route's render plan on first render; Static
-    // serves packaged static pages (home) and carries the value contracts
-    // cached props are decoded against.
-    PlanStore: planStore, Static: staticStore,
-    Pages: []gbruntime.PageRoute{
-      // / stays ModeStatic (no page.go, no server/middleware/middleware.go),
-      // so Discover packages home props/metadata into the static-entry pack.
-      {Route: router.Route{ID: routes.RouteRoot, Pattern: "/", Mode: router.ModeStatic}, Indexable: true, ClientScript: legacyClientScript, Styles: legacyStyles},
-      // Revalidate/Tags come from app/products/[slug]/page.schema.ts through
-      // the generated contract, so the schema stays the single source of truth.
-      {Route: router.Route{ID: routes.RouteProductsSlug, Pattern: "/products/[slug]", Mode: router.ModeDynamic}, Load: productLoader, Revalidate: productcontract.Revalidate, Tags: productcontract.Tags, Indexable: true, ClientScript: legacyClientScript, Styles: legacyStyles},
+// Middleware returns request middleware for the generated site registry.
+// Keep patterns product-scoped; a blanket middleware file that promotes every
+// page.tsx route to dynamic is not required.
+func Middleware() []gbmiddleware.Rule {
+  return []gbmiddleware.Rule{{
+    Name: "starter-request-id",
+    Config: gb.MiddlewareConfig{Patterns: []string{"/products/[slug]"}},
+    Middleware: func(next gb.Handler) gb.Handler {
+      return func(ctx *gb.RequestContext) (gb.Response, error) {
+        ctx.Values["source"] = "starter"
+        return next(ctx)
+      }
     },
-    Actions: []gbruntime.Action{actioncontract.Register(productroute.AddToCart)},
-    APIs: []gbruntime.APIRoute{{Route: router.Route{ID: "api_products", Pattern: "/api/products", Mode: router.ModeAPI}, Methods: map[string]gb.Handler{http.MethodGet: productsapi.GET}}},
-    // Inline and product-scoped: a server/middleware/middleware.go file would
-    // make Discover promote every static page.tsx route to dynamic.
-    Middleware: []gbmiddleware.Rule{{
-      Name: "starter-request-id",
-      Config: gb.MiddlewareConfig{Patterns: []string{"/products/[slug]"}},
-      Middleware: func(next gb.Handler) gb.Handler {
-        return func(ctx *gb.RequestContext) (gb.Response, error) {
-          ctx.Values["source"] = "starter"
-          return next(ctx)
-        }
-      },
-    }},
-  })
-  if err != nil { log.Fatal(err) }
-
-  // Serves dist/static with gzip and immutable Cache-Control for
-  // content-addressed build artifacts; everything else falls through.
-  handler := gbruntime.StaticFiles(staticDirectory, server)
-  httpServer := &http.Server{Addr: env("GOBEYOND_ADDR", ":8080"), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
-  stopping, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-  defer stop()
-  go func() { <-stopping.Done(); ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second); defer cancel(); _ = httpServer.Shutdown(ctx) }()
-  if err := httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) { log.Fatal(err) }
+  }}
 }
 
-func productLoader(ctx *gb.PageContext) (gbruntime.LoadedPage, error) {
-  result, err := productroute.Page(ctx)
-  return gbruntime.LoadedPage{Kind: result.Kind, Props: result.Props, Metadata: result.Metadata, Status: result.Status, Cache: result.Cache, RedirectTo: result.RedirectTo, ErrorCode: result.ErrorCode, Message: result.Message}, err
+// Wrap can add handlers outside the GoBeyond runtime (robots.txt, etc.).
+func Wrap(next http.Handler, _ string) http.Handler { return next }
+
+// Configure attaches cache settings for packaged builds.
+func Configure(cfg *gbruntime.Config) (func() error, error) {
+  if cfg == nil || cfg.Static == nil {
+    return nil, nil
+  }
+  cacheConfig, closeFn, err := openfromenv.OpenFromEnv()
+  if err != nil {
+    return nil, err
+  }
+  cfg.Cache = cacheConfig
+  return closeFn, nil
 }
-
-${runtimeAssetHelpers()}
-
-func env(key, fallback string) string { if value := os.Getenv(key); value != "" { return value }; return fallback }
 `
 }
 

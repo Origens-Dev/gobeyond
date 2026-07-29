@@ -30,7 +30,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
     'app/products/[slug]/page.go',
     'app/products/[slug]/actions.go',
     'app/api/products/route.go',
-    'server/cmd/app/main.go',
+    'internal/site/hooks.go',
     'public/portable-react.svg',
     'public/social/home.svg',
     'Dockerfile',
@@ -89,38 +89,16 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(loader, /func Page\(ctx \*gb\.PageContext\)/)
   const action = await readFile(join(destination, 'app/products/[slug]/actions.go'), 'utf8')
   assert.match(action, /contracts\/actions\/r_products_slug_3e2e8eb9_add_to_cart/)
-  const main = await readFile(join(destination, 'server/cmd/app/main.go'), 'utf8')
-  assert.match(main, /routes\.RouteProductsSlug/)
-  assert.match(main, /productroute\.AddToCart/)
-  assert.match(main, /actioncontract\.Register\(productroute\.AddToCart\)/)
-  assert.match(main, /internal\/gobeyondgen\/routes\/r_products__slug_3e2e8eb9/)
-  assert.match(main, /internal\/gobeyondgen\/api\/r_api_products_3637094a/)
-  // Modern shape: pack-backed plan/static stores (ADR 004), cache
-  // constructor, ISR constants from the generated contract, and the shared
-  // static handler. Home renders from the static-entry store (no inline
-  // loader); product-scoped request-ID middleware is inline so Discover does
-  // not promote / to dynamic. The runtime never loads the JSON dumps.
-  assert.match(main, /GOBEYOND_PLAN_PACK/)
-  assert.match(main, /GOBEYOND_STATIC_PACK/)
-  assert.match(main, /gbruntime\.OpenPlanStore\(planPack\)/)
-  assert.match(main, /gbruntime\.OpenStaticStore\(staticPack/)
-  assert.match(main, /PlanStore: planStore, Static: staticStore/)
-  assert.doesNotMatch(main, /GOBEYOND_PLAN_DIR/)
-  assert.doesNotMatch(main, /GOBEYOND_RUNTIME_DATA_DIR/)
-  assert.doesNotMatch(main, /LoadStaticStore/)
-  assert.doesNotMatch(main, /loadPlans/)
-  assert.doesNotMatch(main, /static-build\.json/)
-  assert.doesNotMatch(main, /withHomeFallback/)
-  assert.doesNotMatch(main, /startermiddleware/)
-  assert.match(main, /cacheenv\.OpenFromEnv\(\)/)
-  assert.match(main, /Revalidate: productcontract\.Revalidate/)
-  assert.match(main, /Tags: productcontract\.Tags/)
-  assert.match(main, /gbruntime\.StaticFiles\(staticDirectory, server\)/)
-  assert.match(main, /starter-request-id/)
-  assert.match(main, /Patterns: \[\]string\{"\/products\/\[slug\]"\}/)
-  assert.doesNotMatch(main, /withStaticAssets/)
-  assert.doesNotMatch(main, /Static: home\(origin\)/)
-  assert.doesNotMatch(main, /func addToCart\(ctx \*gb\.ActionContext, raw json\.RawMessage\)/)
+  const hooks = await readFile(join(destination, 'internal/site/hooks.go'), 'utf8')
+  assert.match(hooks, /func Middleware\(\)/)
+  assert.match(hooks, /func Wrap\(/)
+  assert.match(hooks, /func Configure\(/)
+  assert.match(hooks, /func WithPublicOrigin\(/)
+  assert.match(hooks, /starter-request-id/)
+  assert.match(hooks, /Patterns: \[\]string\{"\/products\/\[slug\]"\}/)
+  assert.match(hooks, /openfromenv\.OpenFromEnv\(\)/)
+  const gitignoreFull = await readFile(join(destination, '.gitignore'), 'utf8')
+  assert.match(gitignoreFull, /\.generated\/cmd\//)
 
   const homeMetadata = await readFile(join(destination, 'app/page.metadata.ts'), 'utf8')
   assert.match(homeMetadata, /export function metadata/)
@@ -172,7 +150,7 @@ test('local workspace integration generates contracts and type-checks the starte
     GOBEYOND_PUBLIC_ORIGIN: serveOrigin,
   })
 
-  const generatedContract = join(destination, 'internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9/types.gobeyond_gen.go')
+  const generatedContract = join(destination, '.generated/contracts/routes/r_products_slug_3e2e8eb9/types.gobeyond_gen.go')
   await access(generatedContract)
   await access(join(destination, 'dist/server/gobeyond-server'))
   const runtimeManifest = JSON.parse(await readFile(join(destination, 'dist/server/runtime-manifest.json'), 'utf8'))

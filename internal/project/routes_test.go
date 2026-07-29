@@ -13,7 +13,7 @@ func TestDiscoverAndGenerate(t *testing.T) {
 	writeTestModule(t, root)
 	writeTestFile(t, filepath.Join(root, "app", "page.tsx"))
 	writeTestFile(t, filepath.Join(root, "app", "(shop)", "products", "[slug]", "page.tsx"))
-	writeTestFile(t, filepath.Join(root, "server", "pages", "products_slug", "page.go"))
+	writeSourceTestFile(t, filepath.Join(root, "server", "pages", "products_slug", "page.go"), "package products_slug\n\ntype Props struct{}\n")
 
 	routes, err := Discover(root)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestGeneratedManifestIsPortableAcrossProjectDirectories(t *testing.T) {
 		writeTestModule(t, root)
 		writeTestFile(t, filepath.Join(root, "app", "page.tsx"))
 		writeTestFile(t, filepath.Join(root, "app", "page.schema.ts"))
-		writeTestFile(t, filepath.Join(root, "server", "pages", "root", "page.go"))
+		writeSourceTestFile(t, filepath.Join(root, "server", "pages", "root", "page.go"), "package root\n\ntype Props struct{}\n")
 		routes, err := Discover(root)
 		if err != nil {
 			t.Fatal(err)
@@ -104,7 +104,7 @@ func TestBuildIDIgnoresGeneratedAndSecretFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(root, "internal", "gobeyondgen", "routes", "routes_gen.go"))
+	writeTestFile(t, filepath.Join(root, GeneratedDir, "routes", "routes_gen.go"))
 	if err := os.WriteFile(filepath.Join(root, ".env.local"), []byte("SECRET=rotated"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestBuildSnapshotTracksInputsAndIgnoresGeneratedFiles(t *testing.T) {
 	page := filepath.Join(root, "app", "page.tsx")
 	writeTestFile(t, page)
 	writeTestFile(t, filepath.Join(root, "server", "pages", "root", "page.go"))
-	writeTestFile(t, filepath.Join(root, "internal", "gobeyondgen", "routes", "routes_gen.go"))
+	writeTestFile(t, filepath.Join(root, GeneratedDir, "routes", "routes_gen.go"))
 
 	first, err := BuildSnapshot(root)
 	if err != nil {
@@ -131,7 +131,7 @@ func TestBuildSnapshotTracksInputsAndIgnoresGeneratedFiles(t *testing.T) {
 	if first["app/page.tsx"] == "" || first["server/pages/root/page.go"] == "" {
 		t.Fatalf("snapshot is missing build inputs: %#v", first)
 	}
-	if _, exists := first["internal/gobeyondgen/routes/routes_gen.go"]; exists {
+	if _, exists := first[".generated/routes/routes_gen.go"]; exists {
 		t.Fatal("generated files must not enter the build snapshot")
 	}
 

@@ -3,9 +3,12 @@
 Authored durable tasks live under `workers/`, sibling to `app/`:
 
 ```text
-workers/demo/durables.go
-server/cmd/worker/main.go   # or server/cmd/workers/<id>/
+workers/durables.go            # default worker id
+workers/<id>/durables.go       # named worker
 ```
+
+Authors export `Register(worker.Worker)` from each durables package.
+Process mains are generated under `.generated/cmd/workers/<id>/`.
 
 ## Local Temporal (Docker)
 
@@ -15,13 +18,13 @@ docker compose -f docker-compose.temporal.yml up -d
 ```
 
 Task queues are environment-suffixed: `{workerId}__{environment}`.
-Local default environment is `local` → e.g. `demo__local`.
+Local default environment is `local` → e.g. `default__local`.
 
 ## Build
 
 `gobeyond build` projects `workers/**/durables.go` into
-`internal/gobeyondgen/workers/` and emits
-`dist/workers/<id>/gobeyond-worker` when a worker cmd exists.
+`.generated/workers/` and emits `dist/workers/<id>/gobeyond-worker`
+from `.generated/cmd/workers/<id>`.
 
 ## Trigger client
 

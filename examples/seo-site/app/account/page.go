@@ -6,12 +6,14 @@ import (
 	"strings"
 
 	gb "github.com/Origens-Dev/gobeyond"
-	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/routes/r_account_441bb226"
+	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/contracts/routes/r_account_441bb226"
 	"github.com/Origens-Dev/gobeyond/examples/seo-site/internal/site"
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
 
 type Params struct{}
+
+var Indexable = false
 
 type Props struct {
 	DisplayName string `json:"displayName"`

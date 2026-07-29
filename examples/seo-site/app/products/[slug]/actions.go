@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	gb "github.com/Origens-Dev/gobeyond"
-	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/gobeyondgen/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
 )
 
 func AddToCart(_ *gb.ActionContext, input contract.Input) (contract.Output, error) {

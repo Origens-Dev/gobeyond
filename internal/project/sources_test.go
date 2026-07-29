@@ -30,18 +30,18 @@ func TestSyncGoSourcesProjectsRoutesAndAPIs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projectedPage := filepath.Join(root, "internal", "gobeyondgen", "routes", routes[1].ID, "page.go")
+	projectedPage := filepath.Join(root, GeneratedDir, "routes", routes[1].ID, "page.go")
 	assertSourceTestContains(t, projectedPage,
 		generatedSourceMarker,
 		"//line app/products/[slug]/page.go:1",
 		"import \"net/http\"",
 	)
 	assertSourceTestContains(t,
-		filepath.Join(root, "internal", "gobeyondgen", "routes", routes[1].ID, "actions.go"),
+		filepath.Join(root, GeneratedDir, "routes", routes[1].ID, "actions.go"),
 		"//line app/products/[slug]/actions.go:1",
 	)
 	assertSourceTestContains(t,
-		filepath.Join(root, "internal", "gobeyondgen", "api", "r_api_time_066a4b03", "route.go"),
+		filepath.Join(root, GeneratedDir, "api", "r_api_time_066a4b03", "route.go"),
 		"//line app/api/time/route.go:1",
 	)
 	workers, err := DiscoverWorkers(root)
@@ -49,7 +49,7 @@ func TestSyncGoSourcesProjectsRoutesAndAPIs(t *testing.T) {
 		t.Fatalf("workers = %#v err=%v", workers, err)
 	}
 	assertSourceTestContains(t,
-		filepath.Join(root, "internal", "gobeyondgen", "workers", workers[0].Key, "durables.go"),
+		filepath.Join(root, GeneratedDir, "workers", workers[0].Key, "durables.go"),
 		"//line workers/demo/durables.go:1",
 		"var Echo = gb.TaskConfig{Name: \"demo.echo\"}",
 	)
@@ -63,7 +63,7 @@ func TestSyncGoSourcesProjectsRoutesAndAPIs(t *testing.T) {
 		"require github.com/Origens-Dev/gobeyond v0.0.0",
 		"replace example.com/site => \"../../..\"",
 	)
-	assertSourceTestContains(t, filepath.Join(root, "internal", "gobeyondgen", "routes", "routes_gen.go"), "package routes")
+	assertSourceTestContains(t, filepath.Join(root, GeneratedDir, "routes", "routes_gen.go"), "package routes")
 }
 
 func TestGeneratedRouteModulePropagatesLocalReplacements(t *testing.T) {
@@ -106,7 +106,7 @@ func TestWriteCheckMaterializesIgnoredRouteOutputs(t *testing.T) {
 	if err := Write(root, routes, "b_clean_clone", false); err != nil {
 		t.Fatal(err)
 	}
-	projected := filepath.Join(root, "internal", "gobeyondgen", "routes", routes[0].ID, "page.go")
+	projected := filepath.Join(root, GeneratedDir, "routes", routes[0].ID, "page.go")
 	moduleFile := filepath.Join(routeDir, "go.mod")
 	manifestFile := filepath.Join(root, ".gobeyond", "routes.json")
 	if err := os.Remove(projected); err != nil {

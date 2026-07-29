@@ -11,7 +11,15 @@ coverage/
 # Route-owned Go is authored under app/ but compiled only from generated,
 # import-safe packages. Per-route go.mod files exist solely for Go tooling.
 **/app/**/go.mod
-**/internal/gobeyondgen/routes/*/
-**/internal/gobeyondgen/api/
-**/internal/gobeyondgen/workers/*/
 **/workers/**/go.mod
+
+# Ephemeral projections and process mains under .generated/. Committed
+# artifacts are routes/routes_gen.go and contracts/** only.
+**/.generated/routes/*/
+**/.generated/api/
+**/.generated/workers/
+**/.generated/cmd/
+**/.generated/registry/
+
+# Legacy projection root (removed by generate).
+**/internal/gobeyondgen/
