@@ -49,6 +49,27 @@ type LoadedPage struct {
 	Message    string         `json:"message,omitempty"`
 }
 
+// FromPageResult converts the public route-authoring result into the runtime
+// representation consumed by the server. Route packages should return
+// gb.PageResult so they do not need to import this package.
+func FromPageResult[T any](result gb.PageResult[T]) LoadedPage {
+	headers := make(http.Header, len(result.Headers))
+	for name, value := range result.Headers {
+		headers.Set(name, value)
+	}
+	return LoadedPage{
+		Kind:       result.Kind,
+		Props:      result.Props,
+		Metadata:   result.Metadata,
+		Status:     result.Status,
+		Headers:    headers,
+		Cache:      result.Cache,
+		RedirectTo: result.RedirectTo,
+		ErrorCode:  result.ErrorCode,
+		Message:    result.Message,
+	}
+}
+
 type PageLoader func(*gb.PageContext) (LoadedPage, error)
 
 type PageRoute struct {

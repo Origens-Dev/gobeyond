@@ -1273,6 +1273,63 @@ func syncContractFiles(website string, contracts json.RawMessage, check bool) er
 	return nil
 }
 
+// syncRouteSchemaFiles writes the TypeScript renderer contract generated from
+// each Go-owned Props declaration before the portable compiler reads it.
+func syncRouteSchemaFiles(website string, check bool) error {
+	routes, err := project.Discover(website)
+	if err != nil {
+		return err
+	}
+	moduleRoot, modulePath, err := pageSchemaModule(website)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		authoredPage := filepath.Join(filepath.Dir(route.PageFile), "page.go")
+		if filepath.Clean(route.ServerFile) != filepath.Clean(authoredPage) {
+			continue
+		}
+		generated, generateErr := codegen.GeneratePageSchema(authoredPage, moduleRoot, modulePath)
+		if generateErr != nil {
+			return fmt.Errorf("generate route schema for %s: %w", route.Pattern, generateErr)
+		}
+		output := filepath.Join(filepath.Dir(authoredPage), "page.schema.ts")
+		existing, readErr := os.ReadFile(output)
+		if check {
+			if readErr != nil || !bytes.Equal(existing, generated) {
+				return fmt.Errorf("generated output is stale: %s", output)
+			}
+			continue
+		}
+		if err := os.WriteFile(output, generated, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pageSchemaModule(start string) (string, string, error) {
+	for directory := filepath.Clean(start); ; directory = filepath.Dir(directory) {
+		contents, err := os.ReadFile(filepath.Join(directory, "go.mod"))
+		if err == nil {
+			for _, line := range strings.Split(string(contents), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) == 2 && fields[0] == "module" {
+					return directory, fields[1], nil
+				}
+			}
+			return "", "", fmt.Errorf("go.mod in %s has no module declaration", directory)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", "", err
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return "", "", fmt.Errorf("could not find go.mod above %s", start)
+		}
+	}
+}
+
 func websiteRoot(root string) string {
 	if _, err := os.Stat(filepath.Join(root, "app")); err == nil {
 		return root
@@ -1288,6 +1345,9 @@ func generate(root string, check bool) error {
 	}
 	routes, err := project.Discover(website)
 	if err != nil {
+		return err
+	}
+	if err := syncRouteSchemaFiles(website, check); err != nil {
 		return err
 	}
 	provisionalID, err := project.BuildID(root, routes)
@@ -1312,10 +1372,10 @@ func generate(root string, check bool) error {
 	if err != nil {
 		return err
 	}
-	if err := project.Write(website, routes, finalID, check); err != nil {
+	if err := syncContractFiles(website, compiled.Contracts, check); err != nil {
 		return err
 	}
-	return syncContractFiles(website, compiled.Contracts, check)
+	return project.Write(website, routes, finalID, check)
 }
 
 func generateGoSources(root string) error {
@@ -1619,15 +1679,14 @@ func add(root string, args []string) error {
 			{path: filepath.Join(appDir, "page.schema.ts"), content: []byte(schemaTemplate())},
 		})
 	case "dynamic":
-		contractImport, err := generatedContractImport(moduleRoot, website, "routes", routeInfo.ID)
+		err := writeAndSyncScaffolds(website, []scaffoldFile{
+			{path: filepath.Join(appDir, "page.tsx"), content: []byte(pageTemplate(route)), preserve: true},
+			{path: filepath.Join(appDir, "page.go"), content: []byte(goPageTemplate(routeInfo)), preserve: true},
+		})
 		if err != nil {
 			return err
 		}
-		return writeAndSyncScaffolds(website, []scaffoldFile{
-			{path: filepath.Join(appDir, "page.tsx"), content: []byte(pageTemplate(route)), preserve: true},
-			{path: filepath.Join(appDir, "page.schema.ts"), content: []byte(schemaTemplate()), preserve: true},
-			{path: filepath.Join(appDir, "page.go"), content: []byte(goPageTemplate(routeInfo, contractImport)), preserve: true},
-		})
+		return syncRouteSchemaFiles(website, false)
 	case "api":
 		return writeAndSyncScaffolds(website, []scaffoldFile{{
 			path:    filepath.Join(website, "app", "api", filepath.FromSlash(route), "route.go"),
@@ -2060,8 +2119,8 @@ func schemaTemplate() string {
 	return "import { definePage, schema } from '@go-beyond/schema'\n\nexport const page = definePage({ props: schema.object({}) })\n"
 }
 
-func goPageTemplate(route project.Route, contractImport string) string {
-	return "package " + safeIdentifier(route.ServerKey) + "\n\nimport (\n\t\"net/http\"\n\n\tgb \"github.com/Origens-Dev/gobeyond\"\n\tcontract \"" + contractImport + "\"\n\tgbruntime \"github.com/Origens-Dev/gobeyond/runtime\"\n)\n\n// Page implements the generated route contract. Run gobeyond generate after editing the schema.\n// Register it in gbruntime.Config.Pages with generatedroutes." + routeRegistryName(route.ServerKey) + " for " + route.Pattern + ".\nfunc Page(_ *gb.PageContext) (gbruntime.LoadedPage, error) {\n\treturn gbruntime.LoadedPage{\n\t\tKind:   gb.ResultOK,\n\t\tStatus: http.StatusOK,\n\t\tCache:  gb.CachePolicy{Mode: gb.CachePrivateNoStore},\n\t\tProps:  contract.Props{},\n\t}, nil\n}\n"
+func goPageTemplate(route project.Route) string {
+	return "package " + safeIdentifier(route.ServerKey) + "\n\nimport (\n\tgb \"github.com/Origens-Dev/gobeyond\"\n)\n\n// Props is the JSON payload passed from this Go loader to React.\ntype Props struct{}\n\n// Config is projected into the generated page.schema.ts contract.\nvar Config = gb.PageConfig{}\n\n// Register this route with generatedroutes." + routeRegistryName(route.ServerKey) + " for " + route.Pattern + ".\nfunc Page(_ *gb.PageContext) (gb.PageResult[Props], error) {\n\treturn gb.OK(Props{}, gb.Metadata{Lang: \"en\", Title: \"" + jsxText(route.Pattern) + "\"}), nil\n}\n"
 }
 
 func apiTemplate(packageName string) string {

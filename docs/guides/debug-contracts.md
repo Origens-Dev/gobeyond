@@ -1,14 +1,16 @@
 # Debug contracts and hydration
 
-GoBeyond’s schema is the boundary between a React view and Go loader/action.
+GoBeyond’s typed contract is the boundary between a React view and Go
+loader/action. Go-owned pages derive their schema from `Props`; actions retain
+their TypeScript schema.
 When a contract fails, repair the boundary rather than working around it with
 untyped JSON or client-only SEO content.
 
 1. Run `pnpm generate --check`. If output is stale, run `pnpm generate` and
-   review the generated diff with the schema change.
-2. Compare `page.schema.ts` or `actions.ts` to the generated Go type and the
-   sibling `page.go` or `actions.go` implementation signature. The runtime
-   consumes their generated-safe projection, never the source `app/` folder.
+   review the generated diff with the Go `Props` or action-schema change.
+2. Compare generated `page.schema.ts` to the sibling `page.go` `Props` type,
+   or compare `actions.ts` to its generated Go type. The runtime consumes the
+   generated-safe projection, never the source `app/` folder.
 3. For a render-plan failure, compute the initial value in Go or use a portable
    helper. Diagnostics distinguish unsupported React hooks (`GB1086`), array
    methods (`GB1087`), and arbitrary calls (`GB1088`). A genuinely browser-only

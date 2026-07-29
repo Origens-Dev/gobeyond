@@ -13,6 +13,10 @@ import (
 
 type Params struct{}
 
+type Props struct {
+	DisplayName string `json:"displayName"`
+}
+
 func Page(ctx *gb.PageContext, _ Params) (gbruntime.LoadedPage, error) {
 	origin, err := shared.PublicOrigin(ctx)
 	if err != nil {

@@ -46,6 +46,7 @@ func TestSyncGoSourcesProjectsRoutesAndAPIs(t *testing.T) {
 	assertSourceTestContains(t, filepath.Join(routeDir, "go.mod"),
 		generatedModuleMarker,
 		"module example.com/site/internal/gobeyondroute/"+routes[1].ID,
+		"require github.com/Origens-Dev/gobeyond v0.0.0",
 		"replace example.com/site => \"../../..\"",
 	)
 	assertSourceTestContains(t, filepath.Join(root, "internal", "gobeyondgen", "routes", "routes_gen.go"), "package routes")
