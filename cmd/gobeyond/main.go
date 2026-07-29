@@ -205,6 +205,10 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
+	workerTargets, err := workerBuildTargets(projectRoot)
+	if err != nil {
+		return err
+	}
 	var publicAssets []string
 	tasks := []buildTask{
 		{
@@ -242,6 +246,19 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 			},
 		})
 	}
+	for _, workerTarget := range workerTargets {
+		wt := workerTarget
+		workerOutput := filepath.Join(dist, buildpaths.WorkersDir, wt.ID, buildpaths.WorkerEntryName)
+		if err := os.MkdirAll(filepath.Dir(workerOutput), 0o755); err != nil {
+			return err
+		}
+		tasks = append(tasks, buildTask{
+			name: "build worker " + wt.ID,
+			run: func() error {
+				return runCommandWithEnvironment(root, withEnvironment(environment, "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", workerOutput, wt.PackageDir)
+			},
+		})
+	}
 	if err := runBuildTasks(tasks...); err != nil {
 		return err
 	}
@@ -253,6 +270,28 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 			"v":        1,
 			"entry":    buildpaths.MiddlewareEntryName,
 			"matchers": []string{"/*"},
+		}); err != nil {
+			return err
+		}
+	}
+	if len(workerTargets) > 0 {
+		assetLayout = buildpaths.AssetLayoutV3
+		workerEntries := make([]map[string]any, 0, len(workerTargets))
+		for _, workerTarget := range workerTargets {
+			queue, queueErr := gb.TaskQueueName(workerTarget.ID, gb.LocalEnvironment)
+			if queueErr != nil {
+				return queueErr
+			}
+			workerEntries = append(workerEntries, map[string]any{
+				"id":        workerTarget.ID,
+				"key":       workerTarget.Key,
+				"entry":     path.Join(buildpaths.WorkersDir, workerTarget.ID, buildpaths.WorkerEntryName),
+				"taskQueue": queue,
+			})
+		}
+		if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.WorkersManifest), map[string]any{
+			"v":       1,
+			"workers": workerEntries,
 		}); err != nil {
 			return err
 		}
@@ -1545,6 +1584,58 @@ func middlewareBuildTarget(website string) (string, error) {
 		return "", errors.New("server/cmd/middleware must be a directory containing the middleware main package")
 	}
 	return target, nil
+}
+
+type workerBuildTargetInfo struct {
+	ID         string
+	Key        string
+	PackageDir string
+}
+
+// workerBuildTargets resolves per-worker Go main packages.
+// Prefer server/cmd/workers/<id>; if a site has exactly one worker and
+// server/cmd/worker exists, use that as a shorthand.
+func workerBuildTargets(website string) ([]workerBuildTargetInfo, error) {
+	workers, err := project.DiscoverWorkers(website)
+	if err != nil {
+		return nil, err
+	}
+	if len(workers) == 0 {
+		return nil, nil
+	}
+	var targets []workerBuildTargetInfo
+	for _, worker := range workers {
+		dir := filepath.Join(website, "server", "cmd", "workers", worker.ID)
+		info, statErr := os.Stat(dir)
+		if statErr == nil && info.IsDir() {
+			targets = append(targets, workerBuildTargetInfo{ID: worker.ID, Key: worker.Key, PackageDir: dir})
+			continue
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, statErr
+		}
+	}
+	if len(targets) == len(workers) {
+		return targets, nil
+	}
+	if len(workers) == 1 && len(targets) == 0 {
+		dir := filepath.Join(website, "server", "cmd", "worker")
+		info, statErr := os.Stat(dir)
+		if statErr == nil && info.IsDir() {
+			return []workerBuildTargetInfo{{
+				ID:         workers[0].ID,
+				Key:        workers[0].Key,
+				PackageDir: dir,
+			}}, nil
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, statErr
+		}
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("workers declared but no server/cmd/workers/<id> (or server/cmd/worker for a single worker) entrypoint")
+	}
+	return nil, fmt.Errorf("missing server/cmd/workers/<id> for one or more workers")
 }
 
 func runCommand(directory, name string, args ...string) error {

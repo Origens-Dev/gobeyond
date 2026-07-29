@@ -13,3 +13,5 @@ coverage/
 **/app/**/go.mod
 **/internal/gobeyondgen/routes/*/
 **/internal/gobeyondgen/api/
+**/internal/gobeyondgen/workers/*/
+**/workers/**/go.mod

@@ -1,7 +1,8 @@
 # GoBeyond Development Guide
 
 GoBeyond is website-first. React owns content and component composition; Go
-begins at request-time data, actions, middleware, and API boundaries.
+begins at request-time data, actions, middleware, API boundaries, and durable
+workers under `workers/`.
 
 ## Always-on guardrails
 
@@ -10,6 +11,10 @@ begins at request-time data, actions, middleware, and API boundaries.
 - Keep route-specific mutations in a sibling `actions.go` and HTTP endpoints in
   `app/api/**/route.go`. Put reusable Go services and policy in ordinary
   `internal/` packages, never in a second route tree.
+- Keep durable tasks/workflows in `workers/<id>/durables.go` (or
+  `workers/durables.go` for the default worker). Do not import one worker from
+  another; share code via `internal/`. Task queues are
+  `{workerId}__{environment}` (local environment is `local`).
 - Do not move React component composition into Go handlers.
 - Initial Go-rendered markup must stay inside the documented portable profile.
 - Always attempt portable compilation, including inside `use client` modules.

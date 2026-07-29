@@ -17,6 +17,7 @@ func TestSyncGoSourcesProjectsRoutesAndAPIs(t *testing.T) {
 	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\nimport \"net/http\"\n\ntype Props struct{}\n\nvar Status = http.StatusOK\n")
 	writeSourceTestFile(t, filepath.Join(routeDir, "actions.go"), "package products_slug\n\nimport \"errors\"\n\nvar ErrAction = errors.New(\"action\")\n")
 	writeSourceTestFile(t, filepath.Join(root, "app", "api", "time", "route.go"), "package timeapi\n\nfunc GET() {}\n")
+	writeSourceTestFile(t, filepath.Join(root, "workers", "demo", "durables.go"), "package demo\n\nimport gb \"github.com/Origens-Dev/gobeyond\"\n\nvar Echo = gb.TaskConfig{Name: \"demo.echo\"}\n")
 
 	routes, err := Discover(root)
 	if err != nil {
@@ -42,6 +43,19 @@ func TestSyncGoSourcesProjectsRoutesAndAPIs(t *testing.T) {
 	assertSourceTestContains(t,
 		filepath.Join(root, "internal", "gobeyondgen", "api", "r_api_time_066a4b03", "route.go"),
 		"//line app/api/time/route.go:1",
+	)
+	workers, err := DiscoverWorkers(root)
+	if err != nil || len(workers) != 1 {
+		t.Fatalf("workers = %#v err=%v", workers, err)
+	}
+	assertSourceTestContains(t,
+		filepath.Join(root, "internal", "gobeyondgen", "workers", workers[0].Key, "durables.go"),
+		"//line workers/demo/durables.go:1",
+		"var Echo = gb.TaskConfig{Name: \"demo.echo\"}",
+	)
+	assertSourceTestContains(t, filepath.Join(root, "workers", "demo", "go.mod"),
+		generatedModuleMarker,
+		"module example.com/site/internal/gobeyondroute/"+workers[0].Key,
 	)
 	assertSourceTestContains(t, filepath.Join(routeDir, "go.mod"),
 		generatedModuleMarker,

@@ -34,11 +34,22 @@ const AssetLayout = "gobeyond.builds/v1"
 // AssetLayoutV2 when it emits dist/middleware/; v1 bundles stay servable.
 const AssetLayoutV2 = "gobeyond.builds/v2"
 
+// AssetLayoutV3 is AssetLayoutV2 plus optional dist/workers/<id>/ artifacts
+// (one Temporal worker binary per task queue).
+const AssetLayoutV3 = "gobeyond.builds/v3"
+
 // Middleware artifact locations inside dist/ under AssetLayoutV2.
 const (
 	MiddlewareDir          = "middleware"
 	MiddlewareEntryName    = "gobeyond-middleware"
 	MiddlewareManifestName = "middleware.json"
+)
+
+// Worker artifact locations inside dist/ under AssetLayoutV3.
+const (
+	WorkersDir       = "workers"
+	WorkerEntryName  = "gobeyond-worker"
+	WorkersManifest  = "workers.json"
 )
 
 // BuildsPrefix is the reserved public URL prefix every build-scoped path
