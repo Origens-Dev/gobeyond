@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -67,7 +68,19 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 			}
 			packageName = parsed.Name.Name
 			target := filepath.Join(routeTree, route.ID, name)
-			outputs[target], err = projectedSource(root, authorFile, content)
+			if name == "page.go" {
+				contractImport := path.Join(websiteImport, "internal/gobeyondgen/contracts/routes", route.ID)
+				contractFile := filepath.Join(generatedRoot, "contracts", "routes", route.ID, "types.gobeyond_gen.go")
+				if _, statErr := os.Stat(contractFile); statErr == nil {
+					outputs[target], err = projectedPageSource(root, authorFile, content, contractImport)
+				} else if errors.Is(statErr, os.ErrNotExist) {
+					outputs[target], err = projectedSource(root, authorFile, content)
+				} else {
+					err = statErr
+				}
+			} else {
+				outputs[target], err = projectedSource(root, authorFile, content)
+			}
 			if err != nil {
 				return err
 			}
@@ -146,6 +159,52 @@ func projectedSource(root, authorFile string, content []byte) ([]byte, error) {
 		generated.WriteByte('\n')
 	}
 	return generated.Bytes(), nil
+}
+
+// projectedPageSource keeps Props application-owned in app/page.go while
+// making the generated projection use the route's canonical generated
+// contract type. That makes an authored loader ergonomic without leaking a
+// generated import into it, and keeps runtime/cache values contract-typed.
+func projectedPageSource(root, authorFile string, content []byte, contractImport string) ([]byte, error) {
+	files := token.NewFileSet()
+	parsed, err := parser.ParseFile(files, authorFile, content, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+	if !removePropsDeclaration(parsed) {
+		return nil, fmt.Errorf("%s must declare type Props struct { ... }", authorPath(root, authorFile))
+	}
+	contract := &ast.GenDecl{Tok: token.IMPORT, Specs: []ast.Spec{&ast.ImportSpec{Name: ast.NewIdent("contracts"), Path: &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(contractImport)}}}}
+	alias := &ast.GenDecl{Tok: token.TYPE, Specs: []ast.Spec{&ast.TypeSpec{Name: ast.NewIdent("Props"), Assign: token.Pos(1), Type: &ast.SelectorExpr{X: ast.NewIdent("contracts"), Sel: ast.NewIdent("Props")}}}}
+	parsed.Decls = append([]ast.Decl{contract}, parsed.Decls...)
+	parsed.Decls = append(parsed.Decls, alias)
+	var formatted bytes.Buffer
+	if err := format.Node(&formatted, files, parsed); err != nil {
+		return nil, err
+	}
+	return projectedSource(root, authorFile, formatted.Bytes())
+}
+
+func removePropsDeclaration(file *ast.File) bool {
+	for index, declaration := range file.Decls {
+		generic, ok := declaration.(*ast.GenDecl)
+		if !ok || generic.Tok != token.TYPE {
+			continue
+		}
+		for specIndex, spec := range generic.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != "Props" {
+				continue
+			}
+			if len(generic.Specs) == 1 {
+				file.Decls = append(file.Decls[:index], file.Decls[index+1:]...)
+			} else {
+				generic.Specs = append(generic.Specs[:specIndex], generic.Specs[specIndex+1:]...)
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func parseRouteSource(root, file string, content []byte, websiteImport string) (*ast.File, error) {

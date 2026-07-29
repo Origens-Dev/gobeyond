@@ -14,7 +14,7 @@ func TestSyncGoSourcesProjectsRoutesAndAPIs(t *testing.T) {
 	writeSourceTestFile(t, filepath.Join(root, "app", "page.tsx"), "export default function Page() { return null }\n")
 	routeDir := filepath.Join(root, "app", "products", "[slug]")
 	writeSourceTestFile(t, filepath.Join(routeDir, "page.tsx"), "export default function Page() { return null }\n")
-	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\nimport \"net/http\"\n\nvar Status = http.StatusOK\n")
+	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\nimport \"net/http\"\n\ntype Props struct{}\n\nvar Status = http.StatusOK\n")
 	writeSourceTestFile(t, filepath.Join(routeDir, "actions.go"), "package products_slug\n\nimport \"errors\"\n\nvar ErrAction = errors.New(\"action\")\n")
 	writeSourceTestFile(t, filepath.Join(root, "app", "api", "time", "route.go"), "package timeapi\n\nfunc GET() {}\n")
 
@@ -66,7 +66,7 @@ func TestGeneratedRouteModulePropagatesLocalReplacements(t *testing.T) {
 	}
 	routeDir := filepath.Join(root, "app", "products", "[slug]")
 	writeSourceTestFile(t, filepath.Join(routeDir, "page.tsx"), "fixture\n")
-	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n")
+	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\ntype Props struct{}\n")
 	routes, err := Discover(root)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestWriteCheckMaterializesIgnoredRouteOutputs(t *testing.T) {
 	writeTestModule(t, root)
 	routeDir := filepath.Join(root, "app", "products", "[slug]")
 	writeSourceTestFile(t, filepath.Join(routeDir, "page.tsx"), "fixture\n")
-	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n")
+	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\ntype Props struct{}\n")
 	routes, err := Discover(root)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestSyncGoSourcesProtectsUserModulesAndRejectsRouteImports(t *testing.T) {
 	writeTestModule(t, root)
 	routeDir := filepath.Join(root, "app", "products", "[slug]")
 	writeSourceTestFile(t, filepath.Join(routeDir, "page.tsx"), "fixture\n")
-	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n")
+	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\ntype Props struct{}\n")
 	writeSourceTestFile(t, filepath.Join(routeDir, "go.mod"), "module example.com/user-owned\n\ngo 1.24.0\n")
 	routes, err := Discover(root)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestSyncGoSourcesProtectsUserModulesAndRejectsRouteImports(t *testing.T) {
 	if err := os.Remove(filepath.Join(routeDir, "go.mod")); err != nil {
 		t.Fatal(err)
 	}
-	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\nimport _ \"example.com/site/app/account\"\n")
+	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\nimport _ \"example.com/site/app/account\"\n\ntype Props struct{}\n")
 	if err := SyncGoSources(root, routes, false); err == nil || !strings.Contains(err.Error(), "imports route-owned package") {
 		t.Fatalf("expected page-to-page import diagnosis, got %v", err)
 	}
@@ -148,7 +148,7 @@ func TestGeneratedRouteModuleMakesBracketSourceVisibleToGopls(t *testing.T) {
 	routeDir := filepath.Join(root, "app", "products", "[slug]")
 	writeSourceTestFile(t, filepath.Join(routeDir, "page.tsx"), "fixture\n")
 	page := filepath.Join(routeDir, "page.go")
-	writeSourceTestFile(t, page, "package products_slug\n\nimport \"example.com/site/known-missing\"\n\nvar _ = known_missing.Value\n")
+	writeSourceTestFile(t, page, "package products_slug\n\nimport \"example.com/site/known-missing\"\n\ntype Props struct{}\n\nvar _ = known_missing.Value\n")
 	routes, err := Discover(root)
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestGeneratedRouteModuleRespectsNestedWebsiteInternalBoundary(t *testing.T)
 	writeSourceTestFile(t, filepath.Join(website, "internal", "shared", "shared.go"), "package shared\n\nconst Value = true\n")
 	routeDir := filepath.Join(website, "app", "products", "[slug]")
 	writeSourceTestFile(t, filepath.Join(routeDir, "page.tsx"), "fixture\n")
-	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\nimport \"example.com/site/examples/site/internal/shared\"\n\nvar _ = shared.Value\n")
+	writeSourceTestFile(t, filepath.Join(routeDir, "page.go"), "package products_slug\n\nimport \"example.com/site/examples/site/internal/shared\"\n\ntype Props struct{}\n\nvar _ = shared.Value\n")
 	routes, err := Discover(website)
 	if err != nil {
 		t.Fatal(err)
