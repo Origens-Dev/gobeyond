@@ -4,6 +4,17 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.11 - 2026-07-29
+
+- Add `workers/**/durables.go` authoring, `{workerId}__{environment}` task queues,
+  `adapters/temporal` worker process lifecycle, and `gobeyond.builds/v3` worker
+  binary emit (`dist/workers/<id>/gobeyond-worker`).
+- Generate site/worker process mains and route projections under `.generated/`;
+  authors write `app/`, `workers/`, and optional `internal/site` hooks (no
+  hand-written `server/` tree).
+- Add `@go-beyond/workflows` portable client (requires a configured World).
+- Point create-gobeyond at the generated site entry and site hooks.
+
 ## 0.1.0-alpha.4 - 2026-07-25
 
 - Persist nested layouts across soft navigation: generated browser route modules

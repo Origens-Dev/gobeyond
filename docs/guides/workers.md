@@ -29,5 +29,5 @@ from `.generated/cmd/workers/<id>`.
 ## Trigger client
 
 `@go-beyond/workflows` requires a configured World. Local/preview/hosted
-Worlds are provided by `@origens/temporal` (Origens). Phase 1 ships the
-portable client interface only.
+Worlds are provided by `@origens/temporal`. Phase 1 ships the portable
+client interface only.

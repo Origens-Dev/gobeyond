@@ -23,7 +23,7 @@ export type WorkflowHandle = {
 
 /**
  * A World executes trigger operations and wakes workers when needed.
- * Hosted Worlds call Origens APIs; local Worlds talk to Docker Temporal.
+ * Hosted Worlds call platform APIs; local Worlds talk to Docker Temporal.
  */
 export type WorkflowWorld = {
   start(options: WorkflowStartOptions): Promise<WorkflowHandle>;
