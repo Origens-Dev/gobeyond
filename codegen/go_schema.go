@@ -217,9 +217,18 @@ func (r *goSchemaResolver) expression(pkg *goSchemaPackage, expression ast.Expr)
 			if name == "-" {
 				continue
 			}
-			value, err := r.expression(pkg, field.Type)
+			fieldType := field.Type
+			optional := false
+			if pointer, isPointer := field.Type.(*ast.StarExpr); isPointer && jsonOmitEmpty(field) {
+				fieldType = pointer.X
+				optional = true
+			}
+			value, err := r.expression(pkg, fieldType)
 			if err != nil {
 				return "", err
+			}
+			if optional {
+				value = "schema.optional(" + value + ")"
 			}
 			fields = append(fields, name+": "+value)
 		}
@@ -279,6 +288,31 @@ func jsonFieldName(field *ast.Field) string {
 		return strings.Split(value, ",")[0]
 	}
 	return name
+}
+
+func jsonOmitEmpty(field *ast.Field) bool {
+	if field.Tag == nil {
+		return false
+	}
+	tag, err := strconv.Unquote(field.Tag.Value)
+	if err != nil {
+		return false
+	}
+	for _, item := range strings.Split(tag, " ") {
+		if !strings.HasPrefix(item, "json:") {
+			continue
+		}
+		value, err := strconv.Unquote(strings.TrimPrefix(item, "json:"))
+		if err != nil {
+			return false
+		}
+		for _, option := range strings.Split(value, ",")[1:] {
+			if option == "omitempty" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func quoteStrings(values []string) string {

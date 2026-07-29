@@ -10,7 +10,7 @@ export const page = definePage({
       name: schema.string(),
       summary: schema.string()
     })),
-    nextHref: schema.nullable(schema.string()),
-    previousHref: schema.nullable(schema.string())
+    nextHref: schema.optional(schema.string()),
+    previousHref: schema.optional(schema.string())
   }),
 });

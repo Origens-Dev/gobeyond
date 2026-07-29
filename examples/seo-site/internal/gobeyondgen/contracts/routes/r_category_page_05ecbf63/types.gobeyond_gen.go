@@ -13,8 +13,8 @@ type Props struct {
 	Canonical    string           `json:"canonical"`
 	CurrentPage  int64            `json:"currentPage"`
 	Items        []PropsItemsItem `json:"items"`
-	NextHref     *string          `json:"nextHref"`
-	PreviousHref *string          `json:"previousHref"`
+	NextHref     *string          `json:"nextHref,omitempty"`
+	PreviousHref *string          `json:"previousHref,omitempty"`
 }
 
 type PropsItemsItem struct {
