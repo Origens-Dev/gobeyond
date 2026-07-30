@@ -157,16 +157,16 @@ func writeTestModule(t *testing.T, root string) {
 	}
 }
 
-func TestMiddlewareMakesStaticRoutesDynamic(t *testing.T) {
+func TestOptionalMiddlewareDoesNotForceStaticRoutesDynamic(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "app", "page.tsx"))
-	writeTestFile(t, filepath.Join(root, "server", "middleware", "middleware.go"))
+	writeTestFile(t, filepath.Join(root, "middleware.go"))
 	routes, err := Discover(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(routes) != 1 || routes[0].Mode != "dynamic" {
-		t.Fatalf("middleware route classification = %#v", routes)
+	if len(routes) != 1 || routes[0].Mode != "static" {
+		t.Fatalf("optional middleware must not force static pages dynamic: %#v", routes)
 	}
 }
 

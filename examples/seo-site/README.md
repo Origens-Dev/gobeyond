@@ -21,9 +21,11 @@ robots.txt, and sitemap.xml.
 
 Its route source is co-located: a static route has `page.tsx` only, while each
 request-time route adds a sibling `page.go`; the product mutation lives beside
-its declaration in `app/products/[slug]/actions.go`. Shared Go policy lives in
-`internal/site`. The runtime imports generated-safe projections of these route
-files, never the `app/` source directories directly.
+its declaration in `app/products/[slug]/actions.go`. Shared Go helpers live in
+`internal/site`; optional request middleware is website-root `middleware.go`.
+`robots.txt` / `sitemap.xml` are ordinary `public/` files. The runtime imports
+generated-safe projections of route files, never the `app/` source directories
+directly.
 
 It also imports a real stylesheet and ships product/Open Graph image fixtures.
 `gobeyond build` links the content-hashed CSS in static and dynamic documents,

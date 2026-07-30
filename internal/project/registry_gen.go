@@ -103,8 +103,8 @@ func generateSiteArtifacts(root, websiteImport string, routes []Route) (map[stri
 		return nil, err
 	}
 
-	hasHooks := siteHooksPresent(root)
-	registry, err := renderRegistry(websiteImport, pages, apis, actions, hasHooks)
+	hasMiddleware := siteMiddlewarePresent(root)
+	registry, err := renderRegistry(websiteImport, pages, apis, actions, hasMiddleware)
 	if err != nil {
 		return nil, err
 	}
@@ -115,13 +115,16 @@ func generateSiteArtifacts(root, websiteImport string, routes []Route) (map[stri
 	}, nil
 }
 
-func siteHooksPresent(root string) bool {
-	entries, err := os.ReadDir(filepath.Join(root, "internal", "site"))
+// siteMiddlewarePresent reports whether the website root has an optional
+// middleware.go that exports Middleware(). internal/ is left for app code.
+func siteMiddlewarePresent(root string) bool {
+	file := filepath.Join(root, "middleware.go")
+	funcs, err := exportedFuncs(file)
 	if err != nil {
 		return false
 	}
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
+	for _, name := range funcs {
+		if name == "Middleware" {
 			return true
 		}
 	}
@@ -448,19 +451,21 @@ func httpMethodFuncs(file string) ([]string, error) {
 	return methods, nil
 }
 
-func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, hasHooks bool) ([]byte, error) {
+func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, hasMiddleware bool) ([]byte, error) {
 	var imports []string
 	imports = append(imports,
 		`"net/http"`,
 		`gb "github.com/Origens-Dev/gobeyond"`,
 		`"github.com/Origens-Dev/gobeyond/browserassets"`,
+		`"github.com/Origens-Dev/gobeyond/cache/openfromenv"`,
 		`"github.com/Origens-Dev/gobeyond/renderplan"`,
 		`"github.com/Origens-Dev/gobeyond/router"`,
 		`gbruntime "github.com/Origens-Dev/gobeyond/runtime"`,
 		`routes "`+path.Join(websiteImport, GeneratedDir, "routes")+`"`,
 	)
-	if hasHooks {
-		imports = append(imports, `hooks "`+path.Join(websiteImport, "internal/site")+`"`)
+	if hasMiddleware {
+		// Optional website-root middleware.go (package middleware).
+		imports = append(imports, `middleware "`+websiteImport+`"`)
 	}
 	for _, page := range pages {
 		if page.HasPage {
@@ -520,11 +525,7 @@ func New(opts Options) (*gbruntime.Server, func() error, error) {
 		}
 		if page.HasPage {
 			b.WriteString("\t\t\tLoad: func(ctx *gb.PageContext) (gbruntime.LoadedPage, error) {\n")
-			if hasHooks {
-				b.WriteString("\t\t\t\thooks.WithPublicOrigin(ctx, opts.PublicOrigin)\n")
-			} else {
-				b.WriteString("\t\t\t\t_ = opts.PublicOrigin\n")
-			}
+			b.WriteString("\t\t\t\t_ = opts.PublicOrigin\n")
 			if page.PageResult {
 				b.WriteString("\t\t\t\tresult, err := ")
 				writePageCall(&b, page)
@@ -571,8 +572,7 @@ func New(opts Options) (*gbruntime.Server, func() error, error) {
 		b.WriteString("\t\t},\n")
 	}
 	b.WriteString("\t}\n")
-	if hasHooks {
-		b.WriteString(`	cfg := gbruntime.Config{
+	b.WriteString(`	cfg := gbruntime.Config{
 		BuildID:       opts.BuildID,
 		PublicOrigin:  opts.PublicOrigin,
 		BrowserAssets: opts.BrowserAssets,
@@ -581,11 +581,19 @@ func New(opts Options) (*gbruntime.Server, func() error, error) {
 		Pages:         pages,
 		Actions:       actions,
 		APIs:          apis,
-		Middleware:    hooks.Middleware(),
+`)
+	if hasMiddleware {
+		b.WriteString("\t\tMiddleware:    middleware.Middleware(),\n")
 	}
-	closeFn, err := hooks.Configure(&cfg)
-	if err != nil {
-		return nil, nil, err
+	b.WriteString(`	}
+	var closeFn func() error
+	if opts.Static != nil {
+		cacheConfig, cacheClose, err := openfromenv.OpenFromEnv()
+		if err != nil {
+			return nil, nil, err
+		}
+		cfg.Cache = cacheConfig
+		closeFn = cacheClose
 	}
 	server, err := gbruntime.New(cfg)
 	if err != nil {
@@ -602,40 +610,11 @@ func Handler(opts Options) (http.Handler, func() error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return hooks.Wrap(server, opts.PublicOrigin), closeFn, nil
-}
-
-var _ = routes.BuildID
-`)
-	} else {
-		b.WriteString(`	cfg := gbruntime.Config{
-		BuildID:       opts.BuildID,
-		PublicOrigin:  opts.PublicOrigin,
-		BrowserAssets: opts.BrowserAssets,
-		PlanStore:     opts.PlanStore,
-		Static:        opts.Static,
-		Pages:         pages,
-		Actions:       actions,
-		APIs:          apis,
-	}
-	server, err := gbruntime.New(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	return server, nil, nil
-}
-
-func Handler(opts Options) (http.Handler, func() error, error) {
-	server, closeFn, err := New(opts)
-	if err != nil {
-		return nil, nil, err
-	}
 	return server, closeFn, nil
 }
 
 var _ = routes.BuildID
 `)
-	}
 	return []byte(b.String()), nil
 }
 

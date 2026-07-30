@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -107,10 +108,12 @@ func TestLocalizedRoutesAreReciprocalAndAccountIsPrivate(t *testing.T) {
 }
 
 func TestCrawlerControlDocuments(t *testing.T) {
-	server := newTestSite(t, "", nil)
+	// robots.txt / sitemap.xml are ordinary public/ files (not framework hooks).
+	publicDir := filepath.Join("..", "public")
+	server := gbruntime.StaticFiles(publicDir, newTestSite(t, "", nil))
 	for _, test := range []struct{ path, contentType, contains string }{
 		{"/robots.txt", "text/plain", "Disallow: /account"},
-		{"/sitemap.xml", "application/xml", "https://example.com/fr/articles/react-portable"},
+		{"/sitemap.xml", "application/xml", "https://example.gobeyond.dev/fr/articles/react-portable"},
 	} {
 		recorder := httptest.NewRecorder()
 		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com"+test.path, nil))
@@ -236,7 +239,6 @@ func newTestSite(t *testing.T, clientScript string, styles []string) http.Handle
 		Plans:        testPlans(),
 		Loads: map[string]gbruntime.PageLoader{
 			routes.RouteRoot: func(ctx *gb.PageContext) (gbruntime.LoadedPage, error) {
-				shared.WithPublicOrigin(ctx, "https://example.com")
 				return *homePage("https://example.com"), nil
 			},
 		},

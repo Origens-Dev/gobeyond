@@ -4,6 +4,13 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.14 - 2026-07-29
+
+- Drop required `internal/site` hook surface. `internal/` is for app code.
+- Optional website-root `middleware.go` exporting `Middleware()`; omit when unused.
+- Generated registry opens cache via `openfromenv` itself; loaders use `ctx.PublicOrigin`.
+- Prefer `public/` for `robots.txt` / `sitemap.xml` instead of a Wrap hook.
+
 ## 0.1.0-alpha.13 - 2026-07-29
 
 - Move gobeyond-owned projections from `.generated/` to `generated/`.
@@ -21,7 +28,7 @@ surfaces; alpha releases may revise them with explicit changelog entries.
   `adapters/temporal` worker process lifecycle, and `gobeyond.builds/v3` worker
   binary emit (`dist/workers/<id>/gobeyond-worker`).
 - Generate site/worker process mains and route projections under `.generated/`;
-  authors write `app/`, `workers/`, and optional `internal/site` hooks (no
+  authors write `app/`, `workers/`, and optional website-root `middleware.go` (no
   hand-written `server/` tree).
 - Add `@go-beyond/workflows` portable client (requires a configured World).
 - Point create-gobeyond at the generated site entry and site hooks.

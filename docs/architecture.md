@@ -112,11 +112,11 @@ runtime/browser manifests; both static documents and dynamic page
 registrations use those exact URLs. Copied `public/` files are listed in the
 deployment route trie so the edge can select the static origin explicitly.
 
-Optional site hooks live in `internal/site/` and are wired by the generated
-registry under `generated/registry/`. The `create-gobeyond` starter keeps
-product-scoped request-ID middleware in those hooks so `/` stays static and
-loads props from the packaged `static-build.gbs` store. Process mains are
-generated under `generated/cmd/{site,workers}`.
+Optional request middleware is a website-root `middleware.go` exporting
+`Middleware() []gbmiddleware.Rule`. Omit the file when unused. Cache wiring and
+`ctx.PublicOrigin` are owned by the generated registry/runtime; `internal/` is
+for ordinary app code. Static files such as `robots.txt` live under `public/`.
+Process mains are generated under `generated/cmd/{site,workers}`.
 
 When the Go process serves origin static files itself (local preview, or an
 origin without CloudFront in front), wrap the server with

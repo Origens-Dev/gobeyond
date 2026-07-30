@@ -30,7 +30,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
     'app/products/[slug]/page.go',
     'app/products/[slug]/actions.go',
     'app/api/products/route.go',
-    'internal/site/hooks.go',
+    'middleware.go',
     'public/portable-react.svg',
     'public/social/home.svg',
     'Dockerfile',
@@ -89,14 +89,13 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(loader, /func Page\(ctx \*gb\.PageContext\)/)
   const action = await readFile(join(destination, 'app/products/[slug]/actions.go'), 'utf8')
   assert.match(action, /contracts\/actions\/r_products_slug_3e2e8eb9_add_to_cart/)
-  const hooks = await readFile(join(destination, 'internal/site/hooks.go'), 'utf8')
-  assert.match(hooks, /func Middleware\(\)/)
-  assert.match(hooks, /func Wrap\(/)
-  assert.match(hooks, /func Configure\(/)
-  assert.match(hooks, /func WithPublicOrigin\(/)
-  assert.match(hooks, /starter-request-id/)
-  assert.match(hooks, /Patterns: \[\]string\{"\/products\/\[slug\]"\}/)
-  assert.match(hooks, /openfromenv\.OpenFromEnv\(\)/)
+  const middleware = await readFile(join(destination, 'middleware.go'), 'utf8')
+  assert.match(middleware, /package middleware/)
+  assert.match(middleware, /func Middleware\(\)/)
+  assert.match(middleware, /starter-request-id/)
+  assert.match(middleware, /Patterns: \[\]string\{"\/products\/\[slug\]"\}/)
+  assert.doesNotMatch(middleware, /openfromenv\.OpenFromEnv\(\)/)
+  assert.doesNotMatch(middleware, /WithPublicOrigin/)
   const gitignoreFull = await readFile(join(destination, '.gitignore'), 'utf8')
   assert.match(gitignoreFull, /generated\/cmd\//)
 

@@ -1,6 +1,5 @@
-// Package shared contains the runtime-independent policy shared by the
-// example's typed page loaders. Each loader receives the configured public
-// origin through its PageContext; it never trusts the request Host header.
+// Package shared holds app helpers used by typed page loaders.
+// It is ordinary developer code under internal/, not a gobeyond hook surface.
 package shared
 
 import (
@@ -10,17 +9,11 @@ import (
 	gb "github.com/Origens-Dev/gobeyond"
 )
 
-const PublicOriginValue = "gobeyond.public_origin"
-
 func PublicOrigin(ctx *gb.PageContext) (string, error) {
-	if ctx != nil && strings.TrimSpace(ctx.PublicOrigin) != "" {
-		return strings.TrimSuffix(ctx.PublicOrigin, "/"), nil
-	}
-	origin, ok := ctx.Values[PublicOriginValue].(string)
-	if !ok || origin == "" {
+	if ctx == nil || strings.TrimSpace(ctx.PublicOrigin) == "" {
 		return "", errors.New("configured public origin is missing from page context")
 	}
-	return strings.TrimSuffix(origin, "/"), nil
+	return strings.TrimSuffix(ctx.PublicOrigin, "/"), nil
 }
 
 func PublicMetadata(lang, title, description, canonical, kind, image string, jsonLD gb.JSONLD, alternates ...gb.Alternate) gb.Metadata {
