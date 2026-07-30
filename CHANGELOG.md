@@ -6,6 +6,17 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.19 - 2026-07-30
+
+- `adapters/temporal.Serve` publishes the hosted unixgram readiness nonce
+  (`GOBEYOND_READINESS_SIGNAL` / `GOBEYOND_READINESS_NONCE`) after a successful
+  Temporal health check and worker start, and again on `SIGCONT` — matching
+  `adapters/listen` so RoleWorker cold-start can complete on gbhost.
+- Fail closed on `CheckHealth` before readiness so mTLS "Request unauthorized"
+  does not leave a running process that never becomes ready.
+- Report worker saturation to gbhost via `GOBEYOND_HOST_REPORT_SOCKET`
+  (`/v1/worker-health`) for schedule heartbeats.
+
 ## 0.1.0-alpha.18 - 2026-07-30
 
 - **Breaking:** reject root `workers/durables.go`. Authored durables must live

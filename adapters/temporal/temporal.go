@@ -21,13 +21,16 @@ package temporal
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 )
 
@@ -38,6 +41,9 @@ const (
 	EnvAPIKey    = "GOBEYOND_TEMPORAL_API_KEY"
 	EnvTLSCert   = "GOBEYOND_TEMPORAL_TLS_CERT"
 	EnvTLSKey    = "GOBEYOND_TEMPORAL_TLS_KEY"
+	// Hosted readiness contract matches adapters/listen (gbhost unixgram nonce).
+	EnvReadinessNonce  = "GOBEYOND_READINESS_NONCE"
+	EnvReadinessSignal = "GOBEYOND_READINESS_SIGNAL"
 )
 
 // RegisterFunc configures workflows and activities on a Temporal worker.
@@ -83,30 +89,63 @@ func Serve(ctx context.Context, options Options) error {
 	}
 	defer c.Close()
 
-	w := worker.New(c, options.TaskQueue, worker.Options{})
+	// Fail closed before hosted readiness: Dial can succeed at the TLS layer
+	// while the first authenticated RPC still returns "Request unauthorized".
+	if _, err := c.CheckHealth(ctx, &client.CheckHealthRequest{}); err != nil {
+		return fmt.Errorf("temporal adapter: health check: %w", err)
+	}
+
+	tracker := &healthTracker{maxConcurrent: 100}
+	w := worker.New(c, options.TaskQueue, worker.Options{
+		MaxConcurrentActivityExecutionSize: int(tracker.maxConcurrent),
+		Interceptors:                       []interceptor.WorkerInterceptor{&healthInterceptor{tracker: tracker}},
+	})
 	options.Register(w)
 
 	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	startHealthReporter(runCtx, tracker)
+	_ = ReportWorkerHealth(runCtx, tracker.snapshot())
 
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- w.Run(worker.InterruptCh())
 	}()
 
-	select {
-	case <-runCtx.Done():
+	// Hosted RoleWorker readiness: same unixgram nonce contract as adapters/listen.
+	if err := signalReadiness(
+		os.Getenv(EnvReadinessSignal),
+		os.Getenv(EnvReadinessNonce),
+	); err != nil {
 		w.Stop()
-		err := <-errCh
-		if err == nil || isInterrupt(err) {
-			return nil
+		<-errCh
+		return fmt.Errorf("temporal adapter: signal readiness: %w", err)
+	}
+
+	cont := make(chan os.Signal, 1)
+	signal.Notify(cont, syscall.SIGCONT)
+	defer signal.Stop(cont)
+
+	for {
+		select {
+		case <-cont:
+			_ = signalReadiness(
+				os.Getenv(EnvReadinessSignal),
+				os.Getenv(EnvReadinessNonce),
+			)
+		case <-runCtx.Done():
+			w.Stop()
+			err := <-errCh
+			if err == nil || isInterrupt(err) {
+				return nil
+			}
+			return err
+		case err := <-errCh:
+			if err == nil || isInterrupt(err) {
+				return nil
+			}
+			return err
 		}
-		return err
-	case err := <-errCh:
-		if err == nil || isInterrupt(err) {
-			return nil
-		}
-		return err
 	}
 }
 
@@ -183,4 +222,35 @@ func optionsFromEnv(options Options) Options {
 
 func isInterrupt(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "interrupt") || strings.Contains(err.Error(), "canceled"))
+}
+
+func signalReadiness(target, nonce string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil
+	}
+	const prefix = "unixgram://"
+	if !strings.HasPrefix(target, prefix) {
+		return errors.New("readiness signal target must use unixgram://")
+	}
+	path := strings.TrimPrefix(target, prefix)
+	if !strings.HasPrefix(path, "/") {
+		return errors.New("readiness signal target must use an absolute path")
+	}
+	if nonce == "" {
+		return errors.New("readiness signal requires a nonce")
+	}
+	address, err := net.ResolveUnixAddr("unixgram", path)
+	if err != nil {
+		return err
+	}
+	connection, err := net.DialUnix("unixgram", nil, address)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	if _, err := connection.Write([]byte(nonce)); err != nil {
+		return err
+	}
+	return nil
 }

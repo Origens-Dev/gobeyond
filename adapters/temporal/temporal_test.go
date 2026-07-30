@@ -9,6 +9,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
+	"os"
 	"testing"
 	"time"
 )
@@ -131,4 +133,43 @@ func mustSelfSignedPEM(t *testing.T) (certPEM, keyPEM string) {
 	}
 	keyPEMBytes := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	return string(certPEMBytes), string(keyPEMBytes)
+}
+
+func TestSignalReadinessEmptyTarget(t *testing.T) {
+	if err := signalReadiness("", "nonce"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSignalReadinessUnixgram(t *testing.T) {
+	// macOS sockaddr_un path limit — keep the socket path short.
+	sock := "/tmp/gb-rdy-" + t.Name()[len(t.Name())-6:] + ".sock"
+	_ = os.Remove(sock)
+	t.Cleanup(func() { _ = os.Remove(sock) })
+	addr, err := net.ResolveUnixAddr("unixgram", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.ListenUnixgram("unixgram", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, _, _ := ln.ReadFromUnix(buf)
+		done <- string(buf[:n])
+	}()
+	if err := signalReadiness("unixgram://"+sock, "proof"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got != "proof" {
+			t.Fatalf("got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
 }
