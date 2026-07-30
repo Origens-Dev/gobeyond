@@ -13,13 +13,14 @@ coverage/
 **/app/**/go.mod
 **/workers/**/go.mod
 
-# Ephemeral projections and process mains under .generated/. Committed
+# Ephemeral projections and process mains under generated/. Committed
 # artifacts are routes/routes_gen.go and contracts/** only.
-**/.generated/routes/*/
-**/.generated/api/
-**/.generated/workers/
-**/.generated/cmd/
-**/.generated/registry/
+**/generated/routes/*/
+**/generated/api/
+**/generated/workers/
+**/generated/cmd/
+**/generated/registry/
 
-# Legacy projection root (removed by generate).
+# Legacy projection roots (removed by generate).
+**/.generated/
 **/internal/gobeyondgen/

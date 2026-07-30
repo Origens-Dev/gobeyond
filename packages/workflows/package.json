@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/workflows",
-  "version": "0.1.0-alpha.12",
+  "version": "0.1.0-alpha.13",
   "description": "Portable durable workflow client for GoBeyond (requires a configured World)",
   "license": "MIT",
   "type": "module",

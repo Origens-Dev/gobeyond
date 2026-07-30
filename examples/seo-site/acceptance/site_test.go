@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	gb "github.com/Origens-Dev/gobeyond"
-	actioncontract "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
-	registry "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/registry"
-	routes "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/routes"
+	actioncontract "github.com/Origens-Dev/gobeyond/examples/seo-site/generated/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart"
+	registry "github.com/Origens-Dev/gobeyond/examples/seo-site/generated/registry"
+	routes "github.com/Origens-Dev/gobeyond/examples/seo-site/generated/routes"
 	shared "github.com/Origens-Dev/gobeyond/examples/seo-site/internal/site"
 	"github.com/Origens-Dev/gobeyond/renderplan"
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"

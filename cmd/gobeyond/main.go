@@ -1562,7 +1562,7 @@ func serverBuildTarget(website string) (string, error) {
 	if info, err := os.Stat(target); err == nil && info.IsDir() {
 		return target, nil
 	}
-	return "", errors.New("production server entry missing; run gobeyond generate (expected .generated/cmd/site)")
+	return "", errors.New("production server entry missing; run gobeyond generate (expected generated/cmd/site)")
 }
 
 // middlewareBuildTarget reports the optional middleware artifact entry
@@ -1589,7 +1589,7 @@ type workerBuildTargetInfo struct {
 }
 
 // workerBuildTargets resolves generated per-worker Go main packages under
-// .generated/cmd/workers/<id>.
+// generated/cmd/workers/<id>.
 func workerBuildTargets(website string) ([]workerBuildTargetInfo, error) {
 	workers, err := project.DiscoverWorkers(website)
 	if err != nil {

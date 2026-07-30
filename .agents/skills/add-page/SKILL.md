@@ -32,7 +32,7 @@ do not create a Go package unless the page needs request-time behavior.
 `page.schema.ts` scaffold; `page.tsx` alone is a static route. `gobeyond add
 dynamic <route>` additionally creates a typed sibling
 `app/<route>/page.go`. Run `gobeyond generate` to emit its contract and a safe
-runtime projection under `.generated/routes/<route-ID>/`. The runtime
+runtime projection under `generated/routes/<route-ID>/`. The runtime
 imports that projection by generated route ID, never the source directory below
 `app/`.
 

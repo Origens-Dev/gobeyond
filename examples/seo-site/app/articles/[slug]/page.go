@@ -3,7 +3,7 @@ package articles_slug
 
 import (
 	gb "github.com/Origens-Dev/gobeyond"
-	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/contracts/routes/r_articles_slug_c2f99372"
+	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/generated/contracts/routes/r_articles_slug_c2f99372"
 	"github.com/Origens-Dev/gobeyond/examples/seo-site/internal/site"
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 	"net/http"

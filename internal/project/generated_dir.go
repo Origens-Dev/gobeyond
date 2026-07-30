@@ -5,9 +5,16 @@ import "path/filepath"
 // GeneratedDir is the website-relative directory owned by gobeyond for
 // projections, registries, contracts, and generated process mains.
 // Authors write app/, workers/, and internal/ only.
-const GeneratedDir = ".generated"
+//
+// Must not start with "." or "_": Go ignores those directory names when
+// matching package patterns, and import paths under them break normal
+// `go build` / `go test` workflows.
+const GeneratedDir = "generated"
 
-// LegacyGeneratedDir is the previous projection root; SyncGoSources removes it.
+// Legacy dotted root from alpha.11–alpha.12; SyncGoSources removes it.
+const legacyDottedGeneratedDir = ".generated"
+
+// LegacyGeneratedDir is the pre-alpha.11 projection root; SyncGoSources removes it.
 const LegacyGeneratedDir = "internal/gobeyondgen"
 
 // websiteFile resolves a Discover path that may be absolute or website-relative.

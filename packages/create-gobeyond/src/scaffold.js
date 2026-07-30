@@ -5,7 +5,7 @@ export class CreateProjectError extends Error {}
 
 // This is the first public MVP release line. Keep the Go module and every
 // published JavaScript package on the exact same release line in a starter.
-const GOBEYOND_VERSION = '0.1.0-alpha.12'
+const GOBEYOND_VERSION = '0.1.0-alpha.13'
 const REACT_VERSION = '19.2.8'
 
 /**
@@ -82,7 +82,7 @@ function projectFiles(projectName, { tailwind }) {
       },
     }),
     'go.mod': `module ${modulePath}\n\ngo 1.24.0\n\nrequire github.com/Origens-Dev/gobeyond v${GOBEYOND_VERSION}\n`,
-    '.gitignore': `.gobeyond/\n**/.generated/routes/*/\n**/.generated/api/\n**/.generated/workers/\n**/.generated/cmd/\n**/.generated/registry/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n**/app/**/go.mod\n**/workers/**/go.mod\n`,
+    '.gitignore': `.gobeyond/\n**/generated/routes/*/\n**/generated/api/\n**/generated/workers/\n**/generated/cmd/\n**/generated/registry/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n**/app/**/go.mod\n**/workers/**/go.mod\n`,
     '.env.example': `GOBEYOND_PUBLIC_ORIGIN=http://localhost:8080\n`,
     'tsconfig.json': json({
       compilerOptions: {
@@ -202,8 +202,8 @@ function starterReadme(projectName) {
     '- `app/api/products/route.go`: Go HTTP API.',
     '- `internal/`: reusable Go services and policy.',
     '- `internal/site/hooks.go`: optional site hooks (middleware, wrap, cache).',
-    '- `.generated/`: gobeyond-owned projections, contracts, registry, and process mains.', '',
-    'Run `pnpm generate` after changing schemas/routes. It commits the route registry and Go contracts under `.generated/`; check them with `pnpm generate:check`.', '',
+    '- `generated/`: gobeyond-owned projections, contracts, registry, and process mains.', '',
+    'Run `pnpm generate` after changing schemas/routes. It commits the route registry and Go contracts under `generated/`; check them with `pnpm generate:check`.', '',
     'Generation also creates ignored, managed `go.mod` sidecars in route folders so `gopls` can type-check names such as `[slug]`. The production server imports only the safe generated packages.', '',
     '## Production', '',
     'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN separately.', '',
@@ -222,7 +222,7 @@ function clientEntry() {
 
 function legacyDynamicPage(modulePath) {
   return `// Package products_slug supplies request-time props for app/products/[slug]/page.tsx.\npackage products_slug\n\nimport (\n  \"os\"\n  \"strings\"\n\n  gb \"github.com/Origens-Dev/gobeyond\"\n  contract \"${modulePath}/server/internal/gobeyondgen/contracts/routes/r_products_slug_3e2e8eb9\"\n)\n\n// Page receives only request-time concerns. React remains the source of truth\n// for markup in app/products/[slug]/page.tsx.\nfunc Page(ctx *gb.PageContext) (gb.PageResult[contract.Props], error) {\n  slug := ctx.Params[\"slug\"]\n  if slug != \"portable-react\" {\n    return gb.NotFound[contract.Props](gb.Metadata{Lang: \"en\", Title: \"Product not found\", Robots: \"noindex, nofollow\"}), nil\n  }\n  origin := os.Getenv(\"GOBEYOND_PUBLIC_ORIGIN\")\n  if origin == \"\" { origin = \"http://localhost:8080\" }\n  canonical := origin + \"/products/portable-react\"\n  image := origin + \"/portable-react.jpg\"\n  socialImage := strings.Replace(origin, \"http://\", \"https://\", 1) + \"/portable-react.jpg\"\n  return gb.OK(contract.Props{\n    Name: \"Portable React\", Description: \"Crawler-visible React markup rendered by Go.\",\n    Price: \"$49\", Availability: \"In stock\", ImageURL: image,\n  }, gb.Metadata{\n    Lang: \"en\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", Canonical: canonical, Robots: \"index, follow\",\n    OpenGraph: gb.OpenGraph{Type: \"product\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", URL: canonical, Images: []string{socialImage}},\n    Twitter: gb.Twitter{Card: \"summary_large_image\", Title: \"Portable React\", Description: \"A Go-rendered product page.\", Images: []string{socialImage}},\n    JSONLD: []gb.JSONLD{{\"@context\": \"https://schema.org\", \"@type\": \"Product\", \"name\": \"Portable React\", \"offers\": map[string]any{\"@type\": \"Offer\", \"price\": \"49\", \"priceCurrency\": \"USD\", \"availability\": \"https://schema.org/InStock\"}}},\n  }), nil\n}\n`
-    .replaceAll('/server/internal/gobeyondgen/', '/.generated/')
+    .replaceAll('/server/internal/gobeyondgen/', '/generated/')
 }
 
 function dynamicPage() {
@@ -271,7 +271,7 @@ func Page(ctx *gb.PageContext) (gb.PageResult[Props], error) {
 }
 
 function actionHandler(modulePath) {
-  return `// Package products_slug implements the action declared in app/products/[slug]/actions.ts.\npackage products_slug\n\nimport (\n  \"errors\"\n\n  gb \"github.com/Origens-Dev/gobeyond\"\n  contract \"${modulePath}/.generated/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart\"\n)\n\nfunc AddToCart(_ *gb.ActionContext, input contract.Input) (gb.ActionResult[contract.Output], error) {\n  if input.ProductName == \"\" { return gb.ActionResult[contract.Output]{}, errors.New(\"productName is required\") }\n  return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil\n}\n`
+  return `// Package products_slug implements the action declared in app/products/[slug]/actions.ts.\npackage products_slug\n\nimport (\n  \"errors\"\n\n  gb \"github.com/Origens-Dev/gobeyond\"\n  contract \"${modulePath}/generated/contracts/actions/r_products_slug_3e2e8eb9_add_to_cart\"\n)\n\nfunc AddToCart(_ *gb.ActionContext, input contract.Input) (gb.ActionResult[contract.Output], error) {\n  if input.ProductName == \"\" { return gb.ActionResult[contract.Output]{}, errors.New(\"productName is required\") }\n  return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil\n}\n`
 }
 
 function apiHandler() {
