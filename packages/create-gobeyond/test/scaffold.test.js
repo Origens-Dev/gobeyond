@@ -98,7 +98,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(hooks, /Patterns: \[\]string\{"\/products\/\[slug\]"\}/)
   assert.match(hooks, /openfromenv\.OpenFromEnv\(\)/)
   const gitignoreFull = await readFile(join(destination, '.gitignore'), 'utf8')
-  assert.match(gitignoreFull, /\.generated\/cmd\//)
+  assert.match(gitignoreFull, /generated\/cmd\//)
 
   const homeMetadata = await readFile(join(destination, 'app/page.metadata.ts'), 'utf8')
   assert.match(homeMetadata, /export function metadata/)
@@ -150,7 +150,7 @@ test('local workspace integration generates contracts and type-checks the starte
     GOBEYOND_PUBLIC_ORIGIN: serveOrigin,
   })
 
-  const generatedContract = join(destination, '.generated/contracts/routes/r_products_slug_3e2e8eb9/types.gobeyond_gen.go')
+  const generatedContract = join(destination, 'generated/contracts/routes/r_products_slug_3e2e8eb9/types.gobeyond_gen.go')
   await access(generatedContract)
   await access(join(destination, 'dist/server/gobeyond-server'))
   const runtimeManifest = JSON.parse(await readFile(join(destination, 'dist/server/runtime-manifest.json'), 'utf8'))

@@ -33,7 +33,7 @@ internal/                            shared Go services and policy
 both its browser bundle and its Go rendering plan. Developers do not maintain a
 second Go template. GoBeyond also creates ignored, managed `go.mod` sidecars in
 route folders so `gopls` can type-check names such as `[slug]`; production code
-imports only the generated packages under `.generated/`.
+imports only the generated packages under `generated/`.
 
 For a request-time route, `page.go` owns the JSON payload: declare `Props` with
 ordinary Go imports (for example, an app-owned CMS package) and return

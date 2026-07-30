@@ -131,7 +131,7 @@ func TestBuildSnapshotTracksInputsAndIgnoresGeneratedFiles(t *testing.T) {
 	if first["app/page.tsx"] == "" || first["server/pages/root/page.go"] == "" {
 		t.Fatalf("snapshot is missing build inputs: %#v", first)
 	}
-	if _, exists := first[".generated/routes/routes_gen.go"]; exists {
+	if _, exists := first["generated/routes/routes_gen.go"]; exists {
 		t.Fatal("generated files must not enter the build snapshot")
 	}
 

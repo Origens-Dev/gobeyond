@@ -60,7 +60,7 @@ func TestAddDynamicCreatesGoOwnedPropsAndGeneratedSchema(t *testing.T) {
 		"func Page(_ *gb.PageContext) (gb.PageResult[Props], error)",
 		"generatedroutes.RouteProductsSlug",
 	)
-	assertAddGoPackageCompiles(t, root, "./.generated/routes/r_products__slug_3e2e8eb9")
+	assertAddGoPackageCompiles(t, root, "./generated/routes/r_products__slug_3e2e8eb9")
 
 	if err := add(root, []string{"dynamic", "products/[slug]"}); err != nil {
 		t.Fatalf("unchanged dynamic scaffold should be idempotent: %v", err)
@@ -107,26 +107,26 @@ func TestAddActionMergesOnlyMarkedScaffoldsAndCreatesTypedHandler(t *testing.T) 
 
 	handlerPath := filepath.Join(root, "app", "orders", "actions.go")
 	assertAddFileContains(t, handlerPath,
-		"contractSubmitOrder \"example.com/add-test/.generated/contracts/actions/r_orders_fc7d0552_submit_order\"",
-		"contractCancelOrder \"example.com/add-test/.generated/contracts/actions/r_orders_fc7d0552_cancel_order\"",
+		"contractSubmitOrder \"example.com/add-test/generated/contracts/actions/r_orders_fc7d0552_submit_order\"",
+		"contractCancelOrder \"example.com/add-test/generated/contracts/actions/r_orders_fc7d0552_cancel_order\"",
 		"func SubmitOrder(_ *gb.ActionContext, _ contractSubmitOrder.Input) (contractSubmitOrder.Output, error)",
 		"contractSubmitOrder.Register(SubmitOrder)",
 		"func CancelOrder(_ *gb.ActionContext, _ contractCancelOrder.Input) (contractCancelOrder.Output, error)",
 		"func Cancel(_ *gb.ActionContext, _ contractCancel.Input) (contractCancel.Output, error)",
 	)
 	writeAddTestFile(t,
-		filepath.Join(root, ".generated", "contracts", "actions", "r_orders_fc7d0552_submit_order", "types.gobeyond_gen.go"),
+		filepath.Join(root, "generated", "contracts", "actions", "r_orders_fc7d0552_submit_order", "types.gobeyond_gen.go"),
 		"package r_orders_fc7d0552_submit_order\n\ntype Input struct{}\ntype Output struct{}\n",
 	)
 	writeAddTestFile(t,
-		filepath.Join(root, ".generated", "contracts", "actions", "r_orders_fc7d0552_cancel_order", "types.gobeyond_gen.go"),
+		filepath.Join(root, "generated", "contracts", "actions", "r_orders_fc7d0552_cancel_order", "types.gobeyond_gen.go"),
 		"package r_orders_fc7d0552_cancel_order\n\ntype Input struct{}\ntype Output struct{}\n",
 	)
 	writeAddTestFile(t,
-		filepath.Join(root, ".generated", "contracts", "actions", "r_orders_fc7d0552_cancel", "types.gobeyond_gen.go"),
+		filepath.Join(root, "generated", "contracts", "actions", "r_orders_fc7d0552_cancel", "types.gobeyond_gen.go"),
 		"package r_orders_fc7d0552_cancel\n\ntype Input struct{}\ntype Output struct{}\n",
 	)
-	assertAddGoPackageCompiles(t, root, "./.generated/routes/r_orders_fc7d0552")
+	assertAddGoPackageCompiles(t, root, "./generated/routes/r_orders_fc7d0552")
 
 	beforeCollision, err := os.ReadFile(actionsPath)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestAddAPICreatesGETHandler(t *testing.T) {
 		"\"Content-Type\": {\"application/json\"}",
 	)
 	assertAddFileContains(t,
-		filepath.Join(root, ".generated", "api", "r_api_status_0ea44bf5", "route.go"),
+		filepath.Join(root, "generated", "api", "r_api_status_0ea44bf5", "route.go"),
 		"//line app/api/status/route.go:1",
 		"func GET(ctx *gb.RequestContext) (gb.Response, error)",
 	)

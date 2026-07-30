@@ -20,7 +20,7 @@ remain fatal.
   `app/api/**/route.go` stay beside the route they serve.
 - `internal/`: reusable Go services, policy, and integrations that are not
   owned by one route.
-- `.generated/`: gobeyond-owned contracts, registries, process mains, and
+- `generated/`: gobeyond-owned contracts, registries, process mains, and
   ignored safe Go projection packages. The runtime imports projections, never
   source directories below `app/`. Authors write `app/`, `workers/`, and
   `internal/` only.
@@ -45,7 +45,7 @@ application's Go packages instead of under a framework namespace.
 
 Go import paths cannot contain route brackets. Generation therefore writes an
 ignored, marker-protected `go.mod` beside every route as an editor-only package
-boundary, then projects authored Go into a safe package under `.generated/`.
+boundary, then projects authored Go into a safe package under `generated/`.
 This lets `gopls` diagnose the authored `page.go` without making
 `app/products/[slug]` a production import path. Generated module files are
 never shipped and user-owned `go.mod` files are never overwritten.
@@ -113,10 +113,10 @@ registrations use those exact URLs. Copied `public/` files are listed in the
 deployment route trie so the edge can select the static origin explicitly.
 
 Optional site hooks live in `internal/site/` and are wired by the generated
-registry under `.generated/registry/`. The `create-gobeyond` starter keeps
+registry under `generated/registry/`. The `create-gobeyond` starter keeps
 product-scoped request-ID middleware in those hooks so `/` stays static and
 loads props from the packaged `static-build.gbs` store. Process mains are
-generated under `.generated/cmd/{site,workers}`.
+generated under `generated/cmd/{site,workers}`.
 
 When the Go process serves origin static files itself (local preview, or an
 origin without CloudFront in front), wrap the server with

@@ -8,7 +8,7 @@ workers/<id>/durables.go       # named worker
 ```
 
 Authors export `Register(worker.Worker)` from each durables package.
-Process mains are generated under `.generated/cmd/workers/<id>/`.
+Process mains are generated under `generated/cmd/workers/<id>/`.
 
 ## Local Temporal (Docker)
 
@@ -23,8 +23,8 @@ Local default environment is `local` → e.g. `default__local`.
 ## Build
 
 `gobeyond build` projects `workers/**/durables.go` into
-`.generated/workers/` and emits `dist/workers/<id>/gobeyond-worker`
-from `.generated/cmd/workers/<id>`.
+`generated/workers/` and emits `dist/workers/<id>/gobeyond-worker`
+from `generated/cmd/workers/<id>`.
 
 ## Trigger client
 

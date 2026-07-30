@@ -3,7 +3,7 @@ package locations_slug
 
 import (
 	gb "github.com/Origens-Dev/gobeyond"
-	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/contracts/routes/r_locations_slug_730658f7"
+	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/generated/contracts/routes/r_locations_slug_730658f7"
 	"github.com/Origens-Dev/gobeyond/examples/seo-site/internal/site"
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 	"net/http"

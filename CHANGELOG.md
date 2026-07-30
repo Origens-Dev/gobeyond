@@ -4,6 +4,12 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.13 - 2026-07-29
+
+- Move gobeyond-owned projections from `.generated/` to `generated/`.
+  Go ignores directories whose names start with `.`, so import paths like
+  `module/.generated/routes` break normal package discovery and site builds.
+
 ## 0.1.0-alpha.12 - 2026-07-29
 
 - Publish `@go-beyond/workflows` via OIDC trusted publishing (package now exists on npm).

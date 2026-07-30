@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	gb "github.com/Origens-Dev/gobeyond"
-	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/.generated/contracts/routes/r_category_page_05ecbf63"
+	contract "github.com/Origens-Dev/gobeyond/examples/seo-site/generated/contracts/routes/r_category_page_05ecbf63"
 	"github.com/Origens-Dev/gobeyond/examples/seo-site/internal/site"
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
