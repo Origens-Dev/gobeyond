@@ -4,6 +4,11 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.12 - 2026-07-29
+
+- Publish `@go-beyond/workflows` via OIDC trusted publishing (package now exists on npm).
+- Document Worlds as `@origens-dev/temporal`.
+
 ## 0.1.0-alpha.11 - 2026-07-29
 
 - Add `workers/**/durables.go` authoring, `{workerId}__{environment}` task queues,
