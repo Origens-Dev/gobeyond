@@ -1,5 +1,5 @@
 /**
- * Portable durable client. Requires a configured World (e.g. @origens-dev/temporal).
+ * Portable durable client. Requires a configured backend (e.g. @origens-dev/temporal).
  * There is no implicit backend.
  */
 
@@ -22,35 +22,35 @@ export type WorkflowHandle = {
 };
 
 /**
- * A World executes trigger operations and wakes workers when needed.
- * Hosted Worlds call platform APIs; local Worlds talk to Docker Temporal.
+ * A backend executes trigger operations and wakes workers when needed.
+ * Hosted backends call platform APIs; local backends talk to Docker Temporal.
  */
-export type WorkflowWorld = {
+export type WorkflowBackend = {
   start(options: WorkflowStartOptions): Promise<WorkflowHandle>;
   signal(options: WorkflowSignalOptions): Promise<void>;
 };
 
-let configuredWorld: WorkflowWorld | undefined;
+let configuredBackend: WorkflowBackend | undefined;
 
-export function use(world: WorkflowWorld): void {
-  configuredWorld = world;
+export function use(backend: WorkflowBackend): void {
+  configuredBackend = backend;
 }
 
-function requireWorld(): WorkflowWorld {
-  if (!configuredWorld) {
+function requireBackend(): WorkflowBackend {
+  if (!configuredBackend) {
     throw new Error(
-      "@go-beyond/workflows: no World configured. Call workflows.use(createTemporalWorld(...)) first.",
+      "@go-beyond/workflows: no backend configured. Call workflows.use(createTemporalBackend(...)) first.",
     );
   }
-  return configuredWorld;
+  return configuredBackend;
 }
 
 export async function start(options: WorkflowStartOptions): Promise<WorkflowHandle> {
-  return requireWorld().start(options);
+  return requireBackend().start(options);
 }
 
 export async function signal(options: WorkflowSignalOptions): Promise<void> {
-  return requireWorld().signal(options);
+  return requireBackend().signal(options);
 }
 
 export const workflows = { use, start, signal };

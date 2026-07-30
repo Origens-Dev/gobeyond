@@ -4,6 +4,10 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.13 - 2026-07-29
+
+- Rename workflow "World" terminology to **backend** (`WorkflowBackend`, `createTemporalBackend`).
+
 ## 0.1.0-alpha.12 - 2026-07-29
 
 - Publish `@go-beyond/workflows` via OIDC trusted publishing (package now exists on npm).
