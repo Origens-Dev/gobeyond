@@ -1,5 +1,5 @@
 /**
- * Portable durable client. Requires a configured World (e.g. @origens/temporal).
+ * Portable durable client. Requires a configured World (e.g. @origens-dev/temporal).
  * There is no implicit backend.
  */
 
