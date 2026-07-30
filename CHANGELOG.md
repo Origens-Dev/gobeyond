@@ -6,6 +6,13 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.21 - 2026-07-30
+
+- `adapters/temporal.Serve` overlaps namespace `ListOpenWorkflow` with worker
+  poller start after Dial; unixgram readiness still waits for both (fail-closed
+  on probe/worker failure — Dial alone never signals ready).
+- Log child-side timings for dial, namespace probe, and worker run-start.
+
 ## 0.1.0-alpha.20 - 2026-07-30
 
 - `adapters/temporal.Serve` probes the namespace with `ListOpenWorkflow`

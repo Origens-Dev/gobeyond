@@ -1,6 +1,7 @@
 package temporal
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,12 +9,84 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"go.temporal.io/sdk/worker"
 )
+
+// stopStub implements the Stop half of worker.Worker for waitProbeOrWorker tests.
+type stopStub struct {
+	worker.Worker
+	stopped chan struct{}
+}
+
+func (s *stopStub) Stop() {
+	select {
+	case <-s.stopped:
+	default:
+		close(s.stopped)
+	}
+}
+
+func TestWaitProbeOrWorkerProbeFailsStopsWorker(t *testing.T) {
+	stub := &stopStub{stopped: make(chan struct{})}
+	probeCh := make(chan error, 1)
+	errCh := make(chan error, 1)
+	probeCh <- errors.New("Request unauthorized")
+	go func() {
+		<-stub.stopped
+		errCh <- nil
+	}()
+
+	err := waitProbeOrWorker(context.Background(), probeCh, errCh, stub)
+	if err == nil || !strings.Contains(err.Error(), "namespace probe") {
+		t.Fatalf("want namespace probe error, got %v", err)
+	}
+	select {
+	case <-stub.stopped:
+	default:
+		t.Fatal("expected worker Stop on probe failure")
+	}
+}
+
+func TestWaitProbeOrWorkerProbeOK(t *testing.T) {
+	stub := &stopStub{stopped: make(chan struct{})}
+	probeCh := make(chan error, 1)
+	errCh := make(chan error, 1)
+	probeCh <- nil
+
+	if err := waitProbeOrWorker(context.Background(), probeCh, errCh, stub); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stub.stopped:
+		t.Fatal("must not Stop worker when probe succeeds")
+	default:
+	}
+}
+
+func TestWaitProbeOrWorkerEarlyWorkerExit(t *testing.T) {
+	stub := &stopStub{stopped: make(chan struct{})}
+	probeCh := make(chan error, 1)
+	errCh := make(chan error, 1)
+	errCh <- errors.New("poller boom")
+	// Probe finishes after worker failure so the drain in waitProbeOrWorker returns.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		probeCh <- nil
+	}()
+
+	err := waitProbeOrWorker(context.Background(), probeCh, errCh, stub)
+	if err == nil || !strings.Contains(err.Error(), "poller boom") {
+		t.Fatalf("want worker error, got %v", err)
+	}
+}
 
 func TestOptionsFromEnv(t *testing.T) {
 	t.Setenv(EnvAddress, "temporal:7233")

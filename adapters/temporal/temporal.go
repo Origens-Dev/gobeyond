@@ -23,11 +23,13 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
@@ -64,6 +66,11 @@ type Options struct {
 
 // Serve dials Temporal, runs one worker for Options.TaskQueue, and blocks
 // until SIGINT/SIGTERM or ctx cancellation.
+//
+// After Dial, the namespace probe (ListOpenWorkflow) and worker poller start
+// run in parallel. Hosted unixgram readiness is signaled only when both
+// succeed (fail-closed: Dial alone is not enough; a failed probe tears down
+// the worker and never signals ready).
 func Serve(ctx context.Context, options Options) error {
 	if options.Register == nil {
 		return fmt.Errorf("temporal adapter: Register is required")
@@ -84,32 +91,45 @@ func Serve(ctx context.Context, options Options) error {
 		return err
 	}
 
+	dialStart := time.Now()
 	c, err := client.Dial(clientOptions)
 	if err != nil {
 		return fmt.Errorf("temporal adapter: dial: %w", err)
 	}
 	defer c.Close()
+	log.Printf("temporal adapter: dial ok in %s", time.Since(dialStart).Round(time.Millisecond))
+
+	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Fail closed before hosted readiness. CheckHealth/GetSystemInfo is not
 	// namespace-scoped on Temporal Cloud; ListOpenWorkflow proves the sealed
 	// mTLS leaf can operate in Options.Namespace (catches
 	// "Request unauthorized" that CheckHealth alone can miss).
-	if _, err := c.ListOpenWorkflow(ctx, &workflowservice.ListOpenWorkflowExecutionsRequest{
-		Namespace: options.Namespace,
-		MaximumPageSize: 1,
-	}); err != nil {
-		return fmt.Errorf("temporal adapter: namespace probe: %w", err)
-	}
+	// Overlap the probe RTT with poller start so readiness waits on both.
+	probeCh := make(chan error, 1)
+	go func() {
+		probeStart := time.Now()
+		_, err := c.ListOpenWorkflow(runCtx, &workflowservice.ListOpenWorkflowExecutionsRequest{
+			Namespace:       options.Namespace,
+			MaximumPageSize: 1,
+		})
+		if err != nil {
+			log.Printf("temporal adapter: namespace probe failed after %s: %v", time.Since(probeStart).Round(time.Millisecond), err)
+			probeCh <- err
+			return
+		}
+		log.Printf("temporal adapter: namespace probe ok in %s", time.Since(probeStart).Round(time.Millisecond))
+		probeCh <- nil
+	}()
 
+	runStart := time.Now()
 	tracker := &healthTracker{maxConcurrent: 100}
 	w := worker.New(c, options.TaskQueue, worker.Options{
 		MaxConcurrentActivityExecutionSize: int(tracker.maxConcurrent),
 		Interceptors:                       []interceptor.WorkerInterceptor{&healthInterceptor{tracker: tracker}},
 	})
 	options.Register(w)
-
-	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	startHealthReporter(runCtx, tracker)
 	_ = ReportWorkerHealth(runCtx, tracker.snapshot())
 
@@ -117,6 +137,11 @@ func Serve(ctx context.Context, options Options) error {
 	go func() {
 		errCh <- w.Run(worker.InterruptCh())
 	}()
+	log.Printf("temporal adapter: worker run started in %s", time.Since(runStart).Round(time.Millisecond))
+
+	if err := waitProbeOrWorker(runCtx, probeCh, errCh, w); err != nil {
+		return err
+	}
 
 	// Hosted RoleWorker readiness: same unixgram nonce contract as adapters/listen.
 	// When the platform injects a nonce, the signal target is required — an empty
@@ -158,6 +183,46 @@ func Serve(ctx context.Context, options Options) error {
 			}
 			return err
 		}
+	}
+}
+
+// waitProbeOrWorker waits for the namespace probe while watching for an early
+// worker exit or cancellation. On probe failure the worker is stopped and
+// readiness must not be signaled (fail-closed).
+func waitProbeOrWorker(ctx context.Context, probeCh <-chan error, errCh <-chan error, w worker.Worker) error {
+	select {
+	case err := <-probeCh:
+		if err != nil {
+			w.Stop()
+			<-errCh
+			return fmt.Errorf("temporal adapter: namespace probe: %w", err)
+		}
+		// Probe succeeded; surface an immediate poller failure before ready.
+		select {
+		case err := <-errCh:
+			if err == nil || isInterrupt(err) {
+				return fmt.Errorf("temporal adapter: worker exited before ready")
+			}
+			return fmt.Errorf("temporal adapter: worker: %w", err)
+		default:
+			return nil
+		}
+	case err := <-errCh:
+		// Drain probe so the goroutine can exit; ignore its result — worker
+		// failure already means we must not signal ready.
+		<-probeCh
+		if err == nil || isInterrupt(err) {
+			return fmt.Errorf("temporal adapter: worker exited before ready")
+		}
+		return fmt.Errorf("temporal adapter: worker: %w", err)
+	case <-ctx.Done():
+		w.Stop()
+		<-errCh
+		<-probeCh
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return nil
 	}
 }
 
