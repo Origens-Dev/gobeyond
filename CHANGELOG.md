@@ -6,6 +6,13 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.23 - 2026-07-30
+
+- `adapters/temporal.Serve` wires a claim-check `PayloadCodec` when
+  `GOBEYOND_CLAIM_DEK` is sealed (hosted/preview). Decode expands claim-ref
+  Temporal payloads (inline encrypted body) back to author plaintext args so
+  workflows/activities see their declared types again (ADR 010).
+
 ## 0.1.0-alpha.22 - 2026-07-30
 
 - `adapters/temporal.Serve` starts the worker with `Start()` before any

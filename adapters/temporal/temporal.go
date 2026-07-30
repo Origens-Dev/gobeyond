@@ -33,6 +33,7 @@ import (
 
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 )
@@ -252,6 +253,17 @@ func clientOptions(options Options) (client.Options, error) {
 		out.ConnectionOptions = client.ConnectionOptions{
 			TLS: tlsConfig,
 		}
+	}
+	codec, err := claimCodecFromEnv()
+	if err != nil {
+		return client.Options{}, err
+	}
+	if codec != nil {
+		out.DataConverter = converter.NewCodecDataConverter(
+			converter.GetDefaultDataConverter(),
+			codec,
+		)
+		log.Printf("temporal adapter: claim-check PayloadCodec enabled")
 	}
 	return out, nil
 }
