@@ -6,6 +6,8 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.18 - 2026-07-30
+
 - **Breaking:** reject root `workers/durables.go`. Authored durables must live
   under `workers/<id>/durables.go` (migrate with
   `mkdir workers/default && mv workers/durables.go workers/default/`). Keep
