@@ -1,56 +1,56 @@
 /**
- * Portable durable client. Requires a configured World (e.g. @origens-dev/temporal).
- * There is no implicit backend.
+ * Portable durable client. Requires a configured WorkflowClient
+ * (e.g. createClient() from @origens-dev/temporal). There is no implicit backend.
  */
 
 export type WorkflowStartOptions = {
-  workflowName: string;
-  args?: unknown[];
-  workflowId?: string;
-  taskQueue?: string;
-};
-
-export type WorkflowSignalOptions = {
-  workflowId: string;
-  signalName: string;
-  args?: unknown[];
-};
-
-export type WorkflowHandle = {
-  workflowId: string;
-  runId?: string;
-};
-
-/**
- * A World executes trigger operations and wakes workers when needed.
- * Hosted Worlds call platform APIs; local Worlds talk to Docker Temporal.
- */
-export type WorkflowWorld = {
-  start(options: WorkflowStartOptions): Promise<WorkflowHandle>;
-  signal(options: WorkflowSignalOptions): Promise<void>;
-};
-
-let configuredWorld: WorkflowWorld | undefined;
-
-export function use(world: WorkflowWorld): void {
-  configuredWorld = world;
+  workflowName: string
+  args?: unknown[]
+  workflowId?: string
+  taskQueue?: string
 }
 
-function requireWorld(): WorkflowWorld {
-  if (!configuredWorld) {
+export type WorkflowSignalOptions = {
+  workflowId: string
+  signalName: string
+  args?: unknown[]
+}
+
+export type WorkflowHandle = {
+  workflowId: string
+  runId?: string
+}
+
+/**
+ * Executes trigger operations and wakes workers when needed.
+ * Local clients talk to Docker Temporal; hosted clients call platform APIs.
+ */
+export type WorkflowClient = {
+  start(options: WorkflowStartOptions): Promise<WorkflowHandle>
+  signal(options: WorkflowSignalOptions): Promise<void>
+}
+
+let configuredClient: WorkflowClient | undefined
+
+export function use(client: WorkflowClient): void {
+  configuredClient = client
+}
+
+function requireClient(): WorkflowClient {
+  if (!configuredClient) {
     throw new Error(
-      "@go-beyond/workflows: no World configured. Call workflows.use(createTemporalWorld(...)) first.",
-    );
+      "@go-beyond/workflows: no client configured. Call workflows.use(createClient()) from @origens-dev/temporal first.",
+    )
   }
-  return configuredWorld;
+  return configuredClient
 }
 
 export async function start(options: WorkflowStartOptions): Promise<WorkflowHandle> {
-  return requireWorld().start(options);
+  return requireClient().start(options)
 }
 
 export async function signal(options: WorkflowSignalOptions): Promise<void> {
-  return requireWorld().signal(options);
+  return requireClient().signal(options)
 }
 
-export const workflows = { use, start, signal };
+export const workflows = { use, start, signal }

@@ -4,6 +4,11 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.17 - 2026-07-29
+
+- Rename `@go-beyond/workflows` surface from World jargon to `WorkflowClient`.
+  Configure with `workflows.use(createClient())` from `@origens-dev/temporal`.
+
 ## 0.1.0-alpha.16 - 2026-07-29
 
 - Keep `create-gobeyond` scaffold dependency pins aligned with the release version.

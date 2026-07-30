@@ -1,4 +1,4 @@
-# Workers and durables (Phase 1)
+# Workers and durables
 
 Authored durable tasks live under `workers/`, sibling to `app/`:
 
@@ -28,6 +28,15 @@ from `generated/cmd/workers/<id>`.
 
 ## Trigger client
 
-`@go-beyond/workflows` requires a configured World. Local/preview/hosted
-Worlds are provided by `@origens-dev/temporal`. Phase 1 ships the portable
-client interface only.
+Configure a client before starting or signaling workflows:
+
+```ts
+import { workflows } from "@go-beyond/workflows"
+import { createClient } from "@origens-dev/temporal"
+
+workflows.use(createClient())
+await workflows.start({ workflowName: "demo", taskQueue: "default__local" })
+```
+
+`@origens-dev/temporal` currently ships a stub `createClient()`; local Docker
+Temporal wiring is next.

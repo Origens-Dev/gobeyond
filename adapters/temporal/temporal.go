@@ -8,7 +8,7 @@
 //   - GOBEYOND_TEMPORAL_TASK_QUEUE — required resolved queue {workerId}__{environment}
 //   - GOBEYOND_TEMPORAL_API_KEY — optional Temporal Cloud API key
 //
-// Hosted/preview Worlds must not put Temporal admin keys in web sandboxes;
+// Hosted/preview clients must not put Temporal admin keys in web sandboxes;
 // this adapter is for worker bundles only.
 package temporal
 
