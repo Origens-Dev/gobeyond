@@ -109,10 +109,4 @@ jobs:
           publish_one @go-beyond/react
           publish_one @go-beyond/vite
           publish_one @go-beyond/create-gobeyond
-          # First publish of a new scoped name requires creating the package on
-          # npm (OIDC trusted publishing cannot create brand-new package names).
-          if npm view @go-beyond/workflows name >/dev/null 2>&1; then
-            publish_one @go-beyond/workflows
-          else
-            echo "::warning::Skipping @go-beyond/workflows until the empty package exists on npm."
-          fi
+          publish_one @go-beyond/workflows
