@@ -1377,6 +1377,12 @@ func websiteRoot(root string) string {
 	if _, err := os.Stat(filepath.Join(root, "app")); err == nil {
 		return root
 	}
+	if website := strings.TrimSpace(os.Getenv("GOBEYOND_WEBSITE")); website != "" {
+		if filepath.IsAbs(website) {
+			return website
+		}
+		return filepath.Join(root, website)
+	}
 	return filepath.Join(root, "examples", "seo-site")
 }
 
