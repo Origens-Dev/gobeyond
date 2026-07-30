@@ -129,8 +129,12 @@ func Serve(ctx context.Context, options Options) error {
 	tracker := &healthTracker{maxConcurrent: 100}
 	w := worker.New(c, options.TaskQueue, worker.Options{
 		MaxConcurrentActivityExecutionSize: int(tracker.maxConcurrent),
-		Interceptors:                       []interceptor.WorkerInterceptor{&healthInterceptor{tracker: tracker}},
+		Interceptors: []interceptor.WorkerInterceptor{
+			&healthInterceptor{tracker: tracker},
+			&sorWorkerInterceptor{},
+		},
 	})
+	registerSorActivities(w)
 	options.Register(w)
 	startHealthReporter(runCtx, tracker)
 	_ = ReportWorkerHealth(runCtx, tracker.snapshot())

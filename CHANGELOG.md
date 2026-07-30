@@ -6,7 +6,17 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.24 - 2026-07-30
+
+- `adapters/temporal` registers local-activity `ReportSorEvent` and workflow /
+  activity interceptors that POST SoR timeline/activity events (including
+  terminal `workflow.completed` / `failed` / `canceled`) to
+  `/internal/workflows/sor/ingest` via host-report UDS or sealed
+  `GOBEYOND_API_URL` (ADR 010 close-loop). Failures are swallowed so SoR never
+  fails the workflow task.
+
 ## 0.1.0-alpha.23 - 2026-07-30
+
 
 - `adapters/temporal.Serve` wires a claim-check `PayloadCodec` when
   `GOBEYOND_CLAIM_DEK` is sealed (hosted/preview). Decode expands claim-ref
