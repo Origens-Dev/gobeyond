@@ -28,6 +28,6 @@ from `.generated/cmd/workers/<id>`.
 
 ## Trigger client
 
-`@go-beyond/workflows` requires a configured backend. Local/preview/hosted
-backends are provided by `@origens-dev/temporal`. Phase 1 ships the portable
-client interface only.
+`@go-beyond/workflows` needs a client via `workflows.use(...)`. Local/preview/hosted
+clients come from `@origens-dev/temporal`. Phase 1 ships the portable
+`start` / `signal` surface only.

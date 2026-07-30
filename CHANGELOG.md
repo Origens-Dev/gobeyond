@@ -6,7 +6,8 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## 0.1.0-alpha.13 - 2026-07-29
 
-- Rename workflow "World" terminology to **backend** (`WorkflowBackend`, `createTemporalBackend`).
+- Drop invented "World" naming: `workflows.use` takes a plain client with
+  `start` / `signal`; `@origens-dev/temporal` exports `createClient`.
 
 ## 0.1.0-alpha.12 - 2026-07-29
 

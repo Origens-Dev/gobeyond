@@ -1,6 +1,6 @@
 /**
- * Portable durable client. Requires a configured backend (e.g. @origens-dev/temporal).
- * There is no implicit backend.
+ * Portable durable client. Call workflows.use(...) with a Temporal (or other)
+ * client implementation first — there is no implicit default.
  */
 
 export type WorkflowStartOptions = {
@@ -21,36 +21,33 @@ export type WorkflowHandle = {
   runId?: string;
 };
 
-/**
- * A backend executes trigger operations and wakes workers when needed.
- * Hosted backends call platform APIs; local backends talk to Docker Temporal.
- */
-export type WorkflowBackend = {
+/** start/signal implementation (e.g. from @origens-dev/temporal). */
+export type WorkflowClient = {
   start(options: WorkflowStartOptions): Promise<WorkflowHandle>;
   signal(options: WorkflowSignalOptions): Promise<void>;
 };
 
-let configuredBackend: WorkflowBackend | undefined;
+let configuredClient: WorkflowClient | undefined;
 
-export function use(backend: WorkflowBackend): void {
-  configuredBackend = backend;
+export function use(client: WorkflowClient): void {
+  configuredClient = client;
 }
 
-function requireBackend(): WorkflowBackend {
-  if (!configuredBackend) {
+function requireClient(): WorkflowClient {
+  if (!configuredClient) {
     throw new Error(
-      "@go-beyond/workflows: no backend configured. Call workflows.use(createTemporalBackend(...)) first.",
+      "@go-beyond/workflows: no client configured. Call workflows.use(createClient(...)) first.",
     );
   }
-  return configuredBackend;
+  return configuredClient;
 }
 
 export async function start(options: WorkflowStartOptions): Promise<WorkflowHandle> {
-  return requireBackend().start(options);
+  return requireClient().start(options);
 }
 
 export async function signal(options: WorkflowSignalOptions): Promise<void> {
-  return requireBackend().signal(options);
+  return requireClient().signal(options);
 }
 
 export const workflows = { use, start, signal };
