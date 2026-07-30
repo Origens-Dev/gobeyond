@@ -117,7 +117,7 @@ func TestCrawlerControlDocuments(t *testing.T) {
 	server := gbruntime.StaticFiles(staticDir, newTestSite(t, "", nil))
 	for _, test := range []struct{ path, contentType, contains string }{
 		{"/robots.txt", "text/plain", "Disallow: /account"},
-		{"/sitemap.xml", "application/xml", "https://example.gobeyond.dev/fr/articles/react-portable"},
+		{"/sitemap.xml", "xml", "https://example.gobeyond.dev/fr/articles/react-portable"},
 	} {
 		recorder := httptest.NewRecorder()
 		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com"+test.path, nil))
