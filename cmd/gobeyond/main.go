@@ -293,10 +293,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 				"taskQueue": queue,
 			})
 		}
-		if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.WorkersManifest), map[string]any{
-			"v":       1,
-			"workers": workerEntries,
-		}); err != nil {
+		if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.WorkersManifest), workersDeployManifest(workerEntries)); err != nil {
 			return err
 		}
 	}
@@ -1596,6 +1593,16 @@ type workerBuildTargetInfo struct {
 	ID         string
 	Key        string
 	PackageDir string
+}
+
+// workersDeployManifest is the dist/deploy/workers.json payload. v1 defaults
+// the durables runtime adapter to Temporal.
+func workersDeployManifest(workerEntries []map[string]any) map[string]any {
+	return map[string]any{
+		"v":       1,
+		"adapter": buildpaths.DurablesAdapterTemporal,
+		"workers": workerEntries,
+	}
 }
 
 // workerBuildTargets resolves generated per-worker Go main packages under

@@ -11,10 +11,11 @@ workers under `workers/`.
 - Keep route-specific mutations in a sibling `actions.go` and HTTP endpoints in
   `app/api/**/route.go`. Put reusable Go services and policy in ordinary
   `internal/` packages, never in a second route tree.
-- Keep durable tasks/workflows in `workers/<id>/durables.go` (or
-  `workers/durables.go` for the default worker). Do not import one worker from
-  another; share code via `internal/`. Task queues are
-  `{workerId}__{environment}` (local environment is `local`).
+- Keep durable tasks/workflows in `workers/<id>/durables.go` only (use
+  `workers/default/durables.go` for the default worker; keep `package durables`
+  because `default` is a Go keyword). Root `workers/durables.go` is rejected.
+  Do not import one worker from another; share code via `internal/`. Task queues
+  are `{workerId}__{environment}` (local environment is `local`).
 - Authors write `app/`, `workers/`, and `internal/` only. Generated
   projections, contracts, registries, and process mains live under `generated/`.
 - Do not move React component composition into Go handlers.
