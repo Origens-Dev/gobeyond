@@ -5,8 +5,9 @@ export default function HomePage() {
     <main>
       <h1>Durables example</h1>
       <p>
-        Start Temporal workflows from a Go action. Open{" "}
-        <a href="/durables">/durables</a>.
+        Try a couple of Temporal workflows locally. Open{" "}
+        <a href="/durables">/durables</a>, then peek at runs in the Temporal UI
+        at <a href="http://localhost:8233">localhost:8233</a>.
       </p>
     </main>
   );
