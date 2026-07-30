@@ -6,6 +6,13 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.20 - 2026-07-30
+
+- `adapters/temporal.Serve` probes the namespace with `ListOpenWorkflow`
+  before readiness (CheckHealth alone is not namespace-scoped on Temporal Cloud).
+- Require `GOBEYOND_READINESS_SIGNAL` whenever `GOBEYOND_READINESS_NONCE` is set
+  so an empty signal target cannot no-op and fake hosted readiness.
+
 ## 0.1.0-alpha.19 - 2026-07-30
 
 - `adapters/temporal.Serve` publishes the hosted unixgram readiness nonce

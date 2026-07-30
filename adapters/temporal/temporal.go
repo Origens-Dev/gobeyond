@@ -29,6 +29,7 @@ import (
 	"strings"
 	"syscall"
 
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
@@ -89,10 +90,15 @@ func Serve(ctx context.Context, options Options) error {
 	}
 	defer c.Close()
 
-	// Fail closed before hosted readiness: Dial can succeed at the TLS layer
-	// while the first authenticated RPC still returns "Request unauthorized".
-	if _, err := c.CheckHealth(ctx, &client.CheckHealthRequest{}); err != nil {
-		return fmt.Errorf("temporal adapter: health check: %w", err)
+	// Fail closed before hosted readiness. CheckHealth/GetSystemInfo is not
+	// namespace-scoped on Temporal Cloud; ListOpenWorkflow proves the sealed
+	// mTLS leaf can operate in Options.Namespace (catches
+	// "Request unauthorized" that CheckHealth alone can miss).
+	if _, err := c.ListOpenWorkflow(ctx, &workflowservice.ListOpenWorkflowExecutionsRequest{
+		Namespace: options.Namespace,
+		MaximumPageSize: 1,
+	}); err != nil {
+		return fmt.Errorf("temporal adapter: namespace probe: %w", err)
 	}
 
 	tracker := &healthTracker{maxConcurrent: 100}
@@ -113,10 +119,16 @@ func Serve(ctx context.Context, options Options) error {
 	}()
 
 	// Hosted RoleWorker readiness: same unixgram nonce contract as adapters/listen.
-	if err := signalReadiness(
-		os.Getenv(EnvReadinessSignal),
-		os.Getenv(EnvReadinessNonce),
-	); err != nil {
+	// When the platform injects a nonce, the signal target is required — an empty
+	// target would no-op and falsely complete gbhost readiness.
+	readinessNonce := os.Getenv(EnvReadinessNonce)
+	readinessSignal := os.Getenv(EnvReadinessSignal)
+	if readinessNonce != "" && strings.TrimSpace(readinessSignal) == "" {
+		w.Stop()
+		<-errCh
+		return fmt.Errorf("temporal adapter: %s is required when %s is set", EnvReadinessSignal, EnvReadinessNonce)
+	}
+	if err := signalReadiness(readinessSignal, readinessNonce); err != nil {
 		w.Stop()
 		<-errCh
 		return fmt.Errorf("temporal adapter: signal readiness: %w", err)
