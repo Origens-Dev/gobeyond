@@ -67,10 +67,11 @@ type Options struct {
 // Serve dials Temporal, runs one worker for Options.TaskQueue, and blocks
 // until SIGINT/SIGTERM or ctx cancellation.
 //
-// After Dial, the namespace probe (ListOpenWorkflow) and worker poller start
-// run in parallel. Hosted unixgram readiness is signaled only when both
-// succeed (fail-closed: Dial alone is not enough; a failed probe tears down
-// the worker and never signals ready).
+// After Dial, the namespace probe (ListOpenWorkflow) overlaps worker.Start.
+// Hosted unixgram readiness is signaled only when both succeed (fail-closed:
+// Dial alone is not enough; a failed probe Stops the worker and never signals
+// ready). Start is synchronous so Stop cannot race ahead of poller start
+// (Temporal SDK panics if Stop runs before Run's internal Start).
 func Serve(ctx context.Context, options Options) error {
 	if options.Register == nil {
 		return fmt.Errorf("temporal adapter: Register is required")
@@ -133,11 +134,20 @@ func Serve(ctx context.Context, options Options) error {
 	startHealthReporter(runCtx, tracker)
 	_ = ReportWorkerHealth(runCtx, tracker.snapshot())
 
+	// Start synchronously before any fail-closed Stop(). worker.Run+manual Stop
+	// races when the probe fails before Run's internal Start (SDK panics:
+	// "attempted to start a worker that has been stopped before").
+	if err := w.Start(); err != nil {
+		<-probeCh
+		return fmt.Errorf("temporal adapter: start worker: %w", err)
+	}
+	log.Printf("temporal adapter: worker started in %s", time.Since(runStart).Round(time.Millisecond))
+
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- w.Run(worker.InterruptCh())
+		// Already started; nil interrupt waits for Stop() or a fatal poller error.
+		errCh <- w.Run(nil)
 	}()
-	log.Printf("temporal adapter: worker run started in %s", time.Since(runStart).Round(time.Millisecond))
 
 	if err := waitProbeOrWorker(runCtx, probeCh, errCh, w); err != nil {
 		return err

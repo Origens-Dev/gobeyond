@@ -6,6 +6,13 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.22 - 2026-07-30
+
+- `adapters/temporal.Serve` starts the worker with `Start()` before any
+  fail-closed `Stop()` on namespace probe failure, avoiding the Temporal SDK
+  panic `attempted to start a worker that has been stopped before` when the
+  probe lost the race with `Run`'s internal start (α.21 overlap path).
+
 ## 0.1.0-alpha.21 - 2026-07-30
 
 - `adapters/temporal.Serve` overlaps namespace `ListOpenWorkflow` with worker
