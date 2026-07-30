@@ -4,6 +4,12 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.15 - 2026-07-29
+
+- Skip Metadata materialization when the site has no `app/` Metadata files, so
+  builds do not require the alpha.14 `materialize-metadata` compiler subcommand
+  unless those files are present.
+
 ## 0.1.0-alpha.14 - 2026-07-29
 
 - Drop required `internal/site` hook surface. `internal/` is for app code.
