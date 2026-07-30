@@ -5,7 +5,7 @@ export class CreateProjectError extends Error {}
 
 // This is the first public MVP release line. Keep the Go module and every
 // published JavaScript package on the exact same release line in a starter.
-const GOBEYOND_VERSION = '0.1.0-alpha.13'
+const GOBEYOND_VERSION = '0.1.0-alpha.14'
 const REACT_VERSION = '19.2.8'
 
 /**
@@ -126,7 +126,7 @@ function projectFiles(projectName, { tailwind }) {
       .replace('return gb.ActionResult[contract.Output]{}, errors.New', 'return contract.Output{}, errors.New')
       .replace('return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil', 'return contract.Output{Added: true}, nil'),
     'app/api/products/route.go': apiHandler(),
-    'internal/site/hooks.go': siteHooks(),
+    'middleware.go': siteMiddleware(),
   }
 }
 
@@ -200,14 +200,16 @@ function starterReadme(projectName) {
     '- `app/products/[slug]/page.go`: request-time props and metadata, using the generated Go contract.',
     '- `app/products/[slug]/actions.go`: typed Go mutation handler beside its browser contract.',
     '- `app/api/products/route.go`: Go HTTP API.',
-    '- `internal/`: reusable Go services and policy.',
-    '- `internal/site/hooks.go`: optional site hooks (middleware, wrap, cache).',
+    '- `internal/`: reusable Go for your app (not a gobeyond hook surface).',
+    '- `middleware.go` (optional): request middleware via `Middleware() []gbmiddleware.Rule`.',
+    '- `app/robots.ts`, `app/sitemap.ts`, `app/icon.png`, ...: Next-compatible Metadata files.',
+    '- `public/`: generic static files (not the Metadata conventions above).',
     '- `generated/`: gobeyond-owned projections, contracts, registry, and process mains.', '',
     'Run `pnpm generate` after changing schemas/routes. It commits the route registry and Go contracts under `generated/`; check them with `pnpm generate:check`.', '',
     'Generation also creates ignored, managed `go.mod` sidecars in route folders so `gopls` can type-check names such as `[slug]`. The production server imports only the safe generated packages.', '',
     '## Production', '',
     'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN separately.', '',
-    'Add a square `app/icon.png` to generate 16/32 favicons and an Apple touch icon. Put authored social cards under `public/social/` and reference them with absolute HTTPS metadata URLs.', '',
+    'Add Metadata files under `app/` (`icon.png`, `robots.ts`, `sitemap.ts`, `opengraph-image.png`, ...). `public/` is for other static assets; use absolute HTTPS URLs in social metadata.', '',
     'GoBeyond generates the browser page/layout registry and safe Go route projections during `pnpm build`. The runtime imports those generated projections rather than source directories in `app/`. See `AGENTS.md` for the cross-language rules.', '',
   ].join('\n')
 }
@@ -312,30 +314,16 @@ export function metadata(_props: Props): DocumentMetadata {
 }
 
 
-function siteHooks() {
-  return `// Package shared holds optional site hooks used by the generated registry.
-package shared
+function siteMiddleware() {
+  return `// Optional request middleware for the generated site registry.
+// Omit this file entirely when you do not need middleware.
+package middleware
 
 import (
-  "net/http"
-
   gb "github.com/Origens-Dev/gobeyond"
-  "github.com/Origens-Dev/gobeyond/cache/openfromenv"
   gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
-  gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
 
-// WithPublicOrigin stores the configured origin for loaders that still read Values.
-func WithPublicOrigin(ctx *gb.PageContext, origin string) {
-  if ctx.Values == nil {
-    ctx.Values = map[string]any{}
-  }
-  ctx.Values["gobeyond.public_origin"] = origin
-}
-
-// Middleware returns request middleware for the generated site registry.
-// Keep patterns product-scoped; a blanket middleware file that promotes every
-// page.tsx route to dynamic is not required.
 func Middleware() []gbmiddleware.Rule {
   return []gbmiddleware.Rule{{
     Name: "starter-request-id",
@@ -347,22 +335,6 @@ func Middleware() []gbmiddleware.Rule {
       }
     },
   }}
-}
-
-// Wrap can add handlers outside the GoBeyond runtime (robots.txt, etc.).
-func Wrap(next http.Handler, _ string) http.Handler { return next }
-
-// Configure attaches cache settings for packaged builds.
-func Configure(cfg *gbruntime.Config) (func() error, error) {
-  if cfg == nil || cfg.Static == nil {
-    return nil, nil
-  }
-  cacheConfig, closeFn, err := openfromenv.OpenFromEnv()
-  if err != nil {
-    return nil, err
-  }
-  cfg.Cache = cacheConfig
-  return closeFn, nil
 }
 `
 }

@@ -32,8 +32,6 @@ func Discover(root string) ([]Route, error) {
 	if _, err := os.Stat(appRoot); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	_, middlewareErr := os.Stat(filepath.Join(root, "server", "middleware", "middleware.go"))
-	hasRuntimeMiddleware := middlewareErr == nil
 	var routes []Route
 	err := filepath.WalkDir(appRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -102,9 +100,6 @@ func Discover(root string) ([]Route, error) {
 			route.Mode = "dynamic"
 			route.Reason = "paired request-time Go page loader"
 			route.ServerFile = filepath.ToSlash(serverFile)
-		} else if hasRuntimeMiddleware {
-			route.Mode = "dynamic"
-			route.Reason = "request-time Go middleware applies conservatively to the MVP route tree"
 		}
 		routes = append(routes, route)
 		return nil

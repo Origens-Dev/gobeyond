@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createHTMLSanitizer, defineAction, definePage, schema } from './index.js'
+import { createHTMLSanitizer, defineAction, defineManifest, definePage, defineRobots, defineSitemap, schema } from './index.js'
 
 test('page schemas retain a machine-readable shape', () => {
   const page = definePage({
@@ -51,4 +51,16 @@ test('safe HTML is produced through an application sanitizer', () => {
   const value = sanitize('<script>safe body')
   assert.equal(value, 'safe body')
   assert.equal(schema.safeHTML().kind, 'safeHtml')
+})
+
+test('crawler helpers preserve MetadataRoute-shaped values', () => {
+  const robots = defineRobots({
+    rules: { userAgent: '*', allow: '/', disallow: '/private' },
+    sitemap: 'https://example.com/sitemap.xml',
+  })
+  assert.equal((robots.rules as { userAgent?: string }).userAgent, '*')
+  const sitemap = defineSitemap([{ url: 'https://example.com/' }])
+  assert.equal(sitemap[0]?.url, 'https://example.com/')
+  const manifest = defineManifest({ name: 'Example', start_url: '/' })
+  assert.equal(manifest.name, 'Example')
 })

@@ -11,6 +11,13 @@ export {
   discoverRouteLayouts,
 } from './static-build.js'
 export {
+  materializeAppMetadata,
+  materializeMetadataModule,
+  serializeRobots,
+  serializeSitemap,
+  type MetadataKind,
+} from './metadata-files.js'
+export {
   compileActionContractSource,
   compilePageContractSource,
 } from './contracts.js'

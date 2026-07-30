@@ -120,3 +120,12 @@ export type InferActionInput<A extends ActionDefinition<Schema<unknown>, Schema<
 export type InferActionOutput<A extends ActionDefinition<Schema<unknown>, Schema<unknown>>> = Infer<
   A['output']
 >
+
+export {
+  defineManifest,
+  defineRobots,
+  defineSitemap,
+  type Manifest,
+  type Robots,
+  type SitemapFile,
+} from './crawler.js'
