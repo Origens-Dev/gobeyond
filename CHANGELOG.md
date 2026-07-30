@@ -4,6 +4,10 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## 0.1.0-alpha.16 - 2026-07-29
+
+- Keep `create-gobeyond` scaffold dependency pins aligned with the release version.
+
 ## 0.1.0-alpha.15 - 2026-07-29
 
 - Skip Metadata materialization when the site has no `app/` Metadata files, so
