@@ -20,11 +20,18 @@ function usage(): never {
   gobeyond-compile --route <route-id> [--project-root <dir>] [--source-root <prefix=dir>] [--out <plan.json>] <page.tsx>
   gobeyond-compile --project <project.json> [--out <plans.json>]
   gobeyond-compile report-portability --project <compiler-output.json> [--out <report.json>]
+  gobeyond-compile materialize-metadata --project-root <dir> --static-dir <dir> [--out paths.json]
+  gobeyond-compile materialize-metadata --kind <kind> --module <file> [--project-root <dir>] [--out <file>]
 `)
   process.exit(2)
 }
 
 const args = process.argv.slice(2)
+
+if (args[0] === 'materialize-metadata') {
+  const { runMaterializeMetadataCLI } = await import('./metadata-files.js')
+  process.exit(await runMaterializeMetadataCLI(args.slice(1)))
+}
 
 if (args[0] === 'report-portability') {
   let projectOutputPath: string | undefined

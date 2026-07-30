@@ -202,13 +202,14 @@ function starterReadme(projectName) {
     '- `app/api/products/route.go`: Go HTTP API.',
     '- `internal/`: reusable Go for your app (not a gobeyond hook surface).',
     '- `middleware.go` (optional): request middleware via `Middleware() []gbmiddleware.Rule`.',
-    '- `public/`: static files such as `robots.txt` / `sitemap.xml`.',
+    '- `app/robots.ts`, `app/sitemap.ts`, `app/icon.png`, …: Next-compatible Metadata files.
+- `public/`: generic static files (not the Metadata conventions above).',
     '- `generated/`: gobeyond-owned projections, contracts, registry, and process mains.', '',
     'Run `pnpm generate` after changing schemas/routes. It commits the route registry and Go contracts under `generated/`; check them with `pnpm generate:check`.', '',
     'Generation also creates ignored, managed `go.mod` sidecars in route folders so `gopls` can type-check names such as `[slug]`. The production server imports only the safe generated packages.', '',
     '## Production', '',
     'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN separately.', '',
-    'Add a square `app/icon.png` to generate 16/32 favicons and an Apple touch icon. Put authored social cards under `public/social/` and reference them with absolute HTTPS metadata URLs.', '',
+    'Add Metadata files under `app/` (`icon.png`, `robots.ts`, `sitemap.ts`, `opengraph-image.png`, …). `public/` is for other static assets; use absolute HTTPS URLs in social metadata.', '',
     'GoBeyond generates the browser page/layout registry and safe Go route projections during `pnpm build`. The runtime imports those generated projections rather than source directories in `app/`. See `AGENTS.md` for the cross-language rules.', '',
   ].join('\n')
 }

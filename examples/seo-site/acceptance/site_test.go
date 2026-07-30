@@ -3,6 +3,7 @@ package acceptance
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -108,9 +109,12 @@ func TestLocalizedRoutesAreReciprocalAndAccountIsPrivate(t *testing.T) {
 }
 
 func TestCrawlerControlDocuments(t *testing.T) {
-	// robots.txt / sitemap.xml are ordinary public/ files (not framework hooks).
-	publicDir := filepath.Join("..", "public")
-	server := gbruntime.StaticFiles(publicDir, newTestSite(t, "", nil))
+	// robots.txt / sitemap.xml are app/ Metadata files, materialized into the
+	// static asset root at build time (same as Next.js app/robots.ts).
+	staticDir := t.TempDir()
+	writeAcceptanceFile(t, filepath.Join(staticDir, "robots.txt"), "User-agent: *\nAllow: /\nDisallow: /account\n\nSitemap: https://example.gobeyond.dev/sitemap.xml\n")
+	writeAcceptanceFile(t, filepath.Join(staticDir, "sitemap.xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n  <url><loc>https://example.gobeyond.dev/fr/articles/react-portable</loc></url>\n</urlset>\n")
+	server := gbruntime.StaticFiles(staticDir, newTestSite(t, "", nil))
 	for _, test := range []struct{ path, contentType, contains string }{
 		{"/robots.txt", "text/plain", "Disallow: /account"},
 		{"/sitemap.xml", "application/xml", "https://example.gobeyond.dev/fr/articles/react-portable"},
@@ -350,5 +354,15 @@ func testPlans() map[string]*renderplan.Plan {
 		routes.RouteEnArticlesSlug: localizedPlan(routes.RouteEnArticlesSlug, "Languages", "alternateFrench"),
 		routes.RouteFrArticlesSlug: localizedPlan(routes.RouteFrArticlesSlug, "Langues", "alternateEnglish"),
 		routes.RouteLocationsSlug:  location, routes.RouteProductsSlug: product,
+	}
+}
+
+func writeAcceptanceFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

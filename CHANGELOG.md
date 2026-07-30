@@ -9,7 +9,12 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 - Drop required `internal/site` hook surface. `internal/` is for app code.
 - Optional website-root `middleware.go` exporting `Middleware()`; omit when unused.
 - Generated registry opens cache via `openfromenv` itself; loaders use `ctx.PublicOrigin`.
-- Prefer `public/` for `robots.txt` / `sitemap.xml` instead of a Wrap hook.
+- Mirror Next.js Metadata file conventions under `app/` (`robots`, `sitemap`,
+  `manifest`, `favicon`, `icon`, `apple-icon`, `opengraph-image`, `twitter-image`),
+  materialized at build time by `@go-beyond/compiler` into `dist/static`.
+- `public/` remains a generic static escape hatch; the same URL from `app/` and
+  `public/` is a hard error.
+- Add `@go-beyond/react/og` (`ImageResponse`) for build-time metadata images.
 
 ## 0.1.0-alpha.13 - 2026-07-29
 

@@ -115,7 +115,7 @@ deployment route trie so the edge can select the static origin explicitly.
 Optional request middleware is a website-root `middleware.go` exporting
 `Middleware() []gbmiddleware.Rule`. Omit the file when unused. Cache wiring and
 `ctx.PublicOrigin` are owned by the generated registry/runtime; `internal/` is
-for ordinary app code. Static files such as `robots.txt` live under `public/`.
+for ordinary app code. Next-compatible Metadata files (`robots`, `sitemap`, `manifest`, icons, Open Graph / Twitter images) live under `app/` and are materialized into `dist/static` at build time. `public/` remains a generic static escape hatch.
 Process mains are generated under `generated/cmd/{site,workers}`.
 
 When the Go process serves origin static files itself (local preview, or an

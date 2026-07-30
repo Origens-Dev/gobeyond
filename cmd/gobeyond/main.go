@@ -189,6 +189,10 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
+	generatedMetadataAssets, err := materializeAppMetadataFiles(projectRoot, staticDir, compilerCLI, environment)
+	if err != nil {
+		return err
+	}
 	clientEntry, err := generateClientEntry(projectRoot, compiled.RouteModules, manifest.Routes)
 	if err != nil {
 		return err
@@ -262,7 +266,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := runBuildTasks(tasks...); err != nil {
 		return err
 	}
-	publicAssets = mergeAssetPaths(publicAssets, generatedIconAssets)
+	publicAssets = mergeAssetPaths(publicAssets, generatedIconAssets, generatedMetadataAssets)
 	assetLayout := buildpaths.AssetLayout
 	if middlewareTarget != "" {
 		assetLayout = buildpaths.AssetLayoutV2
