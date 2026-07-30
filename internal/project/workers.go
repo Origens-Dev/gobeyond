@@ -22,11 +22,12 @@ type Worker struct {
 	DurablesFile string
 }
 
-// DiscoverWorkers finds workers/**/durables.go.
-// Allowed layouts:
-//   - workers/durables.go → id "default"
-//   - workers/<name>/durables.go → id <name>
-// Nested durables deeper than one folder under workers/ are rejected.
+// DiscoverWorkers finds workers/<id>/durables.go.
+// Allowed layout:
+//   - workers/<name>/durables.go → id <name> (use workers/default/ for the default worker)
+//
+// Root workers/durables.go is rejected. Nested durables deeper than one folder
+// under workers/ are also rejected.
 func DiscoverWorkers(root string) ([]Worker, error) {
 	workersRoot := filepath.Join(root, "workers")
 	info, err := os.Stat(workersRoot)
@@ -57,7 +58,7 @@ func DiscoverWorkers(root string) ([]Worker, error) {
 		var id string
 		switch {
 		case rel == ".":
-			id = gb.DefaultWorkerID
+			return errors.New("workers/durables.go is not allowed; use workers/<id>/durables.go (e.g. workers/default/durables.go)")
 		case !strings.Contains(rel, "/"):
 			id = rel
 		default:

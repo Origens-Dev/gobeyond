@@ -4,6 +4,18 @@ GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
 
+## Unreleased
+
+- **Breaking:** reject root `workers/durables.go`. Authored durables must live
+  under `workers/<id>/durables.go` (migrate with
+  `mkdir workers/default && mv workers/durables.go workers/default/`). Keep
+  `package durables` for the default worker folder — `default` is a Go keyword.
+- `adapters/temporal` supports mTLS via `GOBEYOND_TEMPORAL_TLS_CERT` +
+  `GOBEYOND_TEMPORAL_TLS_KEY` (`tls.X509KeyPair`, TLS 1.2+). Reject half-set
+  PEMs and API key + mTLS together; plaintext / API-key dial unchanged when
+  neither TLS pair is set.
+- Stamp `"adapter": "temporal"` in `dist/deploy/workers.json` (v1 default).
+
 ## 0.1.0-alpha.17 - 2026-07-29
 
 - Rename `@go-beyond/workflows` surface from World jargon to `WorkflowClient`.

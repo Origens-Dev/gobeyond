@@ -3,9 +3,13 @@
 Authored durable tasks live under `workers/`, sibling to `app/`:
 
 ```text
-workers/durables.go            # default worker id
-workers/<id>/durables.go       # named worker
+workers/<id>/durables.go       # one folder per worker id
+workers/default/durables.go    # default worker id (package durables)
 ```
+
+Root `workers/durables.go` is not allowed. Folder id `default` is not a valid
+Go package name — keep `package durables` (or another non-keyword name) inside
+`workers/default/durables.go`.
 
 Authors export `Register(worker.Worker)` from each durables package.
 Process mains are generated under `generated/cmd/workers/<id>/`.
@@ -32,7 +36,13 @@ Local default environment is `local` → e.g. `default__local`.
 
 `gobeyond build` projects `workers/**/durables.go` into
 `generated/workers/` and emits `dist/workers/<id>/gobeyond-worker`
-from `generated/cmd/workers/<id>`.
+from `generated/cmd/workers/<id>`. The deploy manifest
+`dist/deploy/workers.json` includes `"adapter": "temporal"` (v1 default
+runtime adapter).
+
+Worker process auth (hosted): set both `GOBEYOND_TEMPORAL_TLS_CERT` and
+`GOBEYOND_TEMPORAL_TLS_KEY` for mTLS, or `GOBEYOND_TEMPORAL_API_KEY` for
+API-key TLS — not both. Local Docker Temporal uses neither (plaintext).
 
 ## Trigger client
 

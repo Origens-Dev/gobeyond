@@ -47,9 +47,12 @@ const (
 
 // Worker artifact locations inside dist/ under AssetLayoutV3.
 const (
-	WorkersDir       = "workers"
-	WorkerEntryName  = "gobeyond-worker"
-	WorkersManifest  = "workers.json"
+	WorkersDir      = "workers"
+	WorkerEntryName = "gobeyond-worker"
+	WorkersManifest = "workers.json"
+	// DurablesAdapterTemporal is the v1 runtime adapter stamped into
+	// dist/deploy/workers.json. Platform ensure/provisioning keys off this id.
+	DurablesAdapterTemporal = "temporal"
 )
 
 // BuildsPrefix is the reserved public URL prefix every build-scoped path

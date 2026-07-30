@@ -6,10 +6,16 @@
 //   - GOBEYOND_TEMPORAL_ADDRESS — host:port (default localhost:7233)
 //   - GOBEYOND_TEMPORAL_NAMESPACE — Temporal namespace (default default)
 //   - GOBEYOND_TEMPORAL_TASK_QUEUE — required resolved queue {workerId}__{environment}
-//   - GOBEYOND_TEMPORAL_API_KEY — optional Temporal Cloud API key
+//   - GOBEYOND_TEMPORAL_API_KEY — optional Temporal Cloud API key (mutually exclusive with mTLS)
+//   - GOBEYOND_TEMPORAL_TLS_CERT — optional client certificate PEM (requires TLS_KEY)
+//   - GOBEYOND_TEMPORAL_TLS_KEY — optional client private key PEM (requires TLS_CERT)
 //
-// Hosted/preview clients must not put Temporal admin keys in web sandboxes;
-// this adapter is for worker bundles only.
+// Auth modes: local plaintext (neither API key nor mTLS), API-key TLS, or
+// mTLS via X509KeyPair. Setting only one of TLS_CERT/TLS_KEY is an error;
+// setting both API key and mTLS is an error.
+//
+// Hosted/preview clients must not put Temporal admin keys or leaf PEMs in web
+// sandboxes; this adapter is for worker bundles only.
 package temporal
 
 import (
@@ -30,6 +36,8 @@ const (
 	EnvNamespace = "GOBEYOND_TEMPORAL_NAMESPACE"
 	EnvTaskQueue = "GOBEYOND_TEMPORAL_TASK_QUEUE"
 	EnvAPIKey    = "GOBEYOND_TEMPORAL_API_KEY"
+	EnvTLSCert   = "GOBEYOND_TEMPORAL_TLS_CERT"
+	EnvTLSKey    = "GOBEYOND_TEMPORAL_TLS_KEY"
 )
 
 // RegisterFunc configures workflows and activities on a Temporal worker.
@@ -41,7 +49,10 @@ type Options struct {
 	Namespace string
 	TaskQueue string
 	APIKey    string
-	Register  RegisterFunc
+	// TLSCert and TLSKey are PEM-encoded client certificate material for mTLS.
+	TLSCert  string
+	TLSKey   string
+	Register RegisterFunc
 }
 
 // Serve dials Temporal, runs one worker for Options.TaskQueue, and blocks
@@ -61,15 +72,9 @@ func Serve(ctx context.Context, options Options) error {
 		options.Namespace = "default"
 	}
 
-	clientOptions := client.Options{
-		HostPort:  options.Address,
-		Namespace: options.Namespace,
-	}
-	if options.APIKey != "" {
-		clientOptions.Credentials = client.NewAPIKeyStaticCredentials(options.APIKey)
-		clientOptions.ConnectionOptions = client.ConnectionOptions{
-			TLS: &tls.Config{MinVersion: tls.VersionTLS12},
-		}
+	clientOptions, err := clientOptions(options)
+	if err != nil {
+		return err
 	}
 
 	c, err := client.Dial(clientOptions)
@@ -105,6 +110,55 @@ func Serve(ctx context.Context, options Options) error {
 	}
 }
 
+func clientOptions(options Options) (client.Options, error) {
+	out := client.Options{
+		HostPort:  options.Address,
+		Namespace: options.Namespace,
+	}
+	tlsConfig, err := dialTLSConfig(options)
+	if err != nil {
+		return client.Options{}, err
+	}
+	if options.APIKey != "" {
+		out.Credentials = client.NewAPIKeyStaticCredentials(options.APIKey)
+	}
+	if tlsConfig != nil {
+		out.ConnectionOptions = client.ConnectionOptions{
+			TLS: tlsConfig,
+		}
+	}
+	return out, nil
+}
+
+// dialTLSConfig returns a TLS config for API-key or mTLS dial, or nil for
+// local plaintext. Mutual exclusion and half-set PEM pairs are rejected here.
+func dialTLSConfig(options Options) (*tls.Config, error) {
+	hasCert := options.TLSCert != ""
+	hasKey := options.TLSKey != ""
+	hasAPIKey := options.APIKey != ""
+
+	if hasCert != hasKey {
+		return nil, fmt.Errorf("temporal adapter: %s and %s must both be set or both empty", EnvTLSCert, EnvTLSKey)
+	}
+	if hasCert && hasAPIKey {
+		return nil, fmt.Errorf("temporal adapter: cannot set both %s and mTLS (%s/%s)", EnvAPIKey, EnvTLSCert, EnvTLSKey)
+	}
+	if hasCert {
+		cert, err := tls.X509KeyPair([]byte(options.TLSCert), []byte(options.TLSKey))
+		if err != nil {
+			return nil, fmt.Errorf("temporal adapter: parse TLS cert/key: %w", err)
+		}
+		return &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}, nil
+	}
+	if hasAPIKey {
+		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
+	}
+	return nil, nil
+}
+
 func optionsFromEnv(options Options) Options {
 	if options.Address == "" {
 		options.Address = strings.TrimSpace(os.Getenv(EnvAddress))
@@ -117,6 +171,12 @@ func optionsFromEnv(options Options) Options {
 	}
 	if options.APIKey == "" {
 		options.APIKey = strings.TrimSpace(os.Getenv(EnvAPIKey))
+	}
+	if options.TLSCert == "" {
+		options.TLSCert = strings.TrimSpace(os.Getenv(EnvTLSCert))
+	}
+	if options.TLSKey == "" {
+		options.TLSKey = strings.TrimSpace(os.Getenv(EnvTLSKey))
 	}
 	return options
 }
