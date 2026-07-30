@@ -31,3 +31,5 @@ It also imports a real stylesheet and ships product/Open Graph image fixtures.
 `gobeyond build` links the content-hashed CSS in static and dynamic documents,
 copies the images to `dist/static`, and records their public URLs in
 `dist/deploy/route-trie.json` for CloudFront/S3 routing.
+
+For local Temporal durables, see `examples/durables-site`.
