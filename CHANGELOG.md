@@ -6,6 +6,8 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.25 - 2026-07-31
+
 - `adapters/temporal`: Dynamo-first wake stamps — RetryPolicy header on
   `ExecuteActivity` → `activity.failed` payload; `ExecuteChildWorkflow` emits
   `child.started`; workflow terminals stamp parent linkage and skip
