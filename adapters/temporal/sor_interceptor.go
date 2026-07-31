@@ -3,6 +3,7 @@ package temporal
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,12 @@ type sorWorkflowInbound struct {
 	interceptor.WorkflowInboundInterceptorBase
 }
 
+func (s *sorWorkflowInbound) Init(outbound interceptor.WorkflowOutboundInterceptor) error {
+	o := &sorWorkflowOutbound{}
+	o.Next = outbound
+	return s.Next.Init(o)
+}
+
 func (s *sorWorkflowInbound) ExecuteWorkflow(
 	ctx workflow.Context,
 	in *interceptor.ExecuteWorkflowInput,
@@ -48,6 +55,72 @@ func (s *sorWorkflowInbound) ExecuteWorkflow(
 	ret, err := s.Next.ExecuteWorkflow(ctx, in)
 	reportWorkflowTerminal(ctx, err)
 	return ret, err
+}
+
+// sorWorkflowOutbound emits SoR timer.started|fired|canceled for NewTimer /
+// NewTimerWithOptions (covers workflow.Sleep). ADR 010 amend 2026-07-31.
+type sorWorkflowOutbound struct {
+	interceptor.WorkflowOutboundInterceptorBase
+	timerSeq int
+}
+
+func (s *sorWorkflowOutbound) NewTimer(ctx workflow.Context, d time.Duration) workflow.Future {
+	return s.NewTimerWithOptions(ctx, d, workflow.TimerOptions{})
+}
+
+func (s *sorWorkflowOutbound) NewTimerWithOptions(
+	ctx workflow.Context,
+	d time.Duration,
+	options workflow.TimerOptions,
+) workflow.Future {
+	if d <= 0 {
+		return s.Next.NewTimerWithOptions(ctx, d, options)
+	}
+	s.timerSeq++
+	seq := s.timerSeq
+	reportTimerEvent(ctx, seq, "timer.started", d, options.Summary)
+	fut := s.Next.NewTimerWithOptions(ctx, d, options)
+	// Await fire/cancel without requiring the caller to Get (Select-safe).
+	// Future.Get is multi-call safe once ready.
+	workflow.Go(ctx, func(ctx workflow.Context) {
+		err := fut.Get(ctx, nil)
+		if temporal.IsCanceledError(err) {
+			reportTimerEvent(ctx, seq, "timer.canceled", d, options.Summary)
+			return
+		}
+		reportTimerEvent(ctx, seq, "timer.fired", d, options.Summary)
+	})
+	return fut
+}
+
+func reportTimerEvent(ctx workflow.Context, seq int, eventType string, d time.Duration, summary string) {
+	info := workflow.GetInfo(ctx)
+	// fire_at is deterministic (workflow.Now + duration) for EventBridge
+	// early-wake scheduling outside the sandbox (ADR 010).
+	fireAt := workflow.Now(ctx).UTC().Add(d)
+	payload := map[string]string{
+		"duration_ms": strconv.FormatInt(d.Milliseconds(), 10),
+		"timer_seq":   strconv.Itoa(seq),
+		"fire_at":     fireAt.Format(time.RFC3339),
+	}
+	if s := strings.TrimSpace(summary); s != "" {
+		payload["summary"] = s
+	}
+	in := ReportSorEventInput{
+		WorkflowID: info.WorkflowExecution.ID,
+		RunID:      info.WorkflowExecution.RunID,
+		DedupeKey:  fmt.Sprintf("timer-%s-%d-%s", info.WorkflowExecution.RunID, seq, eventType),
+		Type:       eventType,
+		Kind:       "event",
+		Payload:    payload,
+	}
+	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+		},
+	})
+	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
 
 func reportWorkflowTerminal(ctx workflow.Context, runErr error) {

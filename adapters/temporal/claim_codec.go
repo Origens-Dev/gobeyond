@@ -44,7 +44,7 @@ type valueCiphertext struct {
 	Ciphertext []byte `json:"Ciphertext"`
 }
 
-// claimPayloadCodec decodes Origens claim-check Temporal payloads so authors
+// claimPayloadCodec decodes hosted claim-check Temporal payloads so authors
 // see plaintext types again. Encode is currently a pass-through; the hosted
 // API claim-checks inputs before ExecuteWorkflow.
 type claimPayloadCodec struct {
