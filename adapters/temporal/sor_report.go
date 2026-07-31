@@ -156,5 +156,15 @@ func fillSorIdentity(in ReportSorEventInput) ReportSorEventInput {
 	if strings.TrimSpace(in.ProjectID) == "" {
 		in.ProjectID = strings.TrimSpace(os.Getenv(envProjectID))
 	}
+	// Stamp deploy_key from the sealed tip env for timer early-wake tip
+	// routing (activity path — not workflow sandbox).
+	if dk := strings.TrimSpace(os.Getenv(envDeployKey)); dk != "" {
+		if in.Payload == nil {
+			in.Payload = map[string]string{}
+		}
+		if strings.TrimSpace(in.Payload["deploy_key"]) == "" {
+			in.Payload["deploy_key"] = dk
+		}
+	}
 	return in
 }
