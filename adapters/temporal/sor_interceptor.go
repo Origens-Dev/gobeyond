@@ -57,11 +57,12 @@ func (s *sorWorkflowInbound) ExecuteWorkflow(
 	return ret, err
 }
 
-// sorWorkflowOutbound emits SoR timer.started|fired|canceled for NewTimer /
-// NewTimerWithOptions (covers workflow.Sleep). ADR 010 amend 2026-07-31.
+// sorWorkflowOutbound emits SoR timer / child / retry-policy header stamps
+// (ADR 010 Dynamo-first wake).
 type sorWorkflowOutbound struct {
 	interceptor.WorkflowOutboundInterceptorBase
 	timerSeq int
+	childSeq int
 }
 
 func (s *sorWorkflowOutbound) NewTimer(ctx workflow.Context, d time.Duration) workflow.Future {
@@ -81,7 +82,6 @@ func (s *sorWorkflowOutbound) NewTimerWithOptions(
 	reportTimerEvent(ctx, seq, "timer.started", d, options.Summary)
 	fut := s.Next.NewTimerWithOptions(ctx, d, options)
 	// Await fire/cancel without requiring the caller to Get (Select-safe).
-	// Future.Get is multi-call safe once ready.
 	workflow.Go(ctx, func(ctx workflow.Context) {
 		err := fut.Get(ctx, nil)
 		if temporal.IsCanceledError(err) {
@@ -93,10 +93,36 @@ func (s *sorWorkflowOutbound) NewTimerWithOptions(
 	return fut
 }
 
+func (s *sorWorkflowOutbound) ExecuteActivity(
+	ctx workflow.Context,
+	activityType string,
+	args ...interface{},
+) workflow.Future {
+	injectRetryPolicyHeader(ctx)
+	return s.Next.ExecuteActivity(ctx, activityType, args...)
+}
+
+func (s *sorWorkflowOutbound) ExecuteChildWorkflow(
+	ctx workflow.Context,
+	childWorkflowType string,
+	args ...interface{},
+) workflow.ChildWorkflowFuture {
+	fut := s.Next.ExecuteChildWorkflow(ctx, childWorkflowType, args...)
+	s.childSeq++
+	seq := s.childSeq
+	parent := workflow.GetInfo(ctx)
+	workflow.Go(ctx, func(ctx workflow.Context) {
+		var childExec workflow.Execution
+		if err := fut.GetChildWorkflowExecution().Get(ctx, &childExec); err != nil {
+			return
+		}
+		reportChildStarted(ctx, seq, parent, childExec)
+	})
+	return fut
+}
+
 func reportTimerEvent(ctx workflow.Context, seq int, eventType string, d time.Duration, summary string) {
 	info := workflow.GetInfo(ctx)
-	// fire_at is deterministic (workflow.Now + duration) for EventBridge
-	// early-wake scheduling outside the sandbox (ADR 010).
 	fireAt := workflow.Now(ctx).UTC().Add(d)
 	payload := map[string]string{
 		"duration_ms": strconv.FormatInt(d.Milliseconds(), 10),
@@ -106,6 +132,7 @@ func reportTimerEvent(ctx workflow.Context, seq int, eventType string, d time.Du
 	if s := strings.TrimSpace(summary); s != "" {
 		payload["summary"] = s
 	}
+	stampParentHint(payload, info)
 	in := ReportSorEventInput{
 		WorkflowID: info.WorkflowExecution.ID,
 		RunID:      info.WorkflowExecution.RunID,
@@ -123,7 +150,53 @@ func reportTimerEvent(ctx workflow.Context, seq int, eventType string, d time.Du
 	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
 
+func reportChildStarted(ctx workflow.Context, seq int, parent *workflow.Info, child workflow.Execution) {
+	if parent == nil || strings.TrimSpace(child.ID) == "" {
+		return
+	}
+	payload := map[string]string{
+		"child_seq":            strconv.Itoa(seq),
+		"child_workflow_id":    child.ID,
+		"child_run_id":         child.RunID,
+		"parent_workflow_id":   parent.WorkflowExecution.ID,
+		"parent_run_id":        parent.WorkflowExecution.RunID,
+		"parent_namespace":     parent.Namespace,
+		"parent_task_queue":    parent.TaskQueueName,
+		"parent_workflow_type": parent.WorkflowType.Name,
+	}
+	stampParentHint(payload, parent)
+	in := ReportSorEventInput{
+		WorkflowID: parent.WorkflowExecution.ID,
+		RunID:      parent.WorkflowExecution.RunID,
+		DedupeKey:  fmt.Sprintf("child-started-%s-%d-%s", parent.WorkflowExecution.RunID, seq, child.RunID),
+		Type:       "child.started",
+		Kind:       "event",
+		Payload:    payload,
+	}
+	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+	})
+	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
+}
+
+func stampParentHint(payload map[string]string, info *workflow.Info) {
+	if info == nil || payload == nil {
+		return
+	}
+	if strings.TrimSpace(payload["task_queue"]) == "" && info.TaskQueueName != "" {
+		payload["task_queue"] = info.TaskQueueName
+	}
+	if strings.TrimSpace(payload["namespace"]) == "" && info.Namespace != "" {
+		payload["namespace"] = info.Namespace
+	}
+}
+
 func reportWorkflowTerminal(ctx workflow.Context, runErr error) {
+	// ContinueAsNew is not a true terminal for parent-wake (ADR 010).
+	if workflow.IsContinueAsNewError(runErr) {
+		return
+	}
 	info := workflow.GetInfo(ctx)
 	eventType := "workflow.completed"
 	payload := map[string]string{}
@@ -139,6 +212,14 @@ func reportWorkflowTerminal(ctx workflow.Context, runErr error) {
 			payload["error"] = truncateErr(runErr)
 		}
 	}
+	stampParentHint(payload, info)
+	if parent := info.ParentWorkflowExecution; parent != nil {
+		payload["parent_workflow_id"] = parent.ID
+		payload["parent_run_id"] = parent.RunID
+		if info.ParentWorkflowNamespace != "" {
+			payload["parent_namespace"] = info.ParentWorkflowNamespace
+		}
+	}
 	in := ReportSorEventInput{
 		WorkflowID: info.WorkflowExecution.ID,
 		RunID:      info.WorkflowExecution.RunID,
@@ -147,14 +228,12 @@ func reportWorkflowTerminal(ctx workflow.Context, runErr error) {
 		Kind:       "event",
 		Payload:    payload,
 	}
-	// Local activity only — never network from the workflow sandbox.
 	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 3,
 		},
 	})
-	// Swallow failures so SoR never fails the workflow task (ADR 010).
 	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
 
@@ -180,11 +259,18 @@ func (s *sorActivityInbound) ExecuteActivity(
 		ActivityType: info.ActivityType.Name,
 		Status:       "RUNNING",
 		Attempt:      info.Attempt,
+		Payload: map[string]string{
+			"task_queue": info.TaskQueue,
+			"attempt":    strconv.FormatInt(int64(info.Attempt), 10),
+		},
 	})
 	ret, err := s.Next.ExecuteActivity(ctx, in)
 	status := "COMPLETED"
 	eventType := "activity.completed"
-	payload := map[string]string{}
+	payload := map[string]string{
+		"task_queue": info.TaskQueue,
+		"attempt":    strconv.FormatInt(int64(info.Attempt), 10),
+	}
 	if err != nil {
 		if temporal.IsCanceledError(err) {
 			status = "CANCELED"
@@ -193,6 +279,19 @@ func (s *sorActivityInbound) ExecuteActivity(
 			status = "FAILED"
 			eventType = "activity.failed"
 			payload["error"] = truncateErr(err)
+			if isNonRetryableActivityErr(err) {
+				payload["non_retryable"] = "true"
+			} else {
+				payload["non_retryable"] = "false"
+			}
+			if ms := nextRetryDelayMS(err); ms > 0 {
+				payload["next_retry_delay_ms"] = strconv.FormatInt(ms, 10)
+			}
+			if stamp, ok := readRetryPolicyFromActivityHeader(interceptor.Header(ctx)); ok {
+				applyRetryStampPayload(payload, stamp)
+			} else {
+				applyRetryStampPayload(payload, stampFromRetryPolicy(nil))
+			}
 		}
 	}
 	_ = postSorIngest(ctx, ReportSorEventInput{
