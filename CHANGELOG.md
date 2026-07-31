@@ -6,6 +6,13 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+- `adapters/temporal`: Dynamo-first wake stamps — RetryPolicy header on
+  `ExecuteActivity` → `activity.failed` payload; `ExecuteChildWorkflow` emits
+  `child.started`; workflow terminals stamp parent linkage and skip
+  ContinueAsNew (ADR 010 interceptor-driven wake).
+- `examples/durables-site`: Soft Sleep / long-retry / parent-child dogfood
+  workflows for staging canaries.
+
 ## 0.1.0-alpha.24 - 2026-07-30
 
 - `adapters/temporal` registers local-activity `ReportSorEvent` and workflow /
