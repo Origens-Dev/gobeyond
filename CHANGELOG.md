@@ -6,6 +6,14 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.26 - 2026-08-01
+
+- `@go-beyond/compiler` forwards typed all-required props into portable local
+  components, recognizes keyed JSX guarded inside array maps, and lowers
+  optional property access through null-safe render-plan lookup.
+- Optional or indexed prop spreads remain rejected so server rendering cannot
+  silently change default-prop behavior during hydration.
+
 ## 0.1.0-alpha.25 - 2026-07-31
 
 - `adapters/temporal`: Dynamo-first wake stamps — RetryPolicy header on

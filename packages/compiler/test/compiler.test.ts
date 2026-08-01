@@ -275,6 +275,84 @@ test('compiles filter().map and dynamic index expressions', () => {
   assert.match(json, /"when"/)
 })
 
+test('compiles keyed map output guarded by a portable condition', () => {
+  const result = compileSource({
+    routeId: 'guarded-map',
+    sourceText: `
+      export default function Page(props: {
+        parentId: string
+        items: { id: string; parentId: string; name: string }[]
+      }) {
+        return <ul>{props.items.map((item) => item.parentId === props.parentId
+          ? <li key={item.id}>{item.name}</li>
+          : null)}</ul>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  const json = JSON.stringify(result.plan)
+  assert.match(json, /"kind":"each"/)
+  assert.match(json, /"kind":"conditional"/)
+  assert.match(json, /"path":\["item","id"\]/)
+})
+
+test('forwards typed required root props into a local component', () => {
+  const result = compileSource({
+    routeId: 'forward-props',
+    sourceText: `
+      type Props = { title: string; detail: { label: string } }
+      function FirstPaint(props: Props) {
+        return <section><h1>{props.title}</h1><p>{props.detail.label}</p></section>
+      }
+      export default function Page(props: Props) {
+        return <FirstPaint {...props} />
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  assert.match(JSON.stringify(result.plan), /"path":\["detail","label"\]/)
+})
+
+test('lowers optional property access through soft lookup', () => {
+  const result = compileSource({
+    routeId: 'optional-access',
+    sourceText: `
+      export default function Page(props: {
+        member: { profile: { name: string } } | null
+      }) {
+        return <p>{props.member?.profile.name || 'Unknown'}</p>
+      }
+    `,
+  })
+  assert.equal(result.ok, true, result.ok ? '' : JSON.stringify(result.diagnostics))
+  if (!result.ok) return
+  const json = JSON.stringify(result.plan)
+  assert.match(json, /"kind":"index"/)
+  assert.match(json, /"value":"profile"/)
+  assert.match(json, /"value":"name"/)
+})
+
+test('does not forward typed optional props as always-present paths', () => {
+  const result = compileSource({
+    routeId: 'optional-forward-props',
+    sourceText: `
+      type Props = { title: string; note?: string }
+      function FirstPaint({ title, note = 'default' }: Props) {
+        return <p>{title}: {note}</p>
+      }
+      export default function Page(props: Props) {
+        return <FirstPaint {...props} />
+      }
+    `,
+  })
+  assert.equal(result.ok, false)
+  if (!result.ok) {
+    assert.ok(result.diagnostics.some((entry) => entry.code === 'GB1093'))
+  }
+})
+
 test('bakes usePathname from request locals path', () => {
   const result = compileSource({
     routeId: 'nav',
