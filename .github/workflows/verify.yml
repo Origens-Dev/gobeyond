@@ -42,7 +42,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # @go-beyond/vite and examples/seo-site type-check against the emitted
       # declarations of the workspace packages, so build those first.
-      - run: pnpm --filter @go-beyond/schema --filter @go-beyond/compiler --filter @go-beyond/react --filter @go-beyond/vite build
+      - run: pnpm --filter @go-beyond/schema --filter @go-beyond/compiler --filter @go-beyond/react --filter @go-beyond/vite --filter @go-beyond/oidc --filter @go-beyond/oidc-aws-credentials-provider build
       - run: pnpm --recursive typecheck
       - run: pnpm --recursive test
       - run: pnpm generate:check
@@ -65,7 +65,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # The seo-site build type-checks against the workspace packages'
       # emitted declarations, so build those first.
-      - run: pnpm --filter @go-beyond/schema --filter @go-beyond/compiler --filter @go-beyond/react --filter @go-beyond/vite build
+      - run: pnpm --filter @go-beyond/schema --filter @go-beyond/compiler --filter @go-beyond/react --filter @go-beyond/vite --filter @go-beyond/oidc --filter @go-beyond/oidc-aws-credentials-provider build
       - run: pnpm build
       - run: ./scripts/verify-node-free-server.sh dist/server
 
