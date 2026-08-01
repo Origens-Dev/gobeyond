@@ -202,7 +202,7 @@ func ignoredBuildDirectory(relative, name string) bool {
 }
 
 func ignoredBuildFile(file, relative, name string) bool {
-	if name == ".DS_Store" || strings.HasPrefix(name, ".env") || name == "page.schema.go" || name == "page.schema.ts" || strings.HasSuffix(name, ".gobeyond_gen.go") {
+	if relative == ".git" || name == ".DS_Store" || strings.HasPrefix(name, ".env") || name == "page.schema.go" || name == "page.schema.ts" || strings.HasSuffix(name, ".gobeyond_gen.go") {
 		return true
 	}
 	if strings.HasPrefix(relative, "internal/gobeyondgen/") || strings.Contains(relative, "/internal/gobeyondgen/") ||
