@@ -60,6 +60,8 @@ jobs:
           --filter @go-beyond/react
           --filter @go-beyond/vite
           --filter @go-beyond/workflows
+          --filter @go-beyond/oidc
+          --filter @go-beyond/oidc-aws-credentials-provider
           build
 
       - name: Resolve publish tag
@@ -110,3 +112,5 @@ jobs:
           publish_one @go-beyond/vite
           publish_one @go-beyond/create-gobeyond
           publish_one @go-beyond/workflows
+          publish_one @go-beyond/oidc
+          publish_one @go-beyond/oidc-aws-credentials-provider
