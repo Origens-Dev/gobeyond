@@ -108,12 +108,15 @@ func TestBuildIDIgnoresGeneratedAndSecretFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".env.local"), []byte("SECRET=rotated"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: /tmp/example-worktree"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	second, err := BuildID(root, routes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first != second {
-		t.Fatal("generated outputs and local secrets must not perturb the build ID")
+		t.Fatal("generated outputs, local secrets, and worktree metadata must not perturb the build ID")
 	}
 }
 
