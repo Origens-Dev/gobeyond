@@ -193,6 +193,13 @@ type Config struct {
 	Static StaticEntries
 }
 
+// HostedRuntimeEnv disables the single-origin host admission fallback. The
+// GoBeyond platform performs authoritative host admission before forwarding a
+// request to a customer runtime, and a deployment may serve several assigned
+// domains from one long-lived process. Customer applications must not set
+// this themselves when they are directly internet-facing.
+const HostedRuntimeEnv = "GOBEYOND_HOSTED_RUNTIME"
+
 type Server struct {
 	config       Config
 	pages        map[string]PageRoute
@@ -219,7 +226,7 @@ func New(config Config) (*Server, error) {
 			return nil, err
 		}
 		config.PublicOrigin = publicOrigin.String()
-		if len(config.AllowedHosts) == 0 {
+		if len(config.AllowedHosts) == 0 && !hostedRuntime() {
 			config.AllowedHosts = []string{publicOrigin.Host}
 		}
 	}
@@ -349,6 +356,15 @@ func New(config Config) (*Server, error) {
 	}
 	server.documentPipe = pipe
 	return server, nil
+}
+
+func hostedRuntime() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(HostedRuntimeEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // newCacheRuntime builds the cache handle every RequestScope carries. BuildID
