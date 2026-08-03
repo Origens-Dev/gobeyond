@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/Origens-Dev/gobeyond/buildpaths"
@@ -14,6 +16,9 @@ const (
 	// static directory (dist/static). Preview and origin servers use it when
 	// CloudFront/S3 is not in front of the process.
 	EnvStaticDir = "GOBEYOND_STATIC_DIR"
+	// EnvDeploymentKind is injected by the hosting platform. Preview sites
+	// receive platform-owned crawler policy regardless of customer assets.
+	EnvDeploymentKind = "GOBEYOND_DEPLOYMENT_KIND"
 
 	immutableCacheControl = "public, max-age=31536000, immutable"
 )
@@ -34,6 +39,22 @@ func StaticFiles(directory string, next http.Handler) http.Handler {
 	}
 	files := http.FileServer(http.Dir(directory))
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		preview := strings.EqualFold(strings.TrimSpace(os.Getenv(EnvDeploymentKind)), "preview")
+		if request.URL.Path == "/robots.txt" {
+			writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			writer.Header().Set("Cache-Control", "no-store")
+			if preview {
+				writeRobots(writer, request, "User-agent: *\nDisallow: /\n")
+				return
+			}
+			if !staticFileExists(directory, request.URL.Path) {
+				writeRobots(writer, request, "User-agent: *\nAllow: /\n")
+				return
+			}
+		}
+		if preview && request.URL.Path != "/robots.txt" {
+			writer.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		}
 		if !buildpaths.IsStaticArtifact(request.URL.Path) && !staticFileExists(directory, request.URL.Path) {
 			next.ServeHTTP(writer, request)
 			return
@@ -49,6 +70,14 @@ func StaticFiles(directory string, next http.Handler) http.Handler {
 		}
 		files.ServeHTTP(writer, request)
 	})
+}
+
+func writeRobots(writer http.ResponseWriter, request *http.Request, body string) {
+	writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	writer.WriteHeader(http.StatusOK)
+	if request.Method != http.MethodHead {
+		_, _ = io.WriteString(writer, body)
+	}
 }
 
 // StaticFilesFromEnv is StaticFiles(os.Getenv(EnvStaticDir), next).
