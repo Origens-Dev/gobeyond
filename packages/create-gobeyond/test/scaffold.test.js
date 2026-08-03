@@ -83,6 +83,7 @@ test('scaffolds an internally consistent website-first hello world', async () =>
   assert.match(client, /r_products__slug_3e2e8eb9/)
   const vite = await readFile(join(destination, 'vite.config.ts'), 'utf8')
   assert.match(vite, /dedupe: \['react', 'react-dom'\]/)
+  assert.match(vite, /sourcemap: false/)
   const loader = await readFile(join(destination, 'app/products/[slug]/page.go'), 'utf8')
   assert.match(loader, /type Props struct/)
   assert.match(loader, /var Config = gb\.PageConfig/)

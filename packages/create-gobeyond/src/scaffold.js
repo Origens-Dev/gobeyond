@@ -5,7 +5,7 @@ export class CreateProjectError extends Error {}
 
 // This is the first public MVP release line. Keep the Go module and every
 // published JavaScript package on the exact same release line in a starter.
-const GOBEYOND_VERSION = '0.1.0-alpha.18'
+const GOBEYOND_VERSION = '0.1.0-alpha.27'
 const REACT_VERSION = '19.2.8'
 
 /**
@@ -215,7 +215,7 @@ function starterReadme(projectName) {
 }
 
 function viteConfig() {
-  return `import goBeyond from '@go-beyond/vite'\nimport react from '@vitejs/plugin-react'\nimport { defineConfig } from 'vite'\n\nconst buildID = process.env.GOBEYOND_BUILD_ID ?? 'development'\nconst clientEntry = process.env.GOBEYOND_CLIENT_ENTRY ?? 'client.tsx'\nconst outDir = process.env.GOBEYOND_STATIC_OUT ?? \`dist/static/_gobeyond/builds/\${buildID}/assets\`\n\nexport default defineConfig({\n  plugins: [goBeyond(), react()],\n  publicDir: false,\n  build: {\n    outDir,\n    emptyOutDir: false,\n    sourcemap: true,\n    rollupOptions: {\n      input: clientEntry,\n      output: {\n        entryFileNames: 'app.js',\n        chunkFileNames: 'chunks/[name]-[hash].js',\n        assetFileNames: 'assets/[name]-[hash][extname]',\n      },\n    },\n  },\n})\n`
+  return `import goBeyond from '@go-beyond/vite'\nimport react from '@vitejs/plugin-react'\nimport { defineConfig } from 'vite'\n\nconst buildID = process.env.GOBEYOND_BUILD_ID ?? 'development'\nconst clientEntry = process.env.GOBEYOND_CLIENT_ENTRY ?? 'client.tsx'\nconst outDir = process.env.GOBEYOND_STATIC_OUT ?? \`dist/static/_gobeyond/builds/\${buildID}/assets\`\n\nexport default defineConfig({\n  plugins: [goBeyond(), react()],\n  publicDir: false,\n  build: {\n    outDir,\n    emptyOutDir: false,\n    sourcemap: false,\n    rollupOptions: {\n      input: clientEntry,\n      output: {\n        entryFileNames: 'app.js',\n        chunkFileNames: 'chunks/[name]-[hash].js',\n        assetFileNames: 'assets/[name]-[hash][extname]',\n      },\n    },\n  },\n})\n`
 }
 
 function clientEntry() {
