@@ -322,6 +322,34 @@ func TestHealthEndpointsDoNotDependOnPublicHost(t *testing.T) {
 	}
 }
 
+func TestHostedRuntimeAcceptsAssignedDomains(t *testing.T) {
+	t.Setenv(HostedRuntimeEnv, "1")
+	server, err := New(Config{BuildID: "build-1", PublicOrigin: "https://default.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://vanity.example.com/unknown", nil)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code == http.StatusBadRequest && strings.Contains(recorder.Body.String(), "invalid_host") {
+		t.Fatalf("hosted runtime rejected an assigned-domain candidate: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDirectRuntimeStillRejectsUnexpectedHost(t *testing.T) {
+	t.Setenv(HostedRuntimeEnv, "")
+	server, err := New(Config{BuildID: "build-1", PublicOrigin: "https://default.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://vanity.example.com/unknown", nil)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_host") {
+		t.Fatalf("direct runtime accepted unexpected host: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestMiddlewareRewrite(t *testing.T) {
 	plan := &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "new", Root: &renderplan.Element{Kind: "element", Tag: "h1", Children: []renderplan.Node{&renderplan.Text{Kind: "text", Value: &renderplan.Literal{Kind: "literal", Value: "New"}}}}}
 	server, err := New(Config{
