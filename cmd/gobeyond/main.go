@@ -27,6 +27,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/codegen"
 	"github.com/Origens-Dev/gobeyond/document"
+	"github.com/Origens-Dev/gobeyond/imageopt"
 	"github.com/Origens-Dev/gobeyond/internal/project"
 	"github.com/Origens-Dev/gobeyond/pack"
 	"github.com/Origens-Dev/gobeyond/renderer"
@@ -117,6 +118,10 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 
 func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string, browserMode string) error {
 	projectRoot := websiteRoot(root)
+	imageConfig, hasImageConfig, err := imageopt.LoadDeploymentConfig(projectRoot)
+	if err != nil {
+		return err
+	}
 	routes, err := project.Discover(projectRoot)
 	if err != nil {
 		return err
@@ -351,6 +356,14 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	}
 	if err := writeJSONFile(filepath.Join(dist, "deploy", "artifacts.json"), artifacts); err != nil {
 		return err
+	}
+	if hasImageConfig {
+		if err := writeJSONFile(filepath.Join(dist, "deploy", "image-config.json"), map[string]any{
+			"apiVersion":    "gobeyond.image-config/v1alpha1",
+			"remoteDomains": imageConfig.RemoteDomains,
+		}); err != nil {
+			return err
+		}
 	}
 	if err := writeBrowserBundleDiagnostics(filepath.Join(dist, "deploy", "browser-bundles.json"), staticDir, browserAssets); err != nil {
 		return err

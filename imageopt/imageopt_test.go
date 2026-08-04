@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -118,6 +119,26 @@ func TestRemoteLoaderAllowlistAndCanonicalURL(t *testing.T) {
 	data, err := io.ReadAll(body)
 	if err != nil || string(data) != "image" {
 		t.Fatalf("body = %q, err = %v", data, err)
+	}
+}
+
+func TestLoadDeploymentConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOBEYOND_IMAGE_REMOTE_DOMAINS", "")
+	if _, ok, err := LoadDeploymentConfig(root); err != nil || ok {
+		t.Fatalf("missing config = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	configPath := filepath.Join(root, DeploymentConfigPath)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"remoteDomains":["images.ctfassets.net"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config, ok, err := LoadDeploymentConfig(root)
+	if err != nil || !ok || !reflect.DeepEqual(config.RemoteDomains, []string{"images.ctfassets.net"}) {
+		t.Fatalf("config = (%+v, %v, %v)", config, ok, err)
 	}
 }
 

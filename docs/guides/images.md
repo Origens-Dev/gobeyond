@@ -127,8 +127,21 @@ configuration, and edge behavior have been applied.
 
 ## Remote image setup
 
-Set `GOBEYOND_IMAGE_REMOTE_DOMAINS` to a comma-separated list of exact HTTPS
-domains or subdomain patterns. For example:
+Commit `.gobeyond/images.json` to the application repository. This is the
+deployment-owned source of truth:
+
+```json
+{
+  "remoteDomains": ["images.ctfassets.net"]
+}
+```
+
+The GoBeyond build validates the domains and emits the deployment manifest.
+The hosting platform injects the validated value as
+`GOBEYOND_IMAGE_REMOTE_DOMAINS` at runtime. Directly setting the environment
+variable remains supported for legacy deployments.
+
+The domains must be exact HTTPS domains or subdomain patterns. For example:
 
 ```text
 GOBEYOND_IMAGE_REMOTE_DOMAINS=images.example.com,*.ctfassets.net
