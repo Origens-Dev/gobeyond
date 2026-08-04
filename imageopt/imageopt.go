@@ -393,10 +393,6 @@ func Handler(loader Loader) http.Handler {
 			return
 		}
 		source := request.URL.Query().Get("url")
-		if _, err := validateSource(source); err != nil {
-			http.Error(writer, err.Error(), http.StatusBadRequest)
-			return
-		}
 		width, err := strconv.Atoi(request.URL.Query().Get("w"))
 		if err != nil {
 			http.Error(writer, "invalid image width", http.StatusBadRequest)

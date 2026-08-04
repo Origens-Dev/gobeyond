@@ -253,6 +253,43 @@ func TestHandlerResizesPNGAndConvertsJPEG(t *testing.T) {
 	}
 }
 
+func TestHandlerAllowsConfiguredRemoteImage(t *testing.T) {
+	var source bytes.Buffer
+	if err := png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 80, 40))); err != nil {
+		t.Fatal(err)
+	}
+	remote, err := NewRemoteLoader([]string{"images.ctfassets.net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://images.ctfassets.net/space/asset/photo.png" {
+			t.Fatalf("URL = %q", request.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(source.Bytes())),
+			Header:     make(http.Header),
+			Request:    request,
+		}, nil
+	})}
+	recorder := httptest.NewRecorder()
+	Handler(remote).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, Route+"?url=https%3A%2F%2Fimages.ctfassets.net%2Fspace%2Fasset%2Fphoto.png&w=32", nil),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	decoded, format, err := image.Decode(bytes.NewReader(recorder.Body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "png" || decoded.Bounds().Dx() != 32 {
+		t.Fatalf("format=%s bounds=%v", format, decoded.Bounds())
+	}
+}
+
 func TestHandlerValidatesRequest(t *testing.T) {
 	root := t.TempDir()
 	writeTestPNG(t, filepath.Join(root, "brand.png"), 80, 40)
