@@ -53,12 +53,12 @@ progress. The compatibility surface remains alpha and frozen at
   browser icon links, with build-time 16/32 favicon and 180-pixel Apple touch
   generation from `app/icon.png`.
 - Runtime image optimization's completed scope is the
-  `GET /_gobeyond/image` route and a disk loader behind
-  `GOBEYOND_STATIC_DIR` for same-site JPEG/PNG resize/re-encode. WebP output is
-  deferred. The S3 loader and platform OpenTofu for cross-account `GetObject`
-  and CloudFront caching are outside this public single-site repository;
-  production S3 optimization is not complete until equivalent infrastructure
-  is applied.
+  `GET /_gobeyond/image` route, disk/S3 loaders for same-site JPEG/PNG
+  resize/re-encode, and an explicitly allowlisted public HTTPS loader via
+  `GOBEYOND_IMAGE_REMOTE_DOMAINS`. WebP output is deferred. The S3 loader and
+  platform OpenTofu for cross-account `GetObject` and CloudFront caching are
+  outside this public single-site repository; production S3 optimization is
+  not complete until equivalent infrastructure is applied.
 - Request-time caching: `cache.RequestScope`, `cache.Memo`, `cache.Load`,
   `cache.LoadRoute`, tag/path invalidation, props-only origin ISR via
   `definePage({ revalidate, tags })`, the frozen action envelope with client

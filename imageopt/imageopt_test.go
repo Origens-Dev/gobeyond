@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -93,6 +94,87 @@ func TestNewLoaderFromEnvironmentWithoutConfiguration(t *testing.T) {
 	}
 }
 
+func TestRemoteLoaderAllowlistAndCanonicalURL(t *testing.T) {
+	loader, err := NewRemoteLoader([]string{"*.ctfassets.net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got := request.URL.String(); got != "https://images.ctfassets.net/space/asset/photo.jpg" {
+			t.Fatalf("URL = %q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("image")),
+			Header:     make(http.Header),
+			Request:    request,
+		}, nil
+	})}
+	body, err := loader.Open(context.Background(), "https://images.ctfassets.net/space/asset/photo.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if err != nil || string(data) != "image" {
+		t.Fatalf("body = %q, err = %v", data, err)
+	}
+}
+
+func TestRemoteLoaderRejectsUnsafeSources(t *testing.T) {
+	loader, err := NewRemoteLoader([]string{"images.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		"http://images.example.com/photo.jpg",
+		"https://other.example.com/photo.jpg",
+		"https://images.example.com:443/photo.jpg",
+		"https://images.example.com/photo.jpg?token=secret",
+		"https://images.example.com/photo.jpg#fragment",
+	} {
+		t.Run(source, func(t *testing.T) {
+			if _, err := loader.Open(context.Background(), source); !errors.Is(err, ErrInvalidSource) {
+				t.Fatalf("error = %v, want ErrInvalidSource", err)
+			}
+		})
+	}
+}
+
+func TestRouterLoaderUsesRemoteForAbsoluteURL(t *testing.T) {
+	remote, err := NewRemoteLoader([]string{"images.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("remote")), Header: make(http.Header), Request: request}, nil
+	})}
+	loader := RouterLoader{Local: fakeLoader{body: "local"}, Remote: remote}
+	body, err := loader.Open(context.Background(), "https://images.example.com/photo.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	data, _ := io.ReadAll(body)
+	if string(data) != "remote" {
+		t.Fatalf("body = %q", data)
+	}
+}
+
+func TestNewLoaderFromEnvironmentConfiguresRemoteSource(t *testing.T) {
+	t.Setenv("GOBEYOND_STATIC_DIR", "")
+	t.Setenv(ImageSourceBucketEnv, "")
+	t.Setenv(ImageSourcePrefixEnv, "")
+	t.Setenv(ImageRemoteDomainsEnv, "images.example.com")
+	loader, err := NewLoaderFromEnvironment(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loader.(*RemoteLoader); !ok {
+		t.Fatalf("loader = %#v, want *RemoteLoader", loader)
+	}
+}
+
 func TestS3SourceFromEnvironmentRejectsPartialConfiguration(t *testing.T) {
 	t.Setenv(ImageSourceBucketEnv, "bucket")
 	t.Setenv(ImageSourcePrefixEnv, "")
@@ -104,6 +186,16 @@ func TestS3SourceFromEnvironmentRejectsPartialConfiguration(t *testing.T) {
 	if _, err := S3SourceFromEnvironment(); err == nil {
 		t.Fatal("S3SourceFromEnvironment accepted a traversal prefix")
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }
+
+type fakeLoader struct{ body string }
+
+func (loader fakeLoader) Open(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(loader.body)), nil
 }
 
 func TestHandlerResizesPNGAndConvertsJPEG(t *testing.T) {

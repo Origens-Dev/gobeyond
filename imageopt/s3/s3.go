@@ -44,22 +44,37 @@ var _ imageopt.Loader = Loader{}
 // GOBEYOND_IMAGE_SOURCE_BUCKET and GOBEYOND_IMAGE_SOURCE_PREFIX are configured.
 // It returns (nil, nil) when neither source is configured.
 func NewLoaderFromEnvironment(ctx context.Context, diskRoot string) (imageopt.Loader, error) {
+	remote, err := imageopt.NewRemoteLoaderFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
 	if root, ok := imageopt.DiskRootFromEnvironment(diskRoot); ok {
-		return imageopt.DiskLoader{Root: root}, nil
+		local := imageopt.DiskLoader{Root: root}
+		if remote != nil {
+			return imageopt.RouterLoader{Local: local, Remote: remote}, nil
+		}
+		return local, nil
 	}
 	configured, err := imageopt.S3SourceFromEnvironment()
 	if err != nil || !configured {
+		if err == nil && remote != nil {
+			return remote, nil
+		}
 		return nil, err
 	}
 	cfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load AWS configuration for image source: %w", err)
 	}
-	return Loader{
+	local := Loader{
 		Client: awss3.NewFromConfig(cfg),
 		Bucket: strings.TrimSpace(os.Getenv(imageopt.ImageSourceBucketEnv)),
 		Prefix: strings.TrimSpace(os.Getenv(imageopt.ImageSourcePrefixEnv)),
-	}, nil
+	}
+	if remote != nil {
+		return imageopt.RouterLoader{Local: local, Remote: remote}, nil
+	}
+	return local, nil
 }
 
 // Open maps /path/to/image.png to <Prefix>/path/to/image.png.

@@ -33,8 +33,8 @@ export interface ImageOptions {
 /**
  * Build a same-site GoBeyond runtime image URL.
  *
- * The source must be an absolute path on the current site, such as
- * `/brand/logo.png`.
+ * The source may be an absolute path on the current site, or an HTTPS URL
+ * whose domain is allowlisted by the deployment, such as a public CMS asset.
  */
 export function imageSrc(
   source: string,

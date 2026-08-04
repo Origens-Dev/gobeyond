@@ -19,12 +19,14 @@ import (
 	"image/png"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -39,6 +41,10 @@ const (
 	// source loading. GOBEYOND_STATIC_DIR takes precedence for local development.
 	ImageSourceBucketEnv = "GOBEYOND_IMAGE_SOURCE_BUCKET"
 	ImageSourcePrefixEnv = "GOBEYOND_IMAGE_SOURCE_PREFIX"
+	// ImageRemoteDomainsEnv is a comma-separated list of exact domains or
+	// subdomain patterns (for example, images.example.com,*.ctfassets.net)
+	// that the remote image loader may fetch.
+	ImageRemoteDomainsEnv = "GOBEYOND_IMAGE_REMOTE_DOMAINS"
 )
 
 // DefaultWidths bounds the variants the runtime will generate.
@@ -55,6 +61,206 @@ type Loader interface {
 	Open(context.Context, string) (io.ReadCloser, error)
 }
 
+// RouterLoader selects a remote loader for absolute HTTPS URLs and a local
+// loader for same-site paths. It lets a deployment optimize both its own
+// static assets and explicitly allowlisted public remote assets.
+type RouterLoader struct {
+	Local  Loader
+	Remote Loader
+}
+
+func (loader RouterLoader) Open(ctx context.Context, source string) (io.ReadCloser, error) {
+	if isRemoteSource(source) {
+		if loader.Remote == nil {
+			return nil, ErrInvalidSource
+		}
+		return loader.Remote.Open(ctx, source)
+	}
+	if loader.Local == nil {
+		return nil, ErrNotFound
+	}
+	return loader.Local.Open(ctx, source)
+}
+
+// RemoteLoader fetches public HTTPS images from an explicit domain allowlist.
+// It intentionally does not forward viewer headers or credentials.
+type RemoteLoader struct {
+	Client         *http.Client
+	AllowedDomains []string
+}
+
+var _ Loader = RemoteLoader{}
+
+// NewRemoteLoader creates a remote loader with the default SSRF-safe client.
+func NewRemoteLoader(domains []string) (RemoteLoader, error) {
+	normalized, err := NormalizeRemoteDomains(domains)
+	if err != nil {
+		return RemoteLoader{}, err
+	}
+	return RemoteLoader{
+		Client:         remoteHTTPClient(normalized),
+		AllowedDomains: normalized,
+	}, nil
+}
+
+// NewRemoteLoaderFromEnvironment reads ImageRemoteDomainsEnv. It returns nil
+// when remote loading is not configured.
+func NewRemoteLoaderFromEnvironment() (*RemoteLoader, error) {
+	raw := strings.TrimSpace(os.Getenv(ImageRemoteDomainsEnv))
+	if raw == "" {
+		return nil, nil
+	}
+	domains := strings.Split(raw, ",")
+	loader, err := NewRemoteLoader(domains)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", ImageRemoteDomainsEnv, err)
+	}
+	return &loader, nil
+}
+
+// NormalizeRemoteDomains validates and canonicalizes domain allowlist entries.
+func NormalizeRemoteDomains(domains []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(domains))
+	result := make([]string, 0, len(domains))
+	for _, raw := range domains {
+		domain := strings.ToLower(strings.TrimSpace(raw))
+		if domain == "" {
+			continue
+		}
+		if strings.HasPrefix(domain, "*.") {
+			if len(domain) <= 2 || strings.Contains(domain[2:], "/") || strings.Contains(domain[2:], ":") {
+				return nil, fmt.Errorf("invalid remote domain %q", raw)
+			}
+		} else if strings.Contains(domain, "*") || strings.Contains(domain, "/") || strings.Contains(domain, ":") {
+			return nil, fmt.Errorf("invalid remote domain %q", raw)
+		}
+		domain = strings.TrimSuffix(domain, ".")
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		result = append(result, domain)
+	}
+	if len(result) == 0 {
+		return nil, errors.New("at least one remote domain is required")
+	}
+	return result, nil
+}
+
+// ValidateRemoteURL canonicalizes a remote source and checks its domain
+// allowlist. Remote source URLs may not carry query strings or fragments.
+func ValidateRemoteURL(source string, allowedDomains []string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(source))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Port() != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", ErrInvalidSource
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if !remoteDomainAllowed(host, allowedDomains) {
+		return "", ErrInvalidSource
+	}
+	if parsed.Path == "" || strings.Contains(parsed.Path, "\\") || strings.Contains(parsed.Path, "\x00") {
+		return "", ErrInvalidSource
+	}
+	for _, segment := range strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/") {
+		if segment == "." || segment == ".." {
+			return "", ErrInvalidSource
+		}
+	}
+	parsed.Host = host
+	return parsed.String(), nil
+}
+
+func (loader RemoteLoader) Open(ctx context.Context, source string) (io.ReadCloser, error) {
+	canonical, err := ValidateRemoteURL(source, loader.AllowedDomains)
+	if err != nil {
+		return nil, err
+	}
+	client := loader.Client
+	if client == nil {
+		client = remoteHTTPClient(loader.AllowedDomains)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, canonical, nil)
+	if err != nil {
+		return nil, ErrInvalidSource
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		_ = response.Body.Close()
+		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("remote image returned HTTP %d", response.StatusCode)
+	}
+	return &limitedReadCloser{Reader: io.LimitReader(response.Body, maxSourceBytes+1), closer: response.Body}, nil
+}
+
+type limitedReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (reader *limitedReadCloser) Close() error { return reader.closer.Close() }
+
+func remoteHTTPClient(allowedDomains []string) *http.Client {
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ip := range ips {
+				if !isPublicIP(ip) {
+					return nil, errors.New("remote image host resolves to a private address")
+				}
+			}
+			if len(ips) == 0 {
+				return nil, errors.New("remote image host has no address")
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		},
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
+		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+			_, err := ValidateRemoteURL(request.URL.String(), allowedDomains)
+			return err
+		},
+	}
+}
+
+func remoteDomainAllowed(host string, allowedDomains []string) bool {
+	for _, raw := range allowedDomains {
+		domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(raw), "."))
+		if strings.HasPrefix(domain, "*.") {
+			base := strings.TrimPrefix(domain, "*.")
+			if host != base && strings.HasSuffix(host, "."+base) {
+				return true
+			}
+		} else if host == domain {
+			return true
+		}
+	}
+	return false
+}
+
+func isPublicIP(ip net.IP) bool {
+	return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified()
+}
+
+func isRemoteSource(source string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(source))
+	return err == nil && parsed.Scheme != "" && parsed.Host != ""
+}
+
 // DiskLoader reads static files beneath Root.
 type DiskLoader struct {
 	Root string
@@ -67,7 +273,14 @@ type DiskLoader struct {
 // s3.NewLoaderFromEnvironment adds the S3 branch to this same environment
 // contract.
 func NewLoaderFromEnvironment(_ context.Context, diskRoot string) (Loader, error) {
+	remote, err := NewRemoteLoaderFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
 	if root, ok := DiskRootFromEnvironment(diskRoot); ok {
+		if remote != nil {
+			return RouterLoader{Local: DiskLoader{Root: root}, Remote: remote}, nil
+		}
 		return DiskLoader{Root: root}, nil
 	}
 	configured, err := S3SourceFromEnvironment()
@@ -78,6 +291,9 @@ func NewLoaderFromEnvironment(_ context.Context, diskRoot string) (Loader, error
 		return nil, fmt.Errorf(
 			"%s/%s are configured but this build has no S3 image source: import github.com/Origens-Dev/gobeyond/imageopt/s3 and call s3.NewLoaderFromEnvironment",
 			ImageSourceBucketEnv, ImageSourcePrefixEnv)
+	}
+	if remote != nil {
+		return remote, nil
 	}
 	return nil, nil
 }
