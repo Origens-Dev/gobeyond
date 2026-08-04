@@ -137,7 +137,7 @@ func TestLoadDeploymentConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	config, ok, err := LoadDeploymentConfig(root)
-	if err != nil || !ok || !reflect.DeepEqual(config.RemoteDomains, []string{"images.ctfassets.net"}) {
+	if err != nil || !ok || !reflect.DeepEqual(config.RemoteDomains, []string{"images.ctfassets.net"}) || config.CacheSeconds != DefaultCacheSeconds {
 		t.Fatalf("config = (%+v, %v, %v)", config, ok, err)
 	}
 }
@@ -298,19 +298,23 @@ func TestHandlerValidatesRequest(t *testing.T) {
 		method string
 		query  string
 		status int
+		code   string
 	}{
-		{http.MethodPost, "url=%2Fbrand.png&w=32", http.StatusMethodNotAllowed},
-		{http.MethodGet, "url=https%3A%2F%2Fexample.com%2Fbrand.png&w=32", http.StatusBadRequest},
-		{http.MethodGet, "url=%2Fbrand.png&w=31", http.StatusBadRequest},
-		{http.MethodGet, "url=%2Fbrand.png&w=32&q=bad", http.StatusBadRequest},
-		{http.MethodGet, "url=%2Fbrand.png&w=32&f=webp", http.StatusBadRequest},
-		{http.MethodGet, "url=%2Fmissing.png&w=32", http.StatusNotFound},
+		{http.MethodPost, "url=%2Fbrand.png&w=32", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{http.MethodGet, "url=https%3A%2F%2Fexample.com%2Fbrand.png&w=32", http.StatusBadRequest, "invalid_source"},
+		{http.MethodGet, "url=%2Fbrand.png&w=31", http.StatusBadRequest, "unsupported_width"},
+		{http.MethodGet, "url=%2Fbrand.png&w=32&q=bad", http.StatusBadRequest, "invalid_quality"},
+		{http.MethodGet, "url=%2Fbrand.png&w=32&f=webp", http.StatusBadRequest, "unsupported_format"},
+		{http.MethodGet, "url=%2Fmissing.png&w=32", http.StatusNotFound, "source_not_found"},
 	}
 	for _, test := range tests {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(test.method, Route+"?"+test.query, nil))
 		if recorder.Code != test.status {
 			t.Fatalf("%s %s: status=%d body=%s", test.method, test.query, recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get(ImageErrorHeader); got != test.code {
+			t.Fatalf("%s %s: error code=%q, want %q", test.method, test.query, got, test.code)
 		}
 	}
 }

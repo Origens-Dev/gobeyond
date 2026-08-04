@@ -132,11 +132,18 @@ deployment-owned source of truth:
 
 ```json
 {
-  "remoteDomains": ["images.ctfassets.net"]
+  "remoteDomains": ["images.ctfassets.net"],
+  "cacheSeconds": 2592000
 }
 ```
 
-The GoBeyond build validates the domains and emits the deployment manifest.
+`cacheSeconds` controls the public freshness lifetime of successful image
+variants at the hosting edge. It defaults to 3600 seconds and accepts values
+from 60 seconds through 31536000 seconds. Use a long lifetime when the source
+URL is content-addressed or otherwise immutable; change the source URL or use
+an edge purge when an existing variant must be replaced.
+
+The GoBeyond build validates the domains and cache lifetime and emits the deployment manifest.
 The hosting platform injects the validated value as
 `GOBEYOND_IMAGE_REMOTE_DOMAINS` at runtime. Directly setting the environment
 variable remains supported for legacy deployments.

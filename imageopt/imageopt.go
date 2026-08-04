@@ -45,14 +45,18 @@ const (
 	// subdomain patterns (for example, images.example.com,*.ctfassets.net)
 	// that the remote image loader may fetch.
 	ImageRemoteDomainsEnv = "GOBEYOND_IMAGE_REMOTE_DOMAINS"
+	// ImageErrorHeader identifies validation or source failures without
+	// exposing the requested URL, which may contain sensitive query values.
+	ImageErrorHeader = "X-GoBeyond-Image-Error"
 )
 
 // DefaultWidths bounds the variants the runtime will generate.
 var DefaultWidths = []int{16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840}
 
 var (
-	ErrInvalidSource = errors.New("invalid same-site image source")
-	ErrNotFound      = errors.New("image source not found")
+	ErrInvalidSource  = errors.New("invalid same-site image source")
+	ErrNotFound       = errors.New("image source not found")
+	errSourceTooLarge = errors.New("image source too large")
 )
 
 // Loader opens a same-site static path. Implementations must not interpret it
@@ -383,30 +387,34 @@ func Handler(loader Loader) http.Handler {
 		widths[width] = struct{}{}
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		reject := func(status int, code, message string) {
+			writer.Header().Set(ImageErrorHeader, code)
+			http.Error(writer, message, status)
+		}
 		if request.Method != http.MethodGet {
 			writer.Header().Set("Allow", http.MethodGet)
-			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			reject(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
 		if loader == nil {
-			http.Error(writer, "image optimizer source unavailable", http.StatusServiceUnavailable)
+			reject(http.StatusServiceUnavailable, "source_unavailable", "image optimizer source unavailable")
 			return
 		}
 		source := request.URL.Query().Get("url")
 		width, err := strconv.Atoi(request.URL.Query().Get("w"))
 		if err != nil {
-			http.Error(writer, "invalid image width", http.StatusBadRequest)
+			reject(http.StatusBadRequest, "invalid_width", "invalid image width")
 			return
 		}
 		if _, ok := widths[width]; !ok {
-			http.Error(writer, "unsupported image width", http.StatusBadRequest)
+			reject(http.StatusBadRequest, "unsupported_width", "unsupported image width")
 			return
 		}
 		quality := defaultQuality
 		if raw := request.URL.Query().Get("q"); raw != "" {
 			quality, err = strconv.Atoi(raw)
 			if err != nil {
-				http.Error(writer, "invalid image quality", http.StatusBadRequest)
+				reject(http.StatusBadRequest, "invalid_quality", "invalid image quality")
 				return
 			}
 		}
@@ -416,37 +424,35 @@ func Handler(loader Loader) http.Handler {
 			format = "jpeg"
 		}
 		if format != "" && format != "jpeg" && format != "png" {
-			http.Error(writer, "unsupported image format", http.StatusBadRequest)
+			reject(http.StatusBadRequest, "unsupported_format", "unsupported image format")
 			return
 		}
 
 		input, err := loader.Open(request.Context(), source)
 		if err != nil {
 			status := http.StatusInternalServerError
+			code := "source_open_failed"
 			if errors.Is(err, ErrInvalidSource) {
 				status = http.StatusBadRequest
+				code = "invalid_source"
 			} else if errors.Is(err, ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 				status = http.StatusNotFound
+				code = "source_not_found"
 			}
-			http.Error(writer, http.StatusText(status), status)
+			reject(status, code, http.StatusText(status))
 			return
 		}
 		defer input.Close()
-		data, err := io.ReadAll(io.LimitReader(input, maxSourceBytes+1))
+		output, contentType, err := optimize(&sourceLimitReader{Reader: input, Remaining: maxSourceBytes}, width, quality, format)
 		if err != nil {
-			http.Error(writer, "read image source", http.StatusInternalServerError)
+			if errors.Is(err, errSourceTooLarge) {
+				reject(http.StatusRequestEntityTooLarge, "source_too_large", "image source too large")
+				return
+			}
+			reject(http.StatusUnsupportedMediaType, "unsupported_source", err.Error())
 			return
 		}
-		if len(data) > maxSourceBytes {
-			http.Error(writer, "image source too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		output, contentType, err := optimize(data, width, quality, format)
-		if err != nil {
-			http.Error(writer, err.Error(), http.StatusUnsupportedMediaType)
-			return
-		}
-		writer.Header().Set("Cache-Control", "public, max-age=3600")
+		writer.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", CacheSecondsFromEnvironment()))
 		writer.Header().Set("Content-Type", contentType)
 		writer.Header().Set("Content-Length", strconv.Itoa(len(output)))
 		_, _ = writer.Write(output)
@@ -501,24 +507,42 @@ func withinRoot(root, candidate string) bool {
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
-func optimize(data []byte, width, quality int, requestedFormat string) ([]byte, string, error) {
-	config, sourceFormat, err := image.DecodeConfig(bytes.NewReader(data))
+type sourceLimitReader struct {
+	io.Reader
+	Remaining int64
+}
+
+func (r *sourceLimitReader) Read(p []byte) (int, error) {
+	if r.Remaining <= 0 {
+		return 0, errSourceTooLarge
+	}
+	if int64(len(p)) > r.Remaining {
+		p = p[:r.Remaining]
+	}
+	n, err := r.Reader.Read(p)
+	r.Remaining -= int64(n)
+	return n, err
+}
+
+func optimize(reader io.Reader, width, quality int, requestedFormat string) ([]byte, string, error) {
+	source, sourceFormat, err := image.Decode(reader)
 	if err != nil {
+		if errors.Is(err, errSourceTooLarge) {
+			return nil, "", errSourceTooLarge
+		}
 		return nil, "", errors.New("unsupported image source")
 	}
-	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxSourcePixels {
+	bounds := source.Bounds()
+	sourceWidth, sourceHeight := bounds.Dx(), bounds.Dy()
+	if sourceWidth <= 0 || sourceHeight <= 0 || int64(sourceWidth)*int64(sourceHeight) > maxSourcePixels {
 		return nil, "", errors.New("image dimensions are unsupported")
 	}
 	if sourceFormat != "jpeg" && sourceFormat != "png" {
 		return nil, "", errors.New("image source must be JPEG or PNG")
 	}
-	height := max(1, int(math.Round(float64(config.Height)*float64(width)/float64(config.Width))))
+	height := max(1, int(math.Round(float64(sourceHeight)*float64(width)/float64(sourceWidth))))
 	if int64(width)*int64(height) > maxSourcePixels {
 		return nil, "", errors.New("output image dimensions are unsupported")
-	}
-	source, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, "", errors.New("decode image source")
 	}
 	resized := resizeBilinear(source, width, height)
 	format := requestedFormat
