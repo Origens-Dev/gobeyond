@@ -234,9 +234,11 @@ func New(config Config) (*Server, error) {
 		config.Logger = slog.Default()
 	}
 	if config.ImageLoader == nil {
-		if staticDirectory := os.Getenv("GOBEYOND_STATIC_DIR"); staticDirectory != "" {
-			config.ImageLoader = imageopt.DiskLoader{Root: staticDirectory}
+		loader, err := imageopt.NewLoaderFromEnvironment(context.Background(), "")
+		if err != nil {
+			return nil, fmt.Errorf("configure image loader: %w", err)
 		}
+		config.ImageLoader = loader
 	}
 	if config.Deadlines.Loader <= 0 {
 		config.Deadlines.Loader = 10 * time.Second
