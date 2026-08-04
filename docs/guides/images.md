@@ -2,12 +2,14 @@
 
 GoBeyond provides a portable `imageSrc()` helper and a Node-free Go image
 endpoint. The runtime loads sources from local disk when
-`GOBEYOND_STATIC_DIR` is set, or from S3 when
-`GOBEYOND_IMAGE_SOURCE_BUCKET` and `GOBEYOND_IMAGE_SOURCE_PREFIX` are set.
-Disk takes precedence so local development never depends on S3.
+`GOBEYOND_STATIC_DIR` is set, from S3 when
+`GOBEYOND_IMAGE_SOURCE_BUCKET` and `GOBEYOND_IMAGE_SOURCE_PREFIX` are set,
+and from explicitly allowlisted public HTTPS domains when
+`GOBEYOND_IMAGE_REMOTE_DOMAINS` is set. Disk takes precedence for local
+development; a deployment may combine its local/S3 source with remote images.
 
 The core `imageopt` package is AWS-free: it contains `Loader`, `DiskLoader`,
-`Handler`, and the optimize path only. S3 support lives in the nested module
+`RemoteLoader`, `RouterLoader`, `Handler`, and the optimize path. S3 support lives in the nested module
 `github.com/Origens-Dev/gobeyond/imageopt/s3`, so apps that do not serve images
 from S3 never pull the AWS SDK into their module graph.
 
@@ -47,8 +49,10 @@ omitted, the source JPEG/PNG format is retained.
 ## Endpoint parameters
 
 - `url` is required and must be a same-site absolute path beginning with one
-  `/`, such as `/photos/hero.jpg`. Remote URLs, protocol-relative URLs, query
-  strings, fragments, backslashes, and path traversal are rejected.
+  `/`, such as `/photos/hero.jpg`, or an HTTPS URL whose host is allowlisted by
+  the deployment. Protocol-relative URLs, ports, query strings, fragments,
+  backslashes, and path traversal are rejected. Remote requests do not forward
+  viewer cookies, authorization headers, or other credentials.
 - `w` is required and must be one of `16, 32, 48, 64, 96, 128, 256, 384, 640,
   750, 828, 1080, 1200, 1920, 2048, 3840`.
 - `q` is optional, defaults to `75`, and is clamped to the range `1` through
@@ -70,7 +74,12 @@ curl -o /tmp/logo.png \
   "http://localhost:8080/_gobeyond/image?url=%2Fbrand%2Flogo.png&w=256&q=75"
 ```
 
-Successful responses set `Cache-Control: public, max-age=3600`.
+Successful responses set `Cache-Control: public, max-age=3600`. The customer
+deployment's CDN caches each host/source/variant combination; the Go runtime is
+invoked on a cache miss and performs the resize before returning the response.
+Optimized images are public and shareable by default, matching the semantics of
+Next's default image optimizer. Authentication belongs to the page or
+middleware boundary; private images require a separate, auth-aware design.
 
 ## Production S3 setup (requires infra apply)
 
@@ -115,6 +124,27 @@ been applied by this repository.
 The S3 loader (`imageopt/s3.Loader`) and Lambda environment wiring are present in code, but production
 availability must not be claimed until the IAM, bucket policy, Lambda
 configuration, and edge behavior have been applied.
+
+## Remote image setup
+
+Set `GOBEYOND_IMAGE_REMOTE_DOMAINS` to a comma-separated list of exact HTTPS
+domains or subdomain patterns. For example:
+
+```text
+GOBEYOND_IMAGE_REMOTE_DOMAINS=images.example.com,*.ctfassets.net
+```
+
+Use the remote URL directly with `imageSrc()`:
+
+```tsx
+imageSrc("https://images.ctfassets.net/space/asset/photo.jpg", { w: 640 })
+```
+
+The helper still emits a same-origin `/_gobeyond/image` URL. The deployment
+host fetches the approved remote source and performs the resize; the browser
+does not fetch the remote image directly. The remote loader validates redirects,
+rejects private-address DNS results, enforces HTTPS, and bounds the response
+size. Do not place provider management tokens in this configuration.
 
 Social preview images should remain direct, absolute HTTPS URLs such as
 `https://example.com/social/og.png`; do not route Open Graph or Twitter cards
