@@ -15,3 +15,10 @@ test("imageSrc includes explicit quality and format", () => {
     "/_gobeyond/image?url=%2Fphotos%2Fhero.jpg&w=1200&q=82&f=jpeg",
   );
 });
+
+test("imageSrc leaves format negotiation to the image edge by default", () => {
+  assert.equal(
+    imageSrc("https://images.example.test/hero.jpg", { w: 640 }),
+    "/_gobeyond/image?url=https%3A%2F%2Fimages.example.test%2Fhero.jpg&w=640&q=75",
+  );
+});
