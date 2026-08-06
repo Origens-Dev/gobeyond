@@ -110,3 +110,40 @@ func TestStaticFilesEmptyDirectoryPassesThrough(t *testing.T) {
 		t.Fatalf("passthrough failed: called=%v status=%d", called, recorder.Code)
 	}
 }
+
+func TestStaticFilesPreviewOwnsRobotsPolicy(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "robots.txt"), []byte("User-agent: *\nAllow: /"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvDeploymentKind, "preview")
+	handler := StaticFiles(root, http.NotFoundHandler())
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/robots.txt", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if got := rec.Body.String(); got != "User-agent: *\nDisallow: /\n" {
+		t.Fatalf("preview robots = %q", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("preview robots cache-control = %q", got)
+	}
+}
+
+func TestStaticFilesProductionRobotsDefaultAndPreviewHeader(t *testing.T) {
+	root := t.TempDir()
+	handler := StaticFiles(root, http.NotFoundHandler())
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/robots.txt", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if got := rec.Body.String(); got != "User-agent: *\nAllow: /\n" {
+		t.Fatalf("production default robots = %q", got)
+	}
+
+	t.Setenv(EnvDeploymentKind, "preview")
+	req = httptest.NewRequest(http.MethodGet, "http://example.test/missing", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if got := rec.Header().Get("X-Robots-Tag"); got != "noindex, nofollow" {
+		t.Fatalf("preview x-robots-tag = %q", got)
+	}
+}

@@ -2758,7 +2758,7 @@ export class SourceCompiler {
     const supplied = new Map<string, PlanExpression>()
     for (const attribute of attributes.properties) {
       if (ts.isJsxSpreadAttribute(attribute)) {
-        const entries = this.compileObjectProperties(
+        const entries = this.compileComponentSpreadProperties(
           attribute.expression,
           environment,
         )
@@ -3386,6 +3386,67 @@ export class SourceCompiler {
     return result
   }
 
+  /**
+   * Expand a typed, all-required props object when it is forwarded into a
+   * project-local component. The render plan already has each value as a
+   * schema-backed path; enumerating the declared fields preserves ordinary
+   * JSX prop forwarding without introducing a dynamic object value.
+   *
+   * Optional fields deliberately remain unsupported here. Treating an absent
+   * optional property as an explicitly supplied null path would suppress the
+   * nested component's default-prop behavior and could diverge at hydration.
+   */
+  private compileComponentSpreadProperties(
+    expression: ts.Expression,
+    environment: ExpressionEnvironment,
+  ): CompiledProperty[] | undefined {
+    const unwrapped = this.unwrapExpression(expression)
+    const base = this.portablePathForObject(unwrapped, environment)
+    if (!base || !this.checker) {
+      return this.compileObjectProperties(unwrapped, environment)
+    }
+    const type = this.checker.getTypeAtLocation(unwrapped)
+    if (
+      this.checker.isArrayType(type) ||
+      this.checker.isTupleType(type) ||
+      this.checker.getIndexInfoOfType(type, ts.IndexKind.String) ||
+      this.checker.getIndexInfoOfType(type, ts.IndexKind.Number)
+    ) {
+      return this.compileObjectProperties(unwrapped, environment)
+    }
+    const properties = this.checker.getPropertiesOfType(type)
+    if (
+      properties.length === 0 ||
+      properties.some((property) => (property.flags & ts.SymbolFlags.Optional) !== 0)
+    ) {
+      return this.compileObjectProperties(unwrapped, environment)
+    }
+    return properties.map((property) => ({
+      name: property.getName(),
+      value: { kind: 'path', path: [...base.path, property.getName()] },
+    }))
+  }
+
+  private portablePathForObject(
+    expression: ts.Expression,
+    environment: ExpressionEnvironment,
+  ): Extract<PlanExpression, { kind: 'path' }> | undefined {
+    expression = this.unwrapExpression(expression)
+    const direct = environment.get(expression.getText(this.sourceFile))
+    if (direct?.kind === 'path') return direct
+    if (ts.isIdentifier(expression)) {
+      const value = environment.get(expression.text)
+      return value?.kind === 'path' ? value : undefined
+    }
+    if (ts.isPropertyAccessExpression(expression)) {
+      const base = this.portablePathForObject(expression.expression, environment)
+      return base
+        ? { kind: 'path', path: [...base.path, expression.name.text] }
+        : undefined
+    }
+    return undefined
+  }
+
   private compileAtClientBoundary(
     component: string,
     sourceNode: ts.Node,
@@ -3728,6 +3789,22 @@ export class SourceCompiler {
   private getRootKeyExpression(
     expression: ts.Expression,
   ): ts.Expression | undefined {
+    expression = this.unwrapExpression(expression)
+    if (ts.isConditionalExpression(expression)) {
+      if (this.isReactEmptyExpression(expression.whenFalse)) {
+        return this.getRootKeyExpression(expression.whenTrue)
+      }
+      if (this.isReactEmptyExpression(expression.whenTrue)) {
+        return this.getRootKeyExpression(expression.whenFalse)
+      }
+      return undefined
+    }
+    if (
+      ts.isBinaryExpression(expression) &&
+      expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    ) {
+      return this.getRootKeyExpression(expression.right)
+    }
     const jsxKey = this.getRootKeyAttribute(expression)
     if (
       jsxKey?.initializer &&
@@ -3889,6 +3966,13 @@ export class SourceCompiler {
       const base = ts.isIdentifier(expression.expression)
         ? environment.get(expression.expression.text)
         : this.compileExpression(expression.expression, environment)
+      if (expression.questionDotToken && base) {
+        return {
+          kind: 'index',
+          object: base,
+          index: { kind: 'literal', value: expression.name.text },
+        }
+      }
       if (base?.kind === 'path') {
         return { kind: 'path', path: [...base.path, expression.name.text] }
       }

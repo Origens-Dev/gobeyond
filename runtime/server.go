@@ -38,15 +38,16 @@ const maxRewrites = 8
 const privateRequestValue = "gobeyond_private_request"
 
 type LoadedPage struct {
-	Kind       gb.ResultKind  `json:"kind"`
-	Props      any            `json:"props,omitempty"`
-	Metadata   gb.Metadata    `json:"metadata,omitempty"`
-	Status     int            `json:"status,omitempty"`
-	Headers    http.Header    `json:"headers,omitempty"`
-	Cache      gb.CachePolicy `json:"cache"`
-	RedirectTo string         `json:"redirectTo,omitempty"`
-	ErrorCode  string         `json:"errorCode,omitempty"`
-	Message    string         `json:"message,omitempty"`
+	Kind            gb.ResultKind  `json:"kind"`
+	Props           any            `json:"props,omitempty"`
+	Metadata        gb.Metadata    `json:"metadata,omitempty"`
+	Status          int            `json:"status,omitempty"`
+	Headers         http.Header    `json:"headers,omitempty"`
+	Cache           gb.CachePolicy `json:"cache"`
+	RedirectTo      string         `json:"redirectTo,omitempty"`
+	ErrorCode       string         `json:"errorCode,omitempty"`
+	Message         string         `json:"message,omitempty"`
+	CacheGeneration string         `json:"cacheGeneration,omitempty"`
 }
 
 // FromPageResult converts the public route-authoring result into the runtime
@@ -658,6 +659,9 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	headers.Set("Content-Type", "text/html; charset=utf-8")
 	headers.Set("Cache-Control", responseCacheHeader(loaded.Cache, ctx.Request, ctx.Values, headers))
 	headers.Set("X-GoBeyond-Build", s.config.BuildID)
+	if s.config.Cache != nil && s.config.Cache.Generation != "" {
+		headers.Set("X-GoBeyond-Cache-Generation", s.config.Cache.Generation)
+	}
 	return gb.Response{Status: loaded.Status, Headers: headers, Body: output.Bytes()}, nil
 }
 
@@ -731,6 +735,9 @@ func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request,
 		loaded, loadErr := s.loadPage(ctx.Context, ctx.Request, params, ctx.Values, page)
 		if loadErr != nil {
 			return gb.Response{}, loadErr
+		}
+		if s.config.Cache != nil {
+			loaded.CacheGeneration = s.config.Cache.Generation
 		}
 		if err := jsvalue.Validate(loaded.Props); err != nil {
 			return gb.Response{}, fmt.Errorf("page props are not JavaScript-compatible: %w", err)

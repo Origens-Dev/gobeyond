@@ -95,6 +95,7 @@ export function createRouterCache(options: RouterCacheOptions = {}): RouterCache
   const now = options.now ?? (() => Date.now());
   const ttlCapMs = options.ttlCapMs ?? DEFAULT_ROUTER_CACHE_TTL_MS;
   const entries = new Map<string, RouterCacheEntry>();
+  let generation: string | undefined;
 
   return {
     keyFor(url) {
@@ -115,6 +116,11 @@ export function createRouterCache(options: RouterCacheOptions = {}): RouterCache
         entries.delete(key);
         return false;
       }
+      const nextGeneration = payload.result.cacheGeneration;
+      if (nextGeneration && generation && nextGeneration !== generation) {
+        entries.clear();
+      }
+      if (nextGeneration) generation = nextGeneration;
       const storedAt = now();
       entries.set(key, { payload, storedAt, expiresAt: storedAt + ttl });
       return true;

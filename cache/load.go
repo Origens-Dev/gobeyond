@@ -12,6 +12,9 @@ import (
 // Options describes one cached value: what it is, what it was computed from,
 // how long it stays fresh, and which tags invalidate it.
 type Options struct {
+	// Profile supplies a named duration when Revalidate is zero. Revalidate
+	// remains available for precise application-specific windows.
+	Profile Profile
 	// Name identifies the value across the whole deploy, e.g.
 	// "catalog.product". Two call sites sharing a Name share cache entries, so
 	// it must be unique per logical value, not per package.
@@ -86,18 +89,28 @@ func Load[T any](ctx context.Context, options Options, codec Codec[T], fn func(c
 	if options.Name == "" {
 		return zero, errors.New("cache: Load requires a non-empty Options.Name")
 	}
+	if scope, ok := RequestScopeFrom(ctx); ok {
+		// Dependency tracking is independent of whether this particular data
+		// value is cached. A cached route still needs to be invalidated when its
+		// loader reads an intentionally uncached value.
+		scope.RecordDependencyTags(options.Tags...)
+	}
 	runtime := loadRuntime(ctx)
-	if runtime == nil || options.Revalidate <= 0 {
+	revalidate := options.Revalidate
+	if revalidate <= 0 {
+		revalidate = options.Profile.Duration()
+	}
+	if runtime == nil || revalidate <= 0 {
 		return fn(ctx)
 	}
-	key, err := DataKey(runtime.deployPrefix, runtime.buildID, options.Name, options.Args)
+	key, err := DataKeyWithGeneration(runtime.deployPrefix, runtime.buildID, runtime.generation, options.Name, options.Args)
 	if err != nil {
 		return zero, err
 	}
 	return loadEntry(ctx, runtime, entry{
 		name:       options.Name,
 		key:        key,
-		revalidate: options.Revalidate,
+		revalidate: revalidate,
 		tags:       normalizeTags(options.Tags),
 	}, codec, nil, fn)
 }
@@ -187,6 +200,25 @@ func compute[T any](ctx context.Context, runtime *Runtime, item entry, codec Cod
 		return nil, err
 	}
 	if !fenced || (storable != nil && !storable(value)) {
+		return value, nil
+	}
+	// A route loader may discover additional data tags by calling Load. Read
+	// those versions after fn so the route record carries the dependency set;
+	// Store.Set still provides the final write fence if a bump races this read.
+	if scope, ok := RequestScopeFrom(ctx); ok {
+		dependencyTags := scope.DependencyTags()
+		allTags := normalizeTags(append(append([]string(nil), item.tags...), dependencyTags...))
+		if len(allTags) > len(item.tags) {
+			read, err := runtime.store.TagVersions(ctx, allTags)
+			if err != nil {
+				runtime.logger.Warn("cache dependency tag versions unavailable", "name", item.name, "error", err)
+				fenced = false
+			} else {
+				versions = read
+			}
+		}
+	}
+	if !fenced {
 		return value, nil
 	}
 	encoded, err := codec.Encode(value)

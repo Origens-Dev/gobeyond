@@ -64,6 +64,8 @@ func Open(opts Options) (config *cache.RuntimeConfig, closeFn func() error, err 
 	if configured {
 		shared = store
 		redisCloser = store
+	} else {
+		logger.Warn("cache L2 unavailable; serving with bounded in-process L1 only")
 	}
 
 	tiered := cache.Tiered(local, shared, cache.TieredOptions{Logger: logger})
@@ -91,6 +93,7 @@ func Open(opts Options) (config *cache.RuntimeConfig, closeFn func() error, err 
 
 	return &cache.RuntimeConfig{
 		DeployPrefix: cmp.Or(cache.DeployPrefixFromEnv(), "local"),
+		Generation:   cache.GenerationFromEnv(),
 		Store:        tiered,
 		Logger:       logger,
 	}, closeFn, nil

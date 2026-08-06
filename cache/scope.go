@@ -16,6 +16,7 @@ type RequestScope struct {
 	memo         map[string]*memoEntry
 	refreshPaths []string
 	refreshTags  []string
+	dependencies []string
 }
 
 // ScopeOption configures a RequestScope at creation time.
@@ -93,6 +94,43 @@ func (s *RequestScope) RefreshTags() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.refreshTags...)
+}
+
+// RecordDependencyTags records data tags observed while building the current
+// response. The route cache coordinator consumes these tags when it writes
+// route props, so invalidating a data value also invalidates pages that loaded
+// that value. Recording is intentionally request-scoped and fail-closed: an
+// overbroad dependency only causes an extra refetch, never stale shared data.
+func (s *RequestScope) RecordDependencyTags(tags ...string) {
+	if s == nil || len(tags) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]struct{}, len(s.dependencies)+len(tags))
+	for _, tag := range s.dependencies {
+		seen[tag] = struct{}{}
+	}
+	for _, tag := range tags {
+		if tag == "" {
+			continue
+		}
+		if _, exists := seen[tag]; exists {
+			continue
+		}
+		seen[tag] = struct{}{}
+		s.dependencies = append(s.dependencies, tag)
+	}
+}
+
+// DependencyTags returns the data invalidation tags observed in this request.
+func (s *RequestScope) DependencyTags() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.dependencies...)
 }
 
 type requestScopeContextKey struct{}

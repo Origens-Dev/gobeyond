@@ -14,6 +14,8 @@ import (
 // Runtime owns, so two builds, two origins, or two query strings never share
 // an entry. Revalidate and Tags come from definePage({ revalidate, tags }).
 type RouteOptions struct {
+	// Profile supplies a named duration when Revalidate is zero.
+	Profile Profile
 	RouteID string
 	// Path is the public request path this entry was computed for, not the
 	// route's pattern: a route serves many paths and each caches separately.
@@ -57,10 +59,14 @@ func LoadRoute[T any](ctx context.Context, options RouteOptions, codec Codec[T],
 		return zero, errors.New("cache: LoadRoute requires a non-empty RouteOptions.RouteID")
 	}
 	runtime := loadRuntime(ctx)
-	if runtime == nil || options.Revalidate <= 0 {
+	revalidate := options.Revalidate
+	if revalidate <= 0 {
+		revalidate = options.Profile.Duration()
+	}
+	if runtime == nil || revalidate <= 0 {
 		return fn(ctx)
 	}
-	key, err := RouteKey(runtime.deployPrefix, runtime.buildID, options.RouteID, options.Path, options.RawQuery, options.PublicOrigin)
+	key, err := RouteKeyWithGeneration(runtime.deployPrefix, runtime.buildID, runtime.generation, options.RouteID, options.Path, options.RawQuery, options.PublicOrigin)
 	if err != nil {
 		return zero, err
 	}
@@ -71,7 +77,7 @@ func LoadRoute[T any](ctx context.Context, options RouteOptions, codec Codec[T],
 	return loadEntry(ctx, runtime, entry{
 		name:       options.RouteID,
 		key:        key,
-		revalidate: options.Revalidate,
+		revalidate: revalidate,
 		tags:       normalizeTags(append(append([]string(nil), options.Tags...), pathTag)),
 	}, codec, storable, fn)
 }

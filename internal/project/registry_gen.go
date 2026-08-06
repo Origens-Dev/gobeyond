@@ -452,10 +452,21 @@ func httpMethodFuncs(file string) ([]string, error) {
 }
 
 func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, hasMiddleware bool) ([]byte, error) {
+	needsGB := false
+	for _, page := range pages {
+		if page.HasPage {
+			needsGB = true
+			break
+		}
+	}
 	var imports []string
 	imports = append(imports,
 		`"net/http"`,
-		`gb "github.com/Origens-Dev/gobeyond"`,
+	)
+	if needsGB {
+		imports = append(imports, `gb "github.com/Origens-Dev/gobeyond"`)
+	}
+	imports = append(imports,
 		`"github.com/Origens-Dev/gobeyond/browserassets"`,
 		`"github.com/Origens-Dev/gobeyond/cache/openfromenv"`,
 		`"github.com/Origens-Dev/gobeyond/renderplan"`,
@@ -742,8 +753,8 @@ func loadBrowserAssets(path, buildID string) (*browserassets.Manifest, error) {
 		return nil, err
 	}
 	var manifest struct {
-		BuildID string          ` + "`json:\"buildId\"`" + `
-		Assets  json.RawMessage ` + "`json:\"assets\"`" + `
+		BuildID string          `+"`json:\"buildId\"`"+`
+		Assets  json.RawMessage `+"`json:\"assets\"`"+`
 	}
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, err
