@@ -22,7 +22,7 @@ export function url(value: string): string {
     );
 }
 
-export type ImageFormat = "jpeg" | "png";
+export type ImageFormat = "jpeg" | "png" | "webp" | "auto";
 
 export interface ImageOptions {
   w: number;

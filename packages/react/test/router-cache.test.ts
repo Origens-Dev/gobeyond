@@ -67,6 +67,16 @@ test("routerCacheKey is path + search, excluding the fragment", () => {
   assert.equal(routerCacheKey(new URL("https://example.gobeyond.dev/")), "/");
 });
 
+test("a new cache generation drops previously stored route payloads", () => {
+  const cache = createRouterCache({ now: () => 0, ttlCapMs: 60_000 });
+  const first = { apiVersion: "gobeyond.render/v1alpha1", buildId: "b", routeId: "r", result: { kind: "ok", props: {}, cache: { mode: "public", maxAge: 60 }, cacheGeneration: "1" } } as any;
+  const second = { ...first, result: { ...first.result, cacheGeneration: "2" } } as any;
+  cache.set("/", first);
+  cache.set("/next", second);
+  assert.equal(cache.get("/"), undefined);
+  assert.equal(cache.get("/next"), second);
+});
+
 test("createRouterCache stores and returns fresh public entries, keyed as given", () => {
   let now = 0;
   const cache = createRouterCache({ now: () => now });

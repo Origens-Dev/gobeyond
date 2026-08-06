@@ -164,7 +164,9 @@ export interface RuntimeNavigationResult {
   status?: number;
   redirectTo?: string;
   errorCode?: string;
-  message?: string;
+	message?: string;
+	/** Deployment data generation used to produce this payload. */
+	cacheGeneration?: string;
   /** Present on every runtime response; absent only in hand-built test fixtures. */
   cache?: CachePolicy;
 }
@@ -567,6 +569,7 @@ export function parseRuntimeNavigationPayload(
       redirectTo: optionalString(value.result, "redirectTo", "runtime result"),
       errorCode: optionalString(value.result, "errorCode", "runtime result"),
       message: optionalString(value.result, "message", "runtime result"),
+		cacheGeneration: optionalString(value.result, "cacheGeneration", "runtime result"),
       cache: parseCachePolicy(value.result.cache),
     },
   };

@@ -22,6 +22,7 @@ const EnvDeployPrefix = "GOBEYOND_CACHE_KEY_PREFIX"
 const (
 	DefaultMaxStale       = 60 * time.Second
 	DefaultRefreshTimeout = 15 * time.Second
+	EnvCacheGeneration    = "GOBEYOND_CACHE_GENERATION"
 )
 
 const refreshLeaseSuffix = "#refresh"
@@ -37,6 +38,9 @@ type RuntimeConfig struct {
 	// BuildID namespaces this build's value shapes. runtime.New fills it in
 	// from its own configuration so the two can never disagree.
 	BuildID string
+	// Generation changes when application data is invalidated. It is separate
+	// from BuildID and route topology revisions.
+	Generation string
 	// Store is the byte tier to read and write, usually Tiered(l1, l2).
 	// Required.
 	Store Store
@@ -56,6 +60,7 @@ type RuntimeConfig struct {
 type Runtime struct {
 	deployPrefix   string
 	buildID        string
+	generation     string
 	store          Store
 	maxStale       time.Duration
 	refreshTimeout time.Duration
@@ -82,6 +87,7 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	runtime := &Runtime{
 		deployPrefix:   config.DeployPrefix,
 		buildID:        config.BuildID,
+		generation:     config.Generation,
 		store:          config.Store,
 		maxStale:       config.MaxStale,
 		refreshTimeout: config.RefreshTimeout,
@@ -109,12 +115,16 @@ func (rt *Runtime) DeployPrefix() string { return rt.deployPrefix }
 // BuildID returns the build namespace every key this runtime builds carries.
 func (rt *Runtime) BuildID() string { return rt.buildID }
 
+func (rt *Runtime) Generation() string { return rt.generation }
+
 // Store returns the byte tier this runtime reads and writes.
 func (rt *Runtime) Store() Store { return rt.store }
 
 // DeployPrefixFromEnv returns the deploy cache namespace the platform injected,
 // or "" when this deployment has no shared cache configured.
 func DeployPrefixFromEnv() string { return os.Getenv(EnvDeployPrefix) }
+
+func GenerationFromEnv() string { return os.Getenv(EnvCacheGeneration) }
 
 // acquireRefreshLease reports whether this instance should run a background
 // refresh. A store without leases, or a lease attempt that errors, answers yes:

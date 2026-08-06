@@ -22,6 +22,10 @@ const KeySchemaVersion = "gobeyond.cache.keys/v1alpha1"
 //
 // Schema: {deployPrefix}/{buildId}/route/{routeId}?{normalizedPath}{rawQuery}@{publicOrigin}
 func RouteKey(deployPrefix, buildID, routeID, path, rawQuery, publicOrigin string) (string, error) {
+	return RouteKeyWithGeneration(deployPrefix, buildID, "", routeID, path, rawQuery, publicOrigin)
+}
+
+func RouteKeyWithGeneration(deployPrefix, buildID, generation, routeID, path, rawQuery, publicOrigin string) (string, error) {
 	if deployPrefix == "" {
 		return "", errors.New("cache: route key requires a non-empty deployPrefix")
 	}
@@ -42,6 +46,10 @@ func RouteKey(deployPrefix, buildID, routeID, path, rawQuery, publicOrigin strin
 	key.WriteString(deployPrefix)
 	key.WriteByte('/')
 	key.WriteString(buildID)
+	if generation != "" {
+		key.WriteString("/g/")
+		key.WriteString(generation)
+	}
 	key.WriteString("/route/")
 	key.WriteString(routeID)
 	key.WriteByte('?')
@@ -64,6 +72,10 @@ func RouteKey(deployPrefix, buildID, routeID, path, rawQuery, publicOrigin strin
 //
 // Schema: {deployPrefix}/{buildId}/data/{name}/{argsDigest}
 func DataKey(deployPrefix, buildID, name string, args []any) (string, error) {
+	return DataKeyWithGeneration(deployPrefix, buildID, "", name, args)
+}
+
+func DataKeyWithGeneration(deployPrefix, buildID, generation, name string, args []any) (string, error) {
 	if deployPrefix == "" {
 		return "", errors.New("cache: data key requires a non-empty deployPrefix")
 	}
@@ -81,6 +93,10 @@ func DataKey(deployPrefix, buildID, name string, args []any) (string, error) {
 	key.WriteString(deployPrefix)
 	key.WriteByte('/')
 	key.WriteString(buildID)
+	if generation != "" {
+		key.WriteString("/g/")
+		key.WriteString(generation)
+	}
 	key.WriteString("/data/")
 	key.WriteString(name)
 	key.WriteByte('/')
