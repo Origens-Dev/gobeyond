@@ -137,7 +137,7 @@ func TestLoadDeploymentConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	config, ok, err := LoadDeploymentConfig(root)
-	if err != nil || !ok || !reflect.DeepEqual(config.RemoteDomains, []string{"images.ctfassets.net"}) {
+	if err != nil || !ok || !reflect.DeepEqual(config.RemoteDomains, []string{"images.ctfassets.net"}) || config.CacheSeconds != DefaultCacheSeconds {
 		t.Fatalf("config = (%+v, %v, %v)", config, ok, err)
 	}
 }
@@ -253,6 +253,43 @@ func TestHandlerResizesPNGAndConvertsJPEG(t *testing.T) {
 	}
 }
 
+func TestHandlerAllowsConfiguredRemoteImage(t *testing.T) {
+	var source bytes.Buffer
+	if err := png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 80, 40))); err != nil {
+		t.Fatal(err)
+	}
+	remote, err := NewRemoteLoader([]string{"images.ctfassets.net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://images.ctfassets.net/space/asset/photo.png" {
+			t.Fatalf("URL = %q", request.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(source.Bytes())),
+			Header:     make(http.Header),
+			Request:    request,
+		}, nil
+	})}
+	recorder := httptest.NewRecorder()
+	Handler(remote).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, Route+"?url=https%3A%2F%2Fimages.ctfassets.net%2Fspace%2Fasset%2Fphoto.png&w=32", nil),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	decoded, format, err := image.Decode(bytes.NewReader(recorder.Body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "png" || decoded.Bounds().Dx() != 32 {
+		t.Fatalf("format=%s bounds=%v", format, decoded.Bounds())
+	}
+}
+
 func TestHandlerValidatesRequest(t *testing.T) {
 	root := t.TempDir()
 	writeTestPNG(t, filepath.Join(root, "brand.png"), 80, 40)
@@ -261,19 +298,23 @@ func TestHandlerValidatesRequest(t *testing.T) {
 		method string
 		query  string
 		status int
+		code   string
 	}{
-		{http.MethodPost, "url=%2Fbrand.png&w=32", http.StatusMethodNotAllowed},
-		{http.MethodGet, "url=https%3A%2F%2Fexample.com%2Fbrand.png&w=32", http.StatusBadRequest},
-		{http.MethodGet, "url=%2Fbrand.png&w=31", http.StatusBadRequest},
-		{http.MethodGet, "url=%2Fbrand.png&w=32&q=bad", http.StatusBadRequest},
-		{http.MethodGet, "url=%2Fbrand.png&w=32&f=webp", http.StatusBadRequest},
-		{http.MethodGet, "url=%2Fmissing.png&w=32", http.StatusNotFound},
+		{http.MethodPost, "url=%2Fbrand.png&w=32", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{http.MethodGet, "url=https%3A%2F%2Fexample.com%2Fbrand.png&w=32", http.StatusBadRequest, "invalid_source"},
+		{http.MethodGet, "url=%2Fbrand.png&w=31", http.StatusBadRequest, "unsupported_width"},
+		{http.MethodGet, "url=%2Fbrand.png&w=32&q=bad", http.StatusBadRequest, "invalid_quality"},
+		{http.MethodGet, "url=%2Fbrand.png&w=32&f=webp", http.StatusBadRequest, "unsupported_format"},
+		{http.MethodGet, "url=%2Fmissing.png&w=32", http.StatusNotFound, "source_not_found"},
 	}
 	for _, test := range tests {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(test.method, Route+"?"+test.query, nil))
 		if recorder.Code != test.status {
 			t.Fatalf("%s %s: status=%d body=%s", test.method, test.query, recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get(ImageErrorHeader); got != test.code {
+			t.Fatalf("%s %s: error code=%q, want %q", test.method, test.query, got, test.code)
 		}
 	}
 }

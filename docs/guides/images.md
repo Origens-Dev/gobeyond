@@ -1,12 +1,16 @@
 # Runtime images
 
 GoBeyond provides a portable `imageSrc()` helper and a Node-free Go image
-endpoint. The runtime loads sources from local disk when
+endpoint for local development and standalone deployments. Hosted GoBeyond
+deployments route this endpoint through the shared edge image service; the
+customer runtime is not used as an image-processing fallback. The runtime
+loads sources from local disk when
 `GOBEYOND_STATIC_DIR` is set, from S3 when
 `GOBEYOND_IMAGE_SOURCE_BUCKET` and `GOBEYOND_IMAGE_SOURCE_PREFIX` are set,
 and from explicitly allowlisted public HTTPS domains when
 `GOBEYOND_IMAGE_REMOTE_DOMAINS` is set. Disk takes precedence for local
-development; a deployment may combine its local/S3 source with remote images.
+development; a standalone deployment may combine its local/S3 source with
+remote images.
 
 The core `imageopt` package is AWS-free: it contains `Loader`, `DiskLoader`,
 `RemoteLoader`, `RouterLoader`, `Handler`, and the optimize path. S3 support lives in the nested module
@@ -132,20 +136,27 @@ deployment-owned source of truth:
 
 ```json
 {
-  "remoteDomains": ["images.ctfassets.net"]
+  "remoteDomains": ["images.ctfassets.net"],
+  "cacheSeconds": 2592000
 }
 ```
 
-The GoBeyond build validates the domains and emits the deployment manifest.
-The hosting platform injects the validated value as
-`GOBEYOND_IMAGE_REMOTE_DOMAINS` at runtime. Directly setting the environment
-variable remains supported for legacy deployments.
+`cacheSeconds` controls the public freshness lifetime of successful image
+variants at the hosting edge. It defaults to 3600 seconds and accepts values
+from 60 seconds through 31536000 seconds. Use a long lifetime when the source
+URL is content-addressed or otherwise immutable; change the source URL or use
+an edge purge when an existing variant must be replaced.
+
+The GoBeyond build validates the domains and cache lifetime and emits the
+deployment manifest. In hosted deployments, the platform publishes this
+non-secret policy to an immutable, deployment-scoped edge record. It is not
+injected into a customer runtime. Rollbacks switch the active deployment
+pointer while retaining historical policy records for cache isolation.
 
 The domains must be exact HTTPS domains or subdomain patterns. For example:
 
-```text
-GOBEYOND_IMAGE_REMOTE_DOMAINS=images.example.com,*.ctfassets.net
-```
+For standalone deployments only, the equivalent legacy environment variable is
+`GOBEYOND_IMAGE_REMOTE_DOMAINS=images.example.com,*.ctfassets.net`.
 
 Use the remote URL directly with `imageSrc()`:
 
@@ -153,11 +164,13 @@ Use the remote URL directly with `imageSrc()`:
 imageSrc("https://images.ctfassets.net/space/asset/photo.jpg", { w: 640 })
 ```
 
-The helper still emits a same-origin `/_gobeyond/image` URL. The deployment
-host fetches the approved remote source and performs the resize; the browser
-does not fetch the remote image directly. The remote loader validates redirects,
-rejects private-address DNS results, enforces HTTPS, and bounds the response
-size. Do not place provider management tokens in this configuration.
+The helper still emits a same-origin `/_gobeyond/image` URL. Hosted GoBeyond
+fetches the approved remote source at the edge, sends bounded bytes to the
+shared libvips service, and caches successful JPEG/PNG variants for the
+configured lifetime. The browser does not fetch the remote image directly.
+The hosted path enforces HTTPS, rejects credentials, ports, queries,
+fragments, traversal, and unapproved domains. Do not place provider
+management tokens in this configuration.
 
 Social preview images should remain direct, absolute HTTPS URLs such as
 `https://example.com/social/og.png`; do not route Open Graph or Twitter cards

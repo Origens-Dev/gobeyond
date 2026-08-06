@@ -235,9 +235,11 @@ func New(config Config) (*Server, error) {
 		config.Logger = slog.Default()
 	}
 	if config.ImageLoader == nil {
-		if staticDirectory := os.Getenv("GOBEYOND_STATIC_DIR"); staticDirectory != "" {
-			config.ImageLoader = imageopt.DiskLoader{Root: staticDirectory}
+		loader, err := imageopt.NewLoaderFromEnvironment(context.Background(), "")
+		if err != nil {
+			return nil, fmt.Errorf("configure image loader: %w", err)
 		}
+		config.ImageLoader = loader
 	}
 	if config.Deadlines.Loader <= 0 {
 		config.Deadlines.Loader = 10 * time.Second
@@ -449,7 +451,11 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 
 	switch {
 	case request.URL.Path == imageopt.Route:
-		s.imageHandler.ServeHTTP(writer, request)
+		imageWriter := &imageDiagnosticWriter{ResponseWriter: writer}
+		s.imageHandler.ServeHTTP(imageWriter, request)
+		if imageWriter.status >= http.StatusBadRequest {
+			s.logger.Warn("image request rejected", "request_id", requestID, "status", imageWriter.status, "error_code", imageWriter.Header().Get(imageopt.ImageErrorHeader))
+		}
 	case strings.HasPrefix(request.URL.Path, buildpaths.BuildsPrefix):
 		switch kind, _ := buildpaths.BuildPathKind(request.URL.Path); kind {
 		case buildpaths.KindRuntime:
@@ -464,6 +470,23 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	default:
 		s.serveDocument(writer, request, requestID)
 	}
+}
+
+type imageDiagnosticWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *imageDiagnosticWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *imageDiagnosticWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
 }
 
 type gzipResponseWriter struct {

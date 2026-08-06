@@ -361,6 +361,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		if err := writeJSONFile(filepath.Join(dist, "deploy", "image-config.json"), map[string]any{
 			"apiVersion":    "gobeyond.image-config/v1alpha1",
 			"remoteDomains": imageConfig.RemoteDomains,
+			"cacheSeconds":  imageConfig.CacheSeconds,
 		}); err != nil {
 			return err
 		}

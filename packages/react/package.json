@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/react",
-  "version": "0.1.0-alpha.18",
+  "version": "0.1.0-alpha.27",
   "description": "Pinned React hydration runtime for GoBeyond",
   "license": "MIT",
   "type": "module",
