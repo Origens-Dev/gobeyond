@@ -512,7 +512,10 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 		ModelID: definition.AI.Model, Instructions: definition.AI.Instructions,
 		Prompt: input.PromptText(), Messages: activities.MessagesFromAI(messages),
 		Tools: toolDefinitions, MaxSteps: maxSteps,
-		Stream:      updates.Options{StreamID: call.Run.ID, Scope: updates.Scope{AgentID: call.Run.AgentID}},
+		Stream: updates.Options{
+			StreamID: call.Run.ID, ConversationID: call.Session.ID,
+			Scope: updates.Scope{AgentID: call.Run.AgentID},
+		},
 		ToolContext: map[string]any{"gobeyondActor": call.Actor},
 	}
 	if definition.Config.Realtime {

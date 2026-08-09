@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/Origens-Dev/go-ai v0.1.0-alpha.1
-	github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.4
+	github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.5
 	github.com/aws/aws-lambda-go v1.49.0
 	github.com/klauspost/compress v1.19.1
 	github.com/redis/go-redis/v9 v9.21.0
