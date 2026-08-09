@@ -19,6 +19,11 @@ jobs:
           check-latest: true
       - uses: pnpm/action-setup@v4
       - run: go run ./cmd/gobeyond generate --go-only
+      # The durable example imports its ignored, compiler-owned workflow and
+      # agent projections. Materialize them in a clean checkout before vet.
+      - run: go run ./cmd/gobeyond generate --go-only
+        env:
+          GOBEYOND_WEBSITE: examples/durables-site
       - run: ./scripts/verify-public-boundaries.sh
       - run: go vet ./...
       - run: go test -race ./...
