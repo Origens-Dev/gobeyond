@@ -450,7 +450,7 @@ func httpMethodFuncs(file string) ([]string, error) {
 }
 
 func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, agents []AgentDefinition) ([]byte, error) {
-	needsGB := false
+	needsGB := len(apis) > 0
 	for _, page := range pages {
 		if page.HasPage {
 			needsGB = true

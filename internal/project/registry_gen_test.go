@@ -30,4 +30,20 @@ func TestRenderRegistryImportsGoBeyondOnlyForServerLoadedPages(t *testing.T) {
 	if !strings.Contains(string(dynamicRegistry), gbImport) {
 		t.Fatalf("server-loaded registry is missing GoBeyond import")
 	}
+
+	apiRegistry, err := renderRegistry("example.com/site", []pageWire{{
+		Route: Route{ID: "home", Pattern: "/"},
+	}}, []apiWire{{
+		Key:        "status",
+		Pattern:    "/api/status",
+		Alias:      "api0",
+		ImportPath: "example.com/site/generated/api/status",
+		Methods:    []string{"GET"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("render API registry: %v", err)
+	}
+	if !strings.Contains(string(apiRegistry), gbImport) {
+		t.Fatalf("API registry is missing GoBeyond import for gb.Handler")
+	}
 }
