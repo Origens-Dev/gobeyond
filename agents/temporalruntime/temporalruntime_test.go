@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -11,12 +14,111 @@ import (
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/go-temporal-ai-sdk/activities"
+	hostreviewconnector "github.com/Origens-Dev/go-temporal-ai-sdk/connectors/hostreview"
 	"github.com/Origens-Dev/go-temporal-ai-sdk/temporalai"
+	"github.com/Origens-Dev/go-temporal-ai-sdk/updates"
 	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 )
+
+type recordingDurableUpdates struct {
+	mu    sync.Mutex
+	order []string
+}
+
+func (s *recordingDurableUpdates) append(value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.order = append(s.order, value)
+}
+
+func (s *recordingDurableUpdates) BeginPreview(context.Context, updates.PreviewBeginEvent) error {
+	s.append("durable")
+	return nil
+}
+func (s *recordingDurableUpdates) CheckpointPreview(context.Context, updates.PreviewSnapshotEvent) error {
+	s.append("durable")
+	return nil
+}
+func (s *recordingDurableUpdates) EndPreview(context.Context, updates.PreviewEndEvent) error {
+	s.append("durable")
+	return nil
+}
+func (s *recordingDurableUpdates) UpsertRecord(context.Context, updates.RecordUpsertEvent) error {
+	s.append("durable")
+	return nil
+}
+func (s *recordingDurableUpdates) EndStream(context.Context, updates.StreamEndEvent) error {
+	s.append("durable")
+	return nil
+}
+
+func TestAIRegistryHostedConnectorCommitsThenPublishesBoundIdentity(t *testing.T) {
+	store := &recordingDurableUpdates{}
+	var published updates.RecordUpsertEvent
+	temporarySocket, err := os.CreateTemp("", "gb-agent-review-*.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := temporarySocket.Name()
+	if err := temporarySocket.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		store.append("broker")
+		if r.URL.Path != hostreviewconnector.IngestPath || r.Header.Get("X-Origens-Agent-Review-Protocol") != hostreviewconnector.Protocol {
+			t.Errorf("review request path=%q protocol=%q", r.URL.Path, r.Header.Get("X-Origens-Agent-Review-Protocol"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&published); err != nil {
+			t.Errorf("decode review event: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+		_ = os.Remove(socket)
+	})
+	t.Setenv(EnvHostedRuntime, "1")
+	t.Setenv(EnvHostReportSocket, socket)
+
+	model := ai.NewMockLanguageModel("assistant")
+	provider := ai.NewMockProvider()
+	provider.LanguageModels["assistant"] = model
+	registry := NewAIRegistry()
+	if err := RegisterAI(nil, registry, "support", agents.DefineAI(agents.AIConfig{
+		Durable: true, Model: "assistant", Provider: provider, Revision: "revision-1",
+		DurableUpdates: store,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	event := updates.NewRecordUpsertEvent("execution-1", updates.WorkflowRecord{
+		RecordID: "message:1", RecordVersion: 1, Kind: updates.RecordKindMessage,
+		Status: "completed", Data: map[string]any{"text": "hello"},
+		Scope: updates.Scope{AgentID: "support"}, UpdatedAt: 1,
+	}, "", 1)
+	event.ConversationID = "conversation-1"
+	event.CompiledRevision = "revision-1"
+	if err := (agentUpdateRouter{registry: registry}).UpsertRecord(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(store.order, []string{"durable", "broker"}) {
+		t.Fatalf("connector order = %v", store.order)
+	}
+	if published.AgentID != "support" || published.StreamID != "execution-1" || published.ConversationID != "conversation-1" {
+		t.Fatalf("published identity = %#v", published.BaseEvent)
+	}
+}
 
 func TestConventionHelpers(t *testing.T) {
 	workflowName, err := WorkflowName("Support-Agent")

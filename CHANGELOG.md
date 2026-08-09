@@ -6,6 +6,16 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.38 - 2026-08-09
+
+- Added per-agent customer-owned durable update stores for durable AI agents.
+  Hosted workers compose each exact compiled revision with the slot-private
+  host review publisher; local workers continue using only the durable
+  store.
+- Pinned `go-temporal-ai-sdk` alpha.8 so review events preserve agent,
+  conversation, execution, and compiled-revision identity through terminal
+  completion and enforce the broker's 64 KiB envelope.
+
 ## 0.1.0-alpha.37 - 2026-08-09
 
 - Publish the JavaScript workspace packages at the same release revision as

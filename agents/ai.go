@@ -12,6 +12,7 @@ import (
 	"github.com/Origens-Dev/go-ai/packages/bedrock"
 	"github.com/Origens-Dev/go-ai/packages/community/openrouter"
 	"github.com/Origens-Dev/go-ai/packages/vertex"
+	"github.com/Origens-Dev/go-temporal-ai-sdk/updates"
 )
 
 const defaultAIMaxSteps = 8
@@ -20,6 +21,15 @@ const defaultAIMaxSteps = 8
 // the alias here lets authored agents define tools without importing framework
 // runtime packages.
 type AITool = ai.Tool
+
+// DurableUpdateStore is the customer-owned durable half of a hosted agent
+// conversation connector. GoBeyond never receives its credentials. Hosted
+// workers compose it with the slot-private host review publisher; local
+// workers keep using the durable store without requiring platform services.
+type DurableUpdateStore interface {
+	updates.PreviewStore
+	updates.RecordStore
+}
 
 // AIConfig declares a framework-owned model/tool loop. Model uses
 // provider/model syntax for the built-in providers (anthropic, openrouter,
@@ -37,6 +47,9 @@ type AIConfig struct {
 	Provider     ai.Provider
 	Instructions string
 	Revision     string
+
+	DurableUpdates             DurableUpdateStore
+	OnReviewPublicationFailure func(context.Context, updates.UpdateEvent, error)
 }
 
 func (config AIConfig) baseConfig() Config {
