@@ -6,6 +6,12 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.36 - 2026-08-09
+
+- Keep durable agent conversation/session identity separate from each
+  execution stream in hosted review events, so live and retained review views
+  can group multiple runs without weakening per-run authorization.
+
 ## 0.1.0-alpha.35 - 2026-08-09
 
 - Resolve durable agent, tool, and subagent task queues as one validated graph:

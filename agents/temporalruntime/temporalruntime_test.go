@@ -99,7 +99,7 @@ func TestStartAIAgentUsesStableSDKRootAndCompiledRuntime(t *testing.T) {
 		t.Fatalf("AI workflow/options = %#v/%#v", fake.workflow, fake.options)
 	}
 	input, ok := fake.args[0].(temporalai.AgentInput)
-	if !ok || input.AgentID != "support-agent" || input.CompiledRevision != "revision-1" || input.ModelID != "assistant" || input.MaxSteps != 4 || input.Stream.StreamID != "run_2" || len(input.Messages) != 1 {
+	if !ok || input.AgentID != "support-agent" || input.CompiledRevision != "revision-1" || input.ModelID != "assistant" || input.MaxSteps != 4 || input.Stream.StreamID != "run_2" || input.Stream.ConversationID != "ses_1" || len(input.Messages) != 1 {
 		t.Fatalf("AI Temporal input = %#v", fake.args[0])
 	}
 	if output, ok := emitter.data.(agents.AIOutput); !ok || output.Text != "hello" {
