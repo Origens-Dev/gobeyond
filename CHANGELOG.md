@@ -6,6 +6,12 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.39 - 2026-08-09
+
+- Fixed API-only generated registries so projects with static pages and API
+  routes import the GoBeyond handler contract and compile under the v4 output
+  layout.
+
 ## 0.1.0-alpha.38 - 2026-08-09
 
 - Added per-agent customer-owned durable update stores for durable AI agents.
