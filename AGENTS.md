@@ -2,7 +2,7 @@
 
 GoBeyond is website-first. React owns content and component composition; Go
 begins at request-time data, actions, middleware, API boundaries, and durable
-workers under `workers/`.
+workflow definitions under `workflows/`.
 
 ## Always-on guardrails
 
@@ -11,12 +11,20 @@ workers under `workers/`.
 - Keep route-specific mutations in a sibling `actions.go` and HTTP endpoints in
   `app/api/**/route.go`. Put reusable Go services and policy in ordinary
   `internal/` packages, never in a second route tree.
-- Keep durable tasks/workflows in `workers/<id>/durables.go` only (use
-  `workers/default/durables.go` for the default worker; keep `package durables`
-  because `default` is a Go keyword). Root `workers/durables.go` is rejected.
-  Do not import one worker from another; share code via `internal/`. Task queues
-  are `{workerId}__{environment}` (local environment is `local`).
-- Authors write `app/`, `workers/`, and `internal/` only. Generated
+- Keep durable definitions in `workflows/<id>/workflow.go` or a standalone
+  `workflows/<id>/activity.go`. Workflow-owned activities live under
+  `activities/<id>/activity.go`; owned subworkflows live under
+  `subworkflows/<id>/workflow.go`. Root `workflows/*.go` is rejected. Define
+  exported `var Workflow = workflows.Define(...)` or
+  `var Activity = workflows.DefineActivity(...)`; generated workers register
+  them. Do not import one authored definition package from another; share code
+  via `internal/`. TaskQueue is logical (`orders`), while runtime workers use
+  `{taskQueueId}__{environment}` (local environment is `local`).
+- Keep agent definitions in `agents/<id>/agent.go` with an exported
+  `var Agent = agents.Define(...)`. Agent configs and tool, skill, subagent,
+  schedule, and channel slots must remain compiler-visible literals. Direct is
+  the zero-value execution mode; durable agents opt in with `Durable: true`.
+- Authors write `app/`, `agents/`, `workflows/`, and `internal/` only. Generated
   projections, contracts, registries, and process mains live under `generated/`.
 - Do not move React component composition into Go handlers.
 - Initial Go-rendered markup must stay inside the documented portable profile.

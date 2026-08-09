@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/internal/project"
 	"github.com/Origens-Dev/gobeyond/pack"
@@ -34,23 +35,25 @@ const (
 )
 
 type devOptions struct {
-	port int
+	port      int
+	workflows bool
 }
 
 func parseDevOptions(args []string) (devOptions, error) {
 	set := flag.NewFlagSet("dev", flag.ContinueOnError)
 	port := set.Int("port", defaultDevPort, "public development server port")
 	set.IntVar(port, "p", defaultDevPort, "public development server port")
+	noWorkflows := set.Bool("no-workflows", false, "do not launch local workflow queue workers")
 	if err := set.Parse(args); err != nil {
 		return devOptions{}, err
 	}
 	if set.NArg() != 0 {
-		return devOptions{}, errors.New("usage: gobeyond dev [--port PORT]")
+		return devOptions{}, errors.New("usage: gobeyond dev [--port PORT] [--no-workflows]")
 	}
 	if *port < 1 || *port > 65535 {
 		return devOptions{}, errors.New("development port must be between 1 and 65535")
 	}
-	return devOptions{port: *port}, nil
+	return devOptions{port: *port, workflows: !*noWorkflows}, nil
 }
 
 func dev(root string, args []string) error {
@@ -121,6 +124,12 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 	defer func() { current.stop() }()
 	gateway.switchTarget(current.target)
 	fmt.Printf("GoBeyond dev ready on %s (internal %s)\n", publicOrigin, current.target.Host)
+	var workflowSupervisor *devWorkflowSupervisor
+	if options.workflows {
+		workflowSupervisor = newDevWorkflowSupervisor(ctx, root, environment, gb.LocalEnvironment)
+		workflowSupervisor.replace(current.buildDirectory)
+		defer workflowSupervisor.close()
+	}
 	compilerCLI, err := preparedCompilerCLI(root)
 	if err != nil {
 		return err
@@ -194,6 +203,9 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 			current = candidate
 			builtSnapshot = nextSnapshot
 			gateway.switchTarget(candidate.target)
+			if workflowSupervisor != nil {
+				workflowSupervisor.replace(candidate.buildDirectory)
+			}
 			gateway.broadcast(devEvent{name: "reload"})
 			fmt.Printf("GoBeyond dev switched to internal %s in %s\n", candidate.target.Host, time.Since(buildStarted).Round(time.Millisecond))
 			go func(backend *devBackend, buildDirectory string) {
@@ -228,11 +240,16 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 		return devRebuildFull
 	}
 	internalPrefix := strings.TrimSuffix(filepath.ToSlash(internalRoot), "/") + "/"
-	workersRoot, err := filepath.Rel(root, filepath.Join(website, "workers"))
+	workflowsRoot, err := filepath.Rel(root, filepath.Join(website, "workflows"))
 	if err != nil {
 		return devRebuildFull
 	}
-	workersPrefix := strings.TrimSuffix(filepath.ToSlash(workersRoot), "/") + "/"
+	workflowsPrefix := strings.TrimSuffix(filepath.ToSlash(workflowsRoot), "/") + "/"
+	agentsRoot, err := filepath.Rel(root, filepath.Join(website, "agents"))
+	if err != nil {
+		return devRebuildFull
+	}
+	agentsPrefix := strings.TrimSuffix(filepath.ToSlash(agentsRoot), "/") + "/"
 	changed := false
 	for path, previousDigest := range previous {
 		nextDigest, exists := next[path]
@@ -243,7 +260,7 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 			continue
 		}
 		changed = true
-		if !devGoOnlyPath(path, serverPrefix, appPrefix, internalPrefix, workersPrefix) {
+		if !devGoOnlyPath(path, serverPrefix, appPrefix, internalPrefix, workflowsPrefix, agentsPrefix) {
 			return devRebuildFull
 		}
 	}
@@ -258,11 +275,11 @@ func classifyDevRebuild(previous, next map[string]string, root, website string) 
 	return devRebuildNone
 }
 
-func devGoOnlyPath(file, serverPrefix, appPrefix, internalPrefix, workersPrefix string) bool {
+func devGoOnlyPath(file, serverPrefix, appPrefix, internalPrefix, workflowsPrefix, agentsPrefix string) bool {
 	if (strings.HasPrefix(file, serverPrefix) || strings.HasPrefix(file, internalPrefix)) && filepath.Ext(file) == ".go" {
 		return true
 	}
-	if strings.HasPrefix(file, workersPrefix) && path.Base(file) == "durables.go" {
+	if (strings.HasPrefix(file, workflowsPrefix) || strings.HasPrefix(file, agentsPrefix)) && filepath.Ext(file) == ".go" {
 		return true
 	}
 	if !strings.HasPrefix(file, appPrefix) {
@@ -328,6 +345,23 @@ func buildDevGoServer(root, currentBuild, candidateBuild string, environment []s
 	if err := runCommandWithEnvironment(root, environment, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", serverOutput, target); err != nil {
 		return fmt.Errorf("build Go server: %w", err)
 	}
+	workerTargets, err := workerBuildTargets(website)
+	if err != nil {
+		return err
+	}
+	workersOutput := filepath.Join(candidateBuild, buildpaths.WorkersDir)
+	if err := os.RemoveAll(workersOutput); err != nil {
+		return fmt.Errorf("replace development workflow workers: %w", err)
+	}
+	for _, workerTarget := range workerTargets {
+		workerOutput := filepath.Join(workersOutput, workerTarget.ID, buildpaths.WorkerEntryName)
+		if err := os.MkdirAll(filepath.Dir(workerOutput), 0o755); err != nil {
+			return err
+		}
+		if err := runCommandWithEnvironment(root, withEnvironment(environment, "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", workerOutput, workerTarget.PackageDir); err != nil {
+			return fmt.Errorf("build workflow queue %s: %w", workerTarget.ID, err)
+		}
+	}
 	return nil
 }
 
@@ -366,6 +400,7 @@ func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin str
 		"GOBEYOND_STATIC_PACK="+filepath.Join(buildDirectory, "server", "runtime-data", "static-build"+pack.ExtStatic),
 		"GOBEYOND_RUNTIME_DATA_DIR="+filepath.Join(buildDirectory, "server", "runtime-data"),
 		"GOBEYOND_STATIC_DIR="+filepath.Join(buildDirectory, "static"),
+		"GOBEYOND_AGENT_DEV_LOOPBACK=1",
 	)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	if err := command.Start(); err != nil {

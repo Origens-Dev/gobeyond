@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1619,30 +1620,35 @@ func workersDeployManifest(workerEntries []map[string]any) map[string]any {
 	}
 }
 
-// workerBuildTargets resolves generated per-worker Go main packages under
-// generated/cmd/workers/<id>.
+// workerBuildTargets resolves the private worker processes generated for each
+// public logical workflow queue under generated/cmd/workflows/<queue>.
 func workerBuildTargets(website string) ([]workerBuildTargetInfo, error) {
-	workers, err := project.DiscoverWorkers(website)
+	definitions, err := project.DiscoverWorkflowDefinitions(website)
 	if err != nil {
 		return nil, err
 	}
-	if len(workers) == 0 {
+	agents, err := project.DiscoverAgentDefinitions(website)
+	if err != nil {
+		return nil, err
+	}
+	queues := project.GroupWorkerQueues(definitions, agents)
+	if len(queues) == 0 {
 		return nil, nil
 	}
 	var targets []workerBuildTargetInfo
-	for _, worker := range workers {
-		dir := filepath.Join(website, project.GeneratedDir, "cmd", "workers", worker.ID)
+	for _, queue := range queues {
+		dir := filepath.Join(website, project.GeneratedDir, "cmd", "workflows", queue.ID)
 		info, statErr := os.Stat(dir)
 		if statErr != nil {
 			if errors.Is(statErr, os.ErrNotExist) {
-				return nil, fmt.Errorf("worker %q entry missing; run gobeyond generate (expected %s)", worker.ID, dir)
+				return nil, fmt.Errorf("workflow queue %q entry missing; run gobeyond generate (expected %s)", queue.ID, dir)
 			}
 			return nil, statErr
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("worker entry %s must be a directory", dir)
+			return nil, fmt.Errorf("workflow queue entry %s must be a directory", dir)
 		}
-		targets = append(targets, workerBuildTargetInfo{ID: worker.ID, Key: worker.Key, PackageDir: dir})
+		targets = append(targets, workerBuildTargetInfo{ID: queue.ID, Key: queue.Key, PackageDir: dir})
 	}
 	return targets, nil
 }
@@ -1707,8 +1713,12 @@ func writeJSONFile(path string, value any) error {
 func preview(root string, args []string) error {
 	set := flag.NewFlagSet("preview", flag.ContinueOnError)
 	address := set.String("addr", ":8080", "listen address")
+	noWorkflows := set.Bool("no-workflows", false, "do not launch local workflow queue workers")
 	if err := set.Parse(args); err != nil {
 		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("usage: gobeyond preview [--addr ADDRESS] [--no-workflows]")
 	}
 	serverBinary := filepath.Join(root, "dist", "server", "gobeyond-server")
 	manifestPath := filepath.Join(root, "dist", "server", "runtime-manifest.json")
@@ -1729,6 +1739,13 @@ func preview(root string, args []string) error {
 	if err != nil {
 		return err
 	}
+	if !*noWorkflows {
+		workflowContext, cancelWorkflows := context.WithCancel(context.Background())
+		defer cancelWorkflows()
+		workflowSupervisor := newDevWorkflowSupervisor(workflowContext, root, environment, gb.PreviewEnvironment)
+		workflowSupervisor.replace(filepath.Join(root, "dist"))
+		defer workflowSupervisor.close()
+	}
 	host := *address
 	if strings.HasPrefix(host, ":") {
 		host = "localhost" + host
@@ -1738,6 +1755,8 @@ func preview(root string, args []string) error {
 	command := exec.Command(serverBinary)
 	command.Dir = root
 	command.Env = withEnvironment(environment,
+		"GOBEYOND_AGENT_DEV_LOOPBACK=1",
+		"GOBEYOND_TEMPORAL_ENVIRONMENT="+gb.PreviewEnvironment,
 		"GOBEYOND_ADDR="+*address,
 		"GOBEYOND_BUILD_ID="+manifest.BuildID,
 		"GOBEYOND_PUBLIC_ORIGIN=http://"+host,

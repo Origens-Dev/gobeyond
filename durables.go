@@ -4,52 +4,37 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
 // Durable length budgets (ADR 006). Stricter than Temporal's 1000-byte ID limit.
 const (
-	MaxWorkerIDBytes     = 48
-	MaxEnvironmentBytes  = 32
-	MaxTaskQueueBytes    = 82 // workerId + "__" + environment
-	TaskQueueSeparator   = "__"
-	DefaultWorkerID      = "default"
-	LocalEnvironment     = "local"
-	PreviewEnvironment   = "preview"
+	MaxTaskQueueIDBytes = 48
+	MaxEnvironmentBytes = 32
+	MaxTaskQueueBytes   = 82 // taskQueueId + "__" + environment
+	TaskQueueSeparator  = "__"
+	DefaultTaskQueueID  = "default"
+	LocalEnvironment    = "local"
+	PreviewEnvironment  = "preview"
 )
 
 var durableNameCharset = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// TaskConfig declares compiler-visible metadata for a standalone durable task
-// (Temporal activity in the Temporal adapter). Authors do not set a full task
-// queue name; the platform resolves {workerId}__{environment}.
-type TaskConfig struct {
-	Name    string
-	Timeout time.Duration
-}
-
-// WorkflowConfig declares compiler-visible metadata for a durable workflow.
-type WorkflowConfig struct {
-	Name             string
-	ExecutionTimeout time.Duration
-}
-
-// NormalizeWorkerID validates and returns a worker id suitable for queue names.
+// NormalizeTaskQueueID validates and returns a logical task queue id.
 // Empty becomes "default".
-func NormalizeWorkerID(id string) (string, error) {
+func NormalizeTaskQueueID(id string) (string, error) {
 	id = strings.TrimSpace(strings.ToLower(id))
 	if id == "" {
-		id = DefaultWorkerID
+		id = DefaultTaskQueueID
 	}
 	if utf8.RuneCountInString(id) != len(id) {
 		return "", fmt.Errorf("worker id %q must be ASCII", id)
 	}
-	if len(id) > MaxWorkerIDBytes {
-		return "", fmt.Errorf("worker id %q exceeds %d bytes", id, MaxWorkerIDBytes)
+	if len(id) > MaxTaskQueueIDBytes {
+		return "", fmt.Errorf("task queue id %q exceeds %d bytes", id, MaxTaskQueueIDBytes)
 	}
 	if !durableNameCharset.MatchString(id) {
-		return "", fmt.Errorf("worker id %q must match [a-z0-9]+(?:-[a-z0-9]+)*", id)
+		return "", fmt.Errorf("task queue id %q must match [a-z0-9]+(?:-[a-z0-9]+)*", id)
 	}
 	return id, nil
 }
@@ -72,9 +57,9 @@ func NormalizeEnvironment(env string) (string, error) {
 	return env, nil
 }
 
-// TaskQueueName returns {workerId}__{environment}.
-func TaskQueueName(workerID, environment string) (string, error) {
-	workerID, err := NormalizeWorkerID(workerID)
+// TaskQueueName returns {taskQueueId}__{environment}.
+func TaskQueueName(taskQueueID, environment string) (string, error) {
+	taskQueueID, err := NormalizeTaskQueueID(taskQueueID)
 	if err != nil {
 		return "", err
 	}
@@ -82,7 +67,7 @@ func TaskQueueName(workerID, environment string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	queue := workerID + TaskQueueSeparator + environment
+	queue := taskQueueID + TaskQueueSeparator + environment
 	if len(queue) > MaxTaskQueueBytes {
 		return "", fmt.Errorf("task queue %q exceeds %d bytes", queue, MaxTaskQueueBytes)
 	}

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	gb "github.com/Origens-Dev/gobeyond"
-	echoOnce "github.com/Origens-Dev/gobeyond/examples/durables-site/generated/contracts/actions/r_durables_259a06a8_start_echo_once"
 	startDemo "github.com/Origens-Dev/gobeyond/examples/durables-site/generated/contracts/actions/r_durables_259a06a8_start_demo"
+	echoOnce "github.com/Origens-Dev/gobeyond/examples/durables-site/generated/contracts/actions/r_durables_259a06a8_start_echo_once"
 	"go.temporal.io/sdk/client"
 )
 
@@ -30,7 +30,7 @@ func StartDemo(ctx *gb.ActionContext, _ startDemo.Input) (startDemo.Output, erro
 }
 
 func startWorkflow(ctx *gb.ActionContext, workflowName, message string) (string, error) {
-	queue, err := gb.TaskQueueName(gb.DefaultWorkerID, gb.LocalEnvironment)
+	queue, err := gb.TaskQueueName(gb.DefaultTaskQueueID, gb.LocalEnvironment)
 	if err != nil {
 		return "", err
 	}

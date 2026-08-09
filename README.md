@@ -63,6 +63,11 @@ origin props caching. Do not edit generated `page.schema.ts` files.
 - Static build props and metadata are packaged with the Go server and loaded
   once at startup, so middleware-promoted static pages and soft navigation do
   not execute Node or fetch rendering data from object storage.
+- Filesystem agents under `agents/` run directly by default or opt into
+  Temporal durability per definition. `DefineAI` compiles `instructions.md`,
+  Go AI SDK streaming/tools, and granular Temporal AI SDK model/tool steps;
+  authored workflows and standalone activities live under `workflows/` and
+  resolve logical task queues at build.
 - The production artifact audit rejects Node/npm executables and dependency
   trees in `dist/server`.
 
@@ -158,6 +163,9 @@ Preview the complete built site (static assets plus dynamic Go pages):
 ```bash
 go run ./cmd/gobeyond preview
 ```
+
+Preview also runs locally built workflow queue pollers when present. Pass
+`--no-workflows` to serve only the website artifact.
 
 ## Portable React boundary
 

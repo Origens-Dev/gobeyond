@@ -24,6 +24,17 @@ const gobeyondModulePath = "github.com/Origens-Dev/gobeyond"
 // Authored app directories remain editor inputs and are never imported by the
 // production server.
 func SyncGoSources(root string, routes []Route, check bool) error {
+	// Callers that project sources outside Write do not have the finalized
+	// build identity. Use the full source fingerprint as a conservative fallback
+	// so generated AI registrations still cannot silently drift.
+	buildID, err := BuildID(root, routes)
+	if err != nil {
+		return err
+	}
+	return syncGoSources(root, routes, buildID, check)
+}
+
+func syncGoSources(root string, routes []Route, buildID string, check bool) error {
 	moduleRoot, modulePath, goVersion, err := findModule(root)
 	if err != nil {
 		return err
@@ -33,7 +44,8 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 	generatedRoot := filepath.Join(root, GeneratedDir)
 	routeTree := filepath.Join(generatedRoot, "routes")
 	apiTree := filepath.Join(generatedRoot, "api")
-	workerTree := filepath.Join(generatedRoot, "workers")
+	workflowTree := filepath.Join(generatedRoot, "workflows")
+	agentTree := filepath.Join(generatedRoot, "agents")
 	cmdTree := filepath.Join(generatedRoot, "cmd")
 	registryTree := filepath.Join(generatedRoot, "registry")
 
@@ -132,38 +144,90 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 		return err
 	}
 
-	workers, err := DiscoverWorkers(root)
+	workflowDefinitions, err := DiscoverWorkflowDefinitions(root)
 	if err != nil {
 		return err
 	}
-	for _, worker := range workers {
-		authorFile := filepath.Join(root, filepath.FromSlash(worker.DurablesFile))
-		authorDir := filepath.Dir(authorFile)
+	for _, definition := range workflowDefinitions {
+		authorDir := filepath.Join(root, filepath.FromSlash(definition.SourceDir))
 		moduleFile := filepath.Join(authorDir, "go.mod")
-		moduleOutputs[moduleFile], err = routeModule(moduleRoot, modulePath, websiteImport, goVersion, authorDir, worker.Key)
+		moduleOutputs[moduleFile], err = routeModule(moduleRoot, modulePath, websiteImport, goVersion, authorDir, definition.Key)
 		if err != nil {
 			return err
 		}
-		content, readErr := os.ReadFile(authorFile)
-		if readErr != nil {
-			return readErr
+		for _, relativeFile := range definition.SourceFiles {
+			authorFile := filepath.Join(root, filepath.FromSlash(relativeFile))
+			content, readErr := os.ReadFile(authorFile)
+			if readErr != nil {
+				return readErr
+			}
+			content, err = migrateAuthorGeneratedImports(root, authorFile, content, check)
+			if err != nil {
+				return err
+			}
+			if _, parseErr := parseRouteSource(root, authorFile, content, websiteImport); parseErr != nil {
+				return parseErr
+			}
+			outputs[filepath.Join(workflowTree, definition.Key, filepath.Base(authorFile))], err = projectedSource(root, authorFile, content)
+			if err != nil {
+				return err
+			}
 		}
-		content, err = migrateAuthorGeneratedImports(root, authorFile, content, check)
+		registration, registrationErr := generatedWorkflowRegistration(definition)
+		if registrationErr != nil {
+			return registrationErr
+		}
+		outputs[filepath.Join(workflowTree, definition.Key, "gobeyond_register_gen.go")] = registration
+	}
+	if len(workflowDefinitions) > 0 {
+		references, referencesErr := generatedWorkflowReferences(workflowDefinitions)
+		if referencesErr != nil {
+			return referencesErr
+		}
+		outputs[filepath.Join(workflowTree, "references", "references_gen.go")] = references
+	}
+	agentDefinitions, err := DiscoverAgentDefinitions(root)
+	if err != nil {
+		return err
+	}
+	setAIAgentRevisions(agentDefinitions, buildID)
+	for _, definition := range agentDefinitions {
+		authorDir := filepath.Join(root, filepath.FromSlash(definition.SourceDir))
+		moduleFile := filepath.Join(authorDir, "go.mod")
+		moduleOutputs[moduleFile], err = routeModule(moduleRoot, modulePath, websiteImport, goVersion, authorDir, definition.Key)
 		if err != nil {
 			return err
 		}
-		if _, parseErr := parseRouteSource(root, authorFile, content, websiteImport); parseErr != nil {
-			return parseErr
+		for _, relativeFile := range definition.SourceFiles {
+			authorFile := filepath.Join(root, filepath.FromSlash(relativeFile))
+			content, readErr := os.ReadFile(authorFile)
+			if readErr != nil {
+				return readErr
+			}
+			content, err = migrateAuthorGeneratedImports(root, authorFile, content, check)
+			if err != nil {
+				return err
+			}
+			if _, parseErr := parseRouteSource(root, authorFile, content, websiteImport); parseErr != nil {
+				return parseErr
+			}
+			outputs[filepath.Join(agentTree, definition.Key, filepath.Base(authorFile))], err = projectedSource(root, authorFile, content)
+			if err != nil {
+				return err
+			}
 		}
-		outputs[filepath.Join(workerTree, worker.Key, "durables.go")], err = projectedSource(root, authorFile, content)
-		if err != nil {
-			return err
+		registration, registrationErr := generatedAgentRegistration(definition)
+		if registrationErr != nil {
+			return registrationErr
 		}
-		mainSource, mainErr := generatedWorkerMain(websiteImport, worker)
+		outputs[filepath.Join(agentTree, definition.Key, "gobeyond_register_gen.go")] = registration
+	}
+	for _, queue := range GroupWorkerQueues(workflowDefinitions, agentDefinitions) {
+		mainSource, mainErr := generatedWorkflowMain(websiteImport, queue)
 		if mainErr != nil {
 			return mainErr
 		}
-		outputs[filepath.Join(cmdTree, "workers", worker.ID, "main.go")] = mainSource
+		outputs[filepath.Join(cmdTree, "workflows", queue.ID, "main.go")] = mainSource
 	}
 
 	siteOutputs, err := generateSiteArtifacts(root, websiteImport, routes)
@@ -186,7 +250,15 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 	if err := cleanGeneratedTree(apiTree, outputs, false, false); err != nil {
 		return err
 	}
-	if err := cleanGeneratedTree(workerTree, outputs, false, false); err != nil {
+	if err := cleanGeneratedTree(workflowTree, outputs, false, false); err != nil {
+		return err
+	}
+	if err := cleanGeneratedTree(agentTree, outputs, false, false); err != nil {
+		return err
+	}
+	// Generated workers/ was the pre-workflows authoring projection. It is not
+	// a deployment ABI and can be removed safely after the hard source migration.
+	if err := cleanGeneratedTree(filepath.Join(generatedRoot, "workers"), outputs, false, false); err != nil {
 		return err
 	}
 	if err := cleanGeneratedTree(registryTree, outputs, false, false); err != nil {
@@ -201,7 +273,10 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 	if err := cleanManagedModules(filepath.Join(root, "app"), moduleOutputs, false); err != nil {
 		return err
 	}
-	if err := cleanManagedModules(filepath.Join(root, "workers"), moduleOutputs, false); err != nil {
+	if err := cleanManagedModules(filepath.Join(root, "workflows"), moduleOutputs, false); err != nil {
+		return err
+	}
+	if err := cleanManagedModules(filepath.Join(root, "agents"), moduleOutputs, false); err != nil {
 		return err
 	}
 	for _, rel := range []string{
@@ -318,14 +393,19 @@ func parseRouteSource(root, file string, content []byte, websiteImport string) (
 		if unquoteErr != nil {
 			return nil, fmt.Errorf("%s: invalid import %s", authorPath(root, file), imported.Path.Value)
 		}
+		generatedWorkflowImport := websiteImport + "/" + GeneratedDir + "/workflows/"
+		importsGeneratedWorkflowDefinition := strings.HasPrefix(importPath, generatedWorkflowImport) && importPath != generatedWorkflowImport+"references"
 		if importPath == websiteImport+"/app" || strings.HasPrefix(importPath, websiteImport+"/app/") ||
-			strings.HasPrefix(importPath, websiteImport+"/workers/") || importPath == websiteImport+"/workers" ||
+			strings.HasPrefix(importPath, websiteImport+"/workflows/") || importPath == websiteImport+"/workflows" ||
+			strings.HasPrefix(importPath, websiteImport+"/agents/") || importPath == websiteImport+"/agents" ||
 			strings.HasPrefix(importPath, websiteImport+"/"+GeneratedDir+"/routes/") ||
-			strings.HasPrefix(importPath, websiteImport+"/"+GeneratedDir+"/workers/") ||
+			importsGeneratedWorkflowDefinition ||
+			strings.HasPrefix(importPath, websiteImport+"/"+GeneratedDir+"/agents/") ||
 			strings.HasPrefix(importPath, websiteImport+"/internal/gobeyondgen/routes/") ||
-			strings.HasPrefix(importPath, websiteImport+"/internal/gobeyondgen/workers/") {
+			strings.HasPrefix(importPath, websiteImport+"/internal/gobeyondgen/workflows/") ||
+			strings.HasPrefix(importPath, websiteImport+"/internal/gobeyondgen/agents/") {
 			position := files.Position(imported.Path.Pos())
-			return nil, fmt.Errorf("%s:%d:%d imports route-owned package %q; share ordinary Go code under internal/ instead of importing app/ or workers/ packages", authorPath(root, file), position.Line, position.Column, importPath)
+			return nil, fmt.Errorf("%s:%d:%d imports framework-owned package %q; share ordinary Go code under internal/ and use generated workflow references instead of importing app/ or workflows/ packages", authorPath(root, file), position.Line, position.Column, importPath)
 		}
 	}
 	return parsed, nil

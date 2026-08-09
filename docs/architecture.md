@@ -20,9 +20,15 @@ remain fatal.
   `app/api/**/route.go` stay beside the route they serve.
 - `internal/`: reusable Go services, policy, and integrations that are not
   owned by one route.
+- `agents/`: compiler-visible agent definitions. An `agents/<id>/agent.go`
+  package exports `var Agent = agents.Define(...)` for a typed handler or
+  `agents.DefineAI(...)` plus `instructions.md` for a framework-owned model/tool
+  loop; direct execution is the default and durable agents opt in explicitly.
+- `workflows/`: compiler-visible Temporal workflow and activity definitions,
+  grouped by definition folder and resolved logical task queue.
 - `generated/`: gobeyond-owned contracts, registries, process mains, and
   ignored safe Go projection packages. The runtime imports projections, never
-  source directories below `app/`. Authors write `app/`, `workers/`, and
+  source directories below `app/`. Authors write `app/`, `agents/`, `workflows/`, and
   `internal/` only.
 - `render-plans/`: versioned language-neutral render artifacts packaged with the server.
 
@@ -116,7 +122,11 @@ Optional request middleware is a website-root `middleware.go` exporting
 `Middleware() []gbmiddleware.Rule`. Omit the file when unused. Cache wiring and
 `ctx.PublicOrigin` are owned by the generated registry/runtime; `internal/` is
 for ordinary app code. Next-compatible Metadata files (`robots`, `sitemap`, `manifest`, icons, Open Graph / Twitter images) live under `app/` and are materialized into `dist/static` at build time. `public/` remains a generic static escape hatch.
-Process mains are generated under `generated/cmd/{site,workers}`.
+Process mains are generated under `generated/cmd/{site,workflows}`. Durable
+authors define workflow and activity packages under `workflows/`; the durable
+runtime artifacts intentionally remain worker-shaped (`dist/workers/` and
+`dist/deploy/workers.json`) because they describe Temporal poller processes,
+not the authored source tree.
 
 When the Go process serves origin static files itself (local preview, or an
 origin without CloudFront in front), wrap the server with

@@ -15,7 +15,7 @@ import (
 
 func TestParseDevOptions(t *testing.T) {
 	defaults, err := parseDevOptions(nil)
-	if err != nil || defaults.port != 3000 {
+	if err != nil || defaults.port != 3000 || !defaults.workflows {
 		t.Fatalf("defaults = %#v, %v", defaults, err)
 	}
 	long, err := parseDevOptions([]string{"--port", "4310"})
@@ -25,6 +25,10 @@ func TestParseDevOptions(t *testing.T) {
 	short, err := parseDevOptions([]string{"-p", "4311"})
 	if err != nil || short.port != 4311 {
 		t.Fatalf("-p = %#v, %v", short, err)
+	}
+	withoutWorkflows, err := parseDevOptions([]string{"--no-workflows"})
+	if err != nil || withoutWorkflows.workflows {
+		t.Fatalf("--no-workflows = %#v, %v", withoutWorkflows, err)
 	}
 	for _, args := range [][]string{{"--port", "0"}, {"--port", "65536"}, {"3001"}} {
 		if _, err := parseDevOptions(args); err == nil {
@@ -41,6 +45,8 @@ func TestClassifyDevRebuildUsesGoOnlyFastPathConservatively(t *testing.T) {
 	coLocatedActions := "examples/seo-site/app/products/[slug]/actions.go"
 	coLocatedAPI := "examples/seo-site/app/api/time/route.go"
 	sharedInternal := "examples/seo-site/internal/site/site.go"
+	workflow := "examples/seo-site/workflows/process-order/workflow.go"
+	agent := "examples/seo-site/agents/support/agent.go"
 	page := "examples/seo-site/app/products/[slug]/page.tsx"
 	previous := map[string]string{
 		serverPage:       "go-v1",
@@ -48,6 +54,8 @@ func TestClassifyDevRebuildUsesGoOnlyFastPathConservatively(t *testing.T) {
 		coLocatedActions: "actions-go-v1",
 		coLocatedAPI:     "api-go-v1",
 		sharedInternal:   "internal-go-v1",
+		workflow:         "workflow-go-v1",
+		agent:            "agent-go-v1",
 		page:             "tsx-v1",
 	}
 
@@ -61,7 +69,7 @@ func TestClassifyDevRebuildUsesGoOnlyFastPathConservatively(t *testing.T) {
 	if got := classifyDevRebuild(previous, goEdit, root, website); got != devRebuildGoOnly {
 		t.Fatalf("existing server Go edit mode = %d", got)
 	}
-	for _, file := range []string{coLocatedPage, coLocatedActions, coLocatedAPI, sharedInternal} {
+	for _, file := range []string{coLocatedPage, coLocatedActions, coLocatedAPI, sharedInternal, workflow, agent} {
 		goEdit = cloneDevSnapshot(previous)
 		goEdit[file] = "go-v2"
 		if got := classifyDevRebuild(previous, goEdit, root, website); got != devRebuildGoOnly {

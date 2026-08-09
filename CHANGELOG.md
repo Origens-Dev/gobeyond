@@ -6,6 +6,20 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+- Add filesystem agents under `agents/<id>/`, including typed handlers and
+  framework-owned Go AI SDK model/tool loops with direct or per-agent Temporal
+  durability, native session/SSE APIs, and browser-safe TypeScript transport.
+- Replace the authored `workers/` layout with compiler-discovered
+  `workflows/<id>/` definitions for workflows, owned activities/subworkflows,
+  and standalone activities with deterministic logical task-queue inheritance.
+- Generate one Temporal poller binary per resolved task queue and supervise
+  those pollers during `gobeyond dev` and `gobeyond preview`, with distinct
+  `__local` and `__preview` physical queues.
+- Fence durable AI runtimes by finalized build revision, route model and tool
+  execution through granular Temporal activities, acknowledge cancellation
+  only after dispatch succeeds, and reject approval-gated tools until shared
+  interaction delivery is available.
+
 ## 0.1.0-alpha.26 - 2026-08-01
 
 - `@go-beyond/compiler` forwards typed all-required props into portable local

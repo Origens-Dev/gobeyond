@@ -10,7 +10,7 @@ func TestRenderRegistryImportsGoBeyondOnlyForServerLoadedPages(t *testing.T) {
 
 	staticRegistry, err := renderRegistry("example.com/site", []pageWire{{
 		Route: Route{ID: "home", Pattern: "/"},
-	}}, nil, nil, false)
+	}}, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("render static registry: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestRenderRegistryImportsGoBeyondOnlyForServerLoadedPages(t *testing.T) {
 		Alias:      "page0",
 		ImportPath: "example.com/site/generated/routes/home",
 		HasPage:    true,
-	}}, nil, nil, false)
+	}}, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("render dynamic registry: %v", err)
 	}

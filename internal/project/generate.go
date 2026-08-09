@@ -20,6 +20,45 @@ type Manifest struct {
 	Routes     []Route `json:"routes"`
 }
 
+type WorkflowsManifest struct {
+	APIVersion  string                       `json:"apiVersion"`
+	Definitions []WorkflowManifestDefinition `json:"definitions"`
+	TaskQueues  []WorkflowManifestQueue      `json:"taskQueues"`
+}
+
+type WorkflowManifestDefinition struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	ParentID   string `json:"parentId,omitempty"`
+	TaskQueue  string `json:"taskQueue"`
+	Public     bool   `json:"public"`
+	Standalone bool   `json:"standalone,omitempty"`
+}
+
+type WorkflowManifestQueue struct {
+	ID          string   `json:"id"`
+	Definitions []string `json:"definitions"`
+}
+
+type AgentsManifest struct {
+	APIVersion string                    `json:"apiVersion"`
+	Agents     []AgentManifestDefinition `json:"agents"`
+}
+
+type AgentManifestDefinition struct {
+	ID        string     `json:"id"`
+	Kind      string     `json:"kind"`
+	Mode      string     `json:"mode"`
+	TaskQueue string     `json:"taskQueue,omitempty"`
+	Durable   bool       `json:"durable"`
+	Public    bool       `json:"public"`
+	Model     string     `json:"model,omitempty"`
+	MaxSteps  int        `json:"maxSteps,omitempty"`
+	Revision  string     `json:"revision,omitempty"`
+	Slots     AgentSlots `json:"slots"`
+}
+
 func Generate(root, buildRoot string, check bool) error {
 	routes, err := Discover(root)
 	if err != nil {
@@ -38,9 +77,30 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 	if buildID == "" {
 		return errors.New("build ID is required")
 	}
-	if err := SyncGoSources(root, routes, check); err != nil {
+	if err := syncGoSources(root, routes, buildID, check); err != nil {
 		return err
 	}
+	workflowDefinitions, err := DiscoverWorkflowDefinitions(root)
+	if err != nil {
+		return err
+	}
+	workflowsManifest := portableWorkflowsManifest(workflowDefinitions)
+	workflowsManifestBytes, err := json.MarshalIndent(workflowsManifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	workflowsManifestBytes = append(workflowsManifestBytes, '\n')
+	agentDefinitions, err := DiscoverAgentDefinitions(root)
+	if err != nil {
+		return err
+	}
+	setAIAgentRevisions(agentDefinitions, buildID)
+	agentsManifest := portableAgentsManifest(agentDefinitions)
+	agentsManifestBytes, err := json.MarshalIndent(agentsManifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	agentsManifestBytes = append(agentsManifestBytes, '\n')
 	manifest := Manifest{APIVersion: "gobeyond.routes/v1alpha1", BuildID: buildID, Routes: portableRoutes(root, routes)}
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -54,14 +114,18 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 	}
 
 	manifestPath := filepath.Join(root, ".gobeyond", "routes.json")
+	workflowsManifestPath := filepath.Join(root, ".gobeyond", "workflows.json")
+	agentsManifestPath := filepath.Join(root, ".gobeyond", "agents.json")
 	outputs := map[string][]byte{
-		manifestPath: manifestBytes,
+		manifestPath:          manifestBytes,
+		workflowsManifestPath: workflowsManifestBytes,
+		agentsManifestPath:    agentsManifestBytes,
 		filepath.Join(root, GeneratedDir, "routes", "routes_gen.go"): goBytes,
 	}
 	for path, content := range outputs {
 		// .gobeyond is ignored and may be absent in a clean clone. Check mode
 		// materializes that build input, then checks the committed Go registry.
-		if check && path != manifestPath {
+		if check && path != manifestPath && path != workflowsManifestPath && path != agentsManifestPath {
 			existing, readErr := os.ReadFile(path)
 			if readErr != nil || !bytes.Equal(existing, content) {
 				return fmt.Errorf(
@@ -80,6 +144,78 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 		}
 	}
 	return nil
+}
+
+func portableAgentsManifest(definitions []AgentDefinition) AgentsManifest {
+	manifest := AgentsManifest{APIVersion: "gobeyond.agents/v1alpha1"}
+	for _, definition := range definitions {
+		slots := definition.Slots
+		slots.Tools = nonNilStrings(slots.Tools)
+		slots.Skills = nonNilStrings(slots.Skills)
+		slots.Subagents = nonNilStrings(slots.Subagents)
+		slots.Schedules = nonNilStrings(slots.Schedules)
+		slots.Channels = nonNilStrings(slots.Channels)
+		manifest.Agents = append(manifest.Agents, AgentManifestDefinition{
+			ID:        definition.ID,
+			Kind:      definition.Kind,
+			Mode:      definition.Mode,
+			TaskQueue: definition.TaskQueue,
+			Durable:   definition.Durable,
+			Public:    definition.Public,
+			Model:     definition.Model,
+			MaxSteps:  definition.MaxSteps,
+			Revision:  definition.Revision,
+			Slots:     slots,
+		})
+	}
+	if manifest.Agents == nil {
+		manifest.Agents = []AgentManifestDefinition{}
+	}
+	return manifest
+}
+
+func setAIAgentRevisions(definitions []AgentDefinition, buildID string) {
+	for index := range definitions {
+		if definitions[index].Kind == AgentKindAI {
+			definitions[index].Revision = buildID
+		}
+	}
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
+func portableWorkflowsManifest(definitions []WorkflowDefinition) WorkflowsManifest {
+	manifest := WorkflowsManifest{APIVersion: "gobeyond.workflows/v1alpha1"}
+	for _, definition := range definitions {
+		manifest.Definitions = append(manifest.Definitions, WorkflowManifestDefinition{
+			ID:         definition.ID,
+			Name:       definition.Name,
+			Kind:       definition.Kind,
+			ParentID:   definition.ParentID,
+			TaskQueue:  definition.TaskQueue,
+			Public:     definition.Public,
+			Standalone: definition.Standalone,
+		})
+	}
+	for _, queue := range GroupWorkflowQueues(definitions) {
+		entry := WorkflowManifestQueue{ID: queue.ID}
+		for _, definition := range queue.Definitions {
+			entry.Definitions = append(entry.Definitions, definition.ID)
+		}
+		manifest.TaskQueues = append(manifest.TaskQueues, entry)
+	}
+	if manifest.Definitions == nil {
+		manifest.Definitions = []WorkflowManifestDefinition{}
+	}
+	if manifest.TaskQueues == nil {
+		manifest.TaskQueues = []WorkflowManifestQueue{}
+	}
+	return manifest
 }
 
 func portableRoutes(root string, routes []Route) []Route {

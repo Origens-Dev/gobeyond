@@ -4,7 +4,7 @@ import "path/filepath"
 
 // GeneratedDir is the website-relative directory owned by gobeyond for
 // projections, registries, contracts, and generated process mains.
-// Authors write app/, workers/, and internal/ only.
+// Authors write app/, workflows/, agents/, and internal/ only.
 //
 // Must not start with "." or "_": Go ignores those directory names when
 // matching package patterns, and import paths under them break normal

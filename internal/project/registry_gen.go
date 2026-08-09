@@ -3,6 +3,7 @@ package project
 import (
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -102,13 +103,27 @@ func generateSiteArtifacts(root, websiteImport string, routes []Route) (map[stri
 	if err != nil {
 		return nil, err
 	}
-
-	hasMiddleware := siteMiddlewarePresent(root)
-	registry, err := renderRegistry(websiteImport, pages, apis, actions, hasMiddleware)
+	agents, err := DiscoverAgentDefinitions(root)
 	if err != nil {
 		return nil, err
 	}
-	siteMain := renderSiteMain(websiteImport)
+
+	hasMiddleware := siteMiddlewarePresent(root)
+	registry, err := renderRegistry(websiteImport, pages, apis, actions, agents, hasMiddleware)
+	if err != nil {
+		return nil, err
+	}
+	hasDurableAgents := false
+	for _, definition := range agents {
+		if definition.Durable {
+			hasDurableAgents = true
+			break
+		}
+	}
+	siteMain, err := renderSiteMain(websiteImport, len(agents) > 0, hasDurableAgents)
+	if err != nil {
+		return nil, err
+	}
 	return map[string][]byte{
 		filepath.Join(root, GeneratedDir, "registry", "site.go"):    registry,
 		filepath.Join(root, GeneratedDir, "cmd", "site", "main.go"): siteMain,
@@ -451,7 +466,7 @@ func httpMethodFuncs(file string) ([]string, error) {
 	return methods, nil
 }
 
-func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, hasMiddleware bool) ([]byte, error) {
+func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, agents []AgentDefinition, hasMiddleware bool) ([]byte, error) {
 	needsGB := false
 	for _, page := range pages {
 		if page.HasPage {
@@ -474,6 +489,12 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 		`gbruntime "github.com/Origens-Dev/gobeyond/runtime"`,
 		`routes "`+path.Join(websiteImport, GeneratedDir, "routes")+`"`,
 	)
+	if len(agents) > 0 {
+		imports = append(imports, `httpruntime "github.com/Origens-Dev/gobeyond/agents/httpruntime"`)
+		for index, definition := range agents {
+			imports = append(imports, fmt.Sprintf(`agent%d "%s"`, index, path.Join(websiteImport, GeneratedDir, "agents", definition.Key)))
+		}
+	}
 	if hasMiddleware {
 		// Optional website-root middleware.go (package middleware).
 		imports = append(imports, `middleware "`+websiteImport+`"`)
@@ -513,7 +534,13 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 	Loads         map[string]gbruntime.PageLoader
 	ClientScript  string
 	Styles        []string
-}
+`)
+	if len(agents) > 0 {
+		b.WriteString("\tAgentDispatcher          httpruntime.Dispatcher\n")
+		b.WriteString("\tResolveAgentActor        httpruntime.ActorResolver\n")
+		b.WriteString("\tAllowLoopbackAgentActor bool\n")
+	}
+	b.WriteString(`}
 
 func New(opts Options) (*gbruntime.Server, func() error, error) {
 	pages := []gbruntime.PageRoute{
@@ -621,11 +648,35 @@ func Handler(opts Options) (http.Handler, func() error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return server, closeFn, nil
-}
-
-var _ = routes.BuildID
 `)
+	if len(agents) > 0 {
+		b.WriteString("\tagentRegistry := httpruntime.NewRegistry()\n")
+		for index := range agents {
+			b.WriteString(fmt.Sprintf("\tif err := agent%d.GobeyondRegister(agentRegistry); err != nil {\n", index))
+			b.WriteString("\t\tif closeFn != nil { _ = closeFn() }\n\t\treturn nil, nil, err\n\t}\n")
+		}
+		b.WriteString(`	agentRuntime, err := httpruntime.New(httpruntime.Options{
+		Registry:           agentRegistry,
+		Dispatcher:         opts.AgentDispatcher,
+		ResolveActor:       opts.ResolveAgentActor,
+		AllowLoopbackActor: opts.AllowLoopbackAgentActor,
+	})
+	if err != nil {
+		if closeFn != nil { _ = closeFn() }
+		return nil, nil, err
+	}
+	mux := http.NewServeMux()
+	if err := agentRuntime.Mount(mux, "/api/agents"); err != nil {
+		if closeFn != nil { _ = closeFn() }
+		return nil, nil, err
+	}
+	mux.Handle("/", server)
+	return mux, closeFn, nil
+`)
+	} else {
+		b.WriteString("\treturn server, closeFn, nil\n")
+	}
+	b.WriteString("}\n\nvar _ = routes.BuildID\n")
 	return []byte(b.String()), nil
 }
 
@@ -667,27 +718,46 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func renderSiteMain(websiteImport string) []byte {
+func renderSiteMain(websiteImport string, hasAgents, hasDurableAgents bool) ([]byte, error) {
 	registryImport := path.Join(websiteImport, GeneratedDir, "registry")
 	routesImport := path.Join(websiteImport, GeneratedDir, "routes")
+	agentOptions := ""
+	agentStandardImports := ""
+	agentPackageImport := ""
+	agentSetup := ""
+	if hasAgents {
+		agentOptions = "\t\tAllowLoopbackAgentActor: os.Getenv(\"GOBEYOND_AGENT_DEV_LOOPBACK\") == \"1\",\n"
+	}
+	if hasDurableAgents {
+		agentStandardImports = "\t\"context\"\n"
+		agentPackageImport = "\ttemporalruntime \"github.com/Origens-Dev/gobeyond/agents/temporalruntime\"\n"
+		agentSetup = `	dispatcher, err := temporalruntime.NewLazyLocalFromEnv(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dispatcher.Close()
+`
+		agentOptions += "\t\tAgentDispatcher:          dispatcher,\n"
+	}
 	source := fmt.Sprintf(`%s
 package main
 
 import (
-	"encoding/json"
+%s	"encoding/json"
 	"errors"
 	"log"
 	"os"
 	"path/filepath"
 
 	gblisten "github.com/Origens-Dev/gobeyond/adapters/listen"
-	"github.com/Origens-Dev/gobeyond/browserassets"
+%s	"github.com/Origens-Dev/gobeyond/browserassets"
 	registry %q
 	routes %q
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
 )
 
 func main() {
+%s
 	planPack := os.Getenv("GOBEYOND_PLAN_PACK")
 	if planPack == "" {
 		planPack = filepath.Join("dist", "server", "render-plans.gbp")
@@ -727,6 +797,7 @@ func main() {
 		BrowserAssets: assets,
 		PlanStore:     planStore,
 		Static:        staticStore,
+%s
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -768,6 +839,10 @@ func loadBrowserAssets(path, buildID string) (*browserassets.Manifest, error) {
 	}
 	return &assets, nil
 }
-`, generatedSourceMarker+"\n", registryImport, routesImport)
-	return []byte(source)
+`, generatedSourceMarker+"\n", agentStandardImports, agentPackageImport, registryImport, routesImport, agentSetup, agentOptions)
+	formatted, err := format.Source([]byte(source))
+	if err != nil {
+		return nil, fmt.Errorf("format generated site main: %w\n%s", err, source)
+	}
+	return formatted, nil
 }
