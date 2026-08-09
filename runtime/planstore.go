@@ -21,7 +21,7 @@ type PackPlanStore struct {
 }
 
 // OpenPlanStore opens the render-plan pack at path. Without options the
-// residency cache uses the ADR 004 plan defaults: 64 entries, 32 MiB
+// residency cache uses the plan defaults: 64 entries, 32 MiB
 // estimated decoded bytes, 10 minute idle expiry.
 func OpenPlanStore(path string, opts ...StoreOption) (*PackPlanStore, error) {
 	reader, err := pack.Open(path, pack.ContentPlans)

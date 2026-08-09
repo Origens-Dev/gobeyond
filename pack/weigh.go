@@ -11,7 +11,7 @@ import (
 // FallbackWeights.
 const WeigherVersion = 1
 
-// Weight formulas locked by ADR 004. "Encoded" is the JSON record length in
+// Stable pack-residency weight formulas. "Encoded" is the JSON record length in
 // bytes before compression (Record.EncodedLen).
 const (
 	// PlanPeakEncodedFactor: plan peak = decoded + encoded*3.

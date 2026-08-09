@@ -12,7 +12,7 @@ const gobeyondVersion = JSON.parse(
   await readFile(new URL('../package.json', import.meta.url), 'utf8'),
 ).version
 
-test('scaffolds an internally consistent website-first hello world', async () => {
+test('scaffolds an internally consistent GoBeyond hello world', async () => {
   const root = await mkdtemp(join(tmpdir(), 'create-gobeyond-'))
   const destination = join(root, 'hello')
   await createProject(destination, { projectName: 'hello' })

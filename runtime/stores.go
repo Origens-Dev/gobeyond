@@ -10,7 +10,7 @@ import (
 )
 
 // PlanStore supplies render plans on demand for pages whose PageRoute.Plan is
-// nil (ADR 004). New checks Has for every such page and rejects a store whose
+// nil. New checks Has for every such page and rejects a store whose
 // BuildID differs from Config.BuildID, so a request that reaches Plan can
 // trust the answer belongs to this build. Plan is called only when a document
 // must actually render - after loaders, redirects, and error short-circuits -
@@ -36,7 +36,7 @@ type StaticEntries interface {
 	Contracts() *codegen.Document
 }
 
-// DefaultStaticMaxEntries is the ADR 004 residency entry bound for static
+// DefaultStaticMaxEntries is the residency entry bound for static
 // entry stores. Plan stores use residency.DefaultMaxEntries; both share the
 // package's byte and idle defaults.
 const DefaultStaticMaxEntries = 128

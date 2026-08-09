@@ -1,6 +1,23 @@
-# GoBeyond MVP architecture
+# GoBeyond architecture
 
-## Core invariant
+## Application model
+
+GoBeyond has three compiler-visible application surfaces:
+
+```text
+app/       -> site registry, rendering plans, browser assets, Go server
+workflows/ -> workflow/activity registry, queue-grouped Temporal workers
+agents/    -> direct site registrations and optional durable agent workers
+internal/  -> ordinary Go packages shared by every surface
+```
+
+Web, workflow, and agent definitions are authored independently but compiled
+under one build identity. Generated registries and process mains are build
+artifacts, not application source. Temporal is required only for authored
+workflows and agents that opt into durability; direct agents remain in the site
+process.
+
+## Web rendering invariant
 
 For a supported component, the Go renderer, React's server renderer used by
 conformance tests, and React's first hydration render must produce the same
@@ -15,7 +32,7 @@ remain fatal.
 
 ## Source boundaries
 
-- `app/`: website route source. `page.tsx` is a static route; a sibling
+- `app/`: web route source. `page.tsx` is a static route; a sibling
   `page.go` opts that route into request-time Go. Route-owned `actions.go` and
   `app/api/**/route.go` stay beside the route they serve.
 - `internal/`: reusable Go services, policy, and integrations that are not
@@ -28,9 +45,10 @@ remain fatal.
   grouped by definition folder and resolved logical task queue.
 - `generated/`: gobeyond-owned contracts, registries, process mains, and
   ignored safe Go projection packages. The runtime imports projections, never
-  source directories below `app/`. Authors write `app/`, `agents/`, `workflows/`, and
-  `internal/` only.
-- `render-plans/`: versioned language-neutral render artifacts packaged with the server.
+  authored route or definition directories. Authors write `app/`, `agents/`,
+  `workflows/`, and `internal/` only.
+- `render-plans/`: versioned language-neutral render artifacts packaged with
+  the server.
 
 The same URL is represented by a React route directory and, only when needed,
 a Go-safe server key:
@@ -62,7 +80,15 @@ The canonical JSON Schema is `contracts/render-plan.schema.json`. Inspection and
 conformance may use JSON. Runtime packaging uses immutable pack containers
 (`.gbp` / `.gbs`) with per-record `json+zstd` payloads; a compact binary record
 codec can be added later via `recordCodec` without changing the semantic plan
-version. See `docs/adr/004-lazy-route-residency.md`.
+version.
+
+Each pack contains a versioned header, build ID, codec, sorted record index,
+digests, and deterministic residency weights. Runtime open validates the
+container shape, bounds, overlaps, duplicate keys, build identity, and size
+limits without decoding every record. A cold request verifies the selected
+record digest and identity before parsing it. Human-readable JSON may be
+emitted for inspection and conformance, but production runtimes load only the
+pack containers.
 
 ## Build and runtime
 
@@ -94,7 +120,35 @@ After either candidate passes `readyz`, the proxy atomically changes targets,
 emits a browser reload event, and gracefully shuts down the prior process. A
 failed candidate never replaces the last working server.
 
-## Production request flow
+## Workflow runtime
+
+Every immediate child of `workflows/` owns one top-level workflow or standalone
+activity definition. Owned activities and child workflows remain nested under
+their workflow folder. Compilation resolves task queues deterministically:
+workflow config, then owning workflow inheritance for activities, then the
+logical `default` queue. Runtime queue names add the environment suffix only at
+the process boundary.
+
+Generated worker mains are grouped by resolved queue rather than authored
+folder. A queue binary registers only the workflow and activity definitions
+compiled to that queue. `dev` and `preview` supervise these pollers and wait for
+their readiness contract; `build` emits them without starting them.
+
+## Agent runtime
+
+Every immediate child of `agents/` owns one typed or AI definition. Direct
+agents register with the site process. Durable typed handlers compile to a
+workflow/activity pair; durable AI agents use the stable Temporal AI workflow
+with model and tool activities registered once per queue worker.
+
+Durable AI resolution is fenced by agent ID plus finalized build revision, so a
+worker cannot execute provider or tool code from a different build under an
+in-flight run. Direct and durable modes share the generated session, run,
+cancellation, and SSE HTTP contract. Session persistence and cross-process
+protocol-v2 delivery remain hosting-adapter concerns rather than hidden
+in-process shortcuts.
+
+## Production web request flow
 
 ```text
 CloudFront document request
@@ -263,8 +317,8 @@ Presentational `React.Component` / `PureComponent` classes compile when
 unsupported construct (`window`, `setState`, lifecycle-in-render), not “is a
 class.” Third-party layout widgets that depend on viewport or browser state stay
 client-only. `<Columns>` is an independent portable multi-column layout
-primitive that emits real content without JavaScript; see the investigated case
-study in [ADR 003](adr/003-masonry-first-paint-spike.md).
+primitive that emits real content without JavaScript. It is not a package-name
+special case or an emulation of browser-managed layout behavior.
 
 Downgrades record `triggerCode` / `triggerConstruct` and suggest wrapping just
 that subtree in `ClientOnly`. Rank fixes with `gobeyond report portability` (or

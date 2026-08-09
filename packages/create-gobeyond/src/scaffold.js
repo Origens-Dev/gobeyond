@@ -107,7 +107,7 @@ function projectFiles(projectName, { tailwind }) {
     'client.tsx': clientEntry(),
     'app/page.schema.ts': `import { definePage, schema } from '@go-beyond/schema'\n\nexport const page = definePage({ props: schema.object({}) })\n`,
     'app/page.metadata.ts': homeMetadata(),
-    'app/page.tsx': `import { GreetingCounter } from '../components/greeting-counter.js'\nimport './site.css'\n\nexport default function HomePage() {\n  return (\n    <main>\n      <h1>Welcome to GoBeyond</h1>\n      <p>A website-first React application rendered by Go.</p>\n      <p><a href="/products/portable-react">See the dynamic product page</a></p>\n      <GreetingCounter initial={0} />\n    </main>\n  )\n}\n`,
+    'app/page.tsx': `import { GreetingCounter } from '../components/greeting-counter.js'\nimport './site.css'\n\nexport default function HomePage() {\n  return (\n    <main>\n      <h1>Welcome to GoBeyond</h1>\n      <p>A GoBeyond web route rendered by Go and hydrated by React.</p>\n      <p><a href="/products/portable-react">See the dynamic product page</a></p>\n      <GreetingCounter initial={0} />\n    </main>\n  )\n}\n`,
     'app/site.css': `${tailwind ? '@import "tailwindcss";\n\n' : ''}:root { color: #17211b; background: #f4f1e8; font-family: system-ui, sans-serif; }\nbody { margin: 0; }\nmain { box-sizing: border-box; width: min(100% - 2rem, 64rem); margin-inline: auto; padding-block: 3rem; }\nimg { display: block; max-width: 100%; height: auto; }\nbutton { min-height: 2.75rem; padding-inline: 1rem; }\n`,
     ...(tailwind ? { 'postcss.config.mjs': `export default { plugins: { '@tailwindcss/postcss': {} } }\n` } : {}),
     'app/vite-env.d.ts': `/// <reference types="vite/client" />\n`,
@@ -181,7 +181,7 @@ function homeSocialImage() {
 function starterReadme(projectName) {
   return [
     `# ${projectName}`, '',
-    'A website-first GoBeyond project. React owns the website; Go joins where a request needs data, mutation, middleware, or an HTTP API.', '',
+    'A GoBeyond application. React and Go own the web surface; add durable orchestration under `workflows/` and direct or durable agents under `agents/`.', '',
     '## Run it', '',
     'Install the matching GoBeyond CLI release once, then install this project’s pinned browser/compiler dependencies:', '',
     '```bash',
@@ -297,7 +297,7 @@ declare const process: { env: Record<string, string | undefined> }
 export function metadata(_props: Props): DocumentMetadata {
   const origin = process.env.GOBEYOND_PUBLIC_ORIGIN ?? 'http://localhost:8080'
   const title = 'Welcome to GoBeyond'
-  const description = 'A website-first React application rendered by Go.'
+  const description = 'A GoBeyond web experience rendered by Go and hydrated by React.'
   const canonical = \`\${origin}/\`
   const image = \`\${origin.replace(/^http:\\/\\//, 'https://')}/social/home.svg\`
   return {

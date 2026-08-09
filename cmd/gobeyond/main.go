@@ -310,7 +310,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := renderStaticDocuments(staticDir, planDir, manifest.BuildID, manifest.Routes, compiled.StaticBuild, contractDocument, browserAssets); err != nil {
 		return err
 	}
-	// Pack-only runtime artifacts (ADR 004): the Go runtime loads render
+	// Pack-only runtime artifacts: the Go runtime loads render
 	// plans and packaged static entries exclusively from these two immutable
 	// containers. The pretty JSON written alongside them (render-plans/*.json,
 	// runtime-data/static-build.json) stays for human inspection and

@@ -182,7 +182,7 @@ type Config struct {
 	// Static is set, it defaults to Static.Contracts().
 	Contracts *codegen.Document
 	// PlanStore supplies render plans on demand for pages that omit an
-	// inline Plan (ADR 004). New verifies membership per page and that the
+	// inline Plan. New verifies membership per page and that the
 	// store's build ID equals BuildID exactly; the decode itself is deferred
 	// to the first request that must render the route. An inline
 	// PageRoute.Plan always wins over the store.
@@ -284,7 +284,7 @@ func New(config Config) (*Server, error) {
 		}
 		if page.Plan == nil {
 			// New only proves membership; the plan bytes stay cold until a
-			// request actually renders the route (ADR 004).
+			// request actually renders the route.
 			if config.PlanStore == nil || !config.PlanStore.Has(page.Route.ID) {
 				return nil, fmt.Errorf("page %s requires an inline render plan or a plan store that carries it", page.Route.ID)
 			}
@@ -607,7 +607,7 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	// Rendering is now unavoidable: the loader ran and did not redirect or
 	// fail. Only here does a page without an inline plan touch the plan
 	// store, so routes that answer with redirects or cached responses never
-	// pay for a decode (ADR 004). New already proved the store has the route.
+	// pay for a decode. New already proved the store has the route.
 	plan := page.Plan
 	if plan == nil {
 		stored, planErr := s.config.PlanStore.Plan(ctx.Context, route.ID)

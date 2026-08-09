@@ -127,7 +127,7 @@ func TestNewRejectsStaticEntriesBuildMismatch(t *testing.T) {
 	}
 }
 
-// TestPlanStoreServesColdPlanOnFirstRender proves the two ADR 004 laziness
+// TestPlanStoreServesColdPlanOnFirstRender proves the two lazy-residency
 // guarantees at once: New verifies membership without decoding anything, and
 // the first document request performs exactly one cold decode which then
 // stays resident for the next request.

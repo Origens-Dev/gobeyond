@@ -34,7 +34,7 @@ type PackStaticStore struct {
 
 // OpenStaticStore opens the static-entry pack at path together with the
 // value-contract document at contractsPath. Without options the residency
-// cache uses the ADR 004 static defaults: 128 entries, 32 MiB estimated
+// cache uses the static defaults: 128 entries, 32 MiB estimated
 // decoded bytes, 10 minute idle expiry.
 func OpenStaticStore(path, contractsPath string, opts ...StoreOption) (*PackStaticStore, error) {
 	contracts, err := LoadContracts(contractsPath)

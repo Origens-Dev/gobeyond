@@ -19,6 +19,9 @@ surfaces; alpha releases may revise them with explicit changelog entries.
   execution through granular Temporal activities, acknowledge cancellation
   only after dispatch succeeds, and reject approval-gated tools until shared
   interaction delivery is available.
+- Reframe the public README and documentation around web, workflow, and agent
+  primitives, and retire internal ADR/spike/implementation-ledger documents
+  after folding their lasting runtime contracts into the architecture guide.
 
 ## 0.1.0-alpha.26 - 2026-08-01
 

@@ -1,7 +1,9 @@
 # Workflows and activities
 
-Authored durable definitions live under `workflows/`, sibling to `app/`. A
-definition owns one Go package and declares one exported compiler-visible var:
+Authored durable definitions live under `workflows/`, sibling to `app/` and
+`agents/`. Use them for work that must survive request boundaries, retries, or
+process restarts. A definition owns one Go package and declares one exported
+compiler-visible var:
 
 ```text
 workflows/<id>/workflow.go                         # top-level workflow
@@ -53,7 +55,8 @@ Task queues are environment-suffixed only at the worker boundary:
 
 `gobeyond dev` builds and supervises every local queue worker. It retries when
 the user-managed Temporal service is unavailable; it does not start or manage
-the container. Use `--no-workflows` when only the website server is wanted.
+the container. Use `--no-workflows` to run the site and direct agents without
+Temporal pollers.
 `gobeyond preview` supervises the queue binaries from the existing `dist/`
 build with the same retry behavior and accepts the same opt-out flag.
 

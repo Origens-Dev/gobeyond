@@ -1,6 +1,6 @@
 // Package pack implements the immutable binary container that carries
 // GoBeyond's pack-only runtime artifacts: render plans (.gbp) and packaged
-// static entries (.gbs). See docs/adr/004-lazy-route-residency.md.
+// static entries (.gbs). See docs/architecture.md#render-plan-contract.
 //
 // Both files share one container layout — a fixed header, a sorted index, and
 // per-record zstd-compressed JSON — distinguished by the magic bytes. Opening

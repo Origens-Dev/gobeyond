@@ -19,7 +19,7 @@ import (
 )
 
 // Builder assembles one pack at build time. Every added record is fully
-// parsed (the CLI validation stage from ADR 004), weighed over the decoded
+// parsed during the CLI validation stage, weighed over the decoded
 // value, and zstd-compressed; WriteTo then emits the sorted container.
 type Builder struct {
 	content ContentType

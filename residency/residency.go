@@ -1,7 +1,7 @@
-// Package residency implements the bounded in-process residency cache from
-// ADR 004 (lazy route residency). It keeps lazily decoded, immutable build
-// artifacts — render plans and packaged static entries — resident between
-// requests, bounded by entry count and by estimated decoded bytes.
+// Package residency implements a bounded in-process cache for lazily decoded,
+// immutable build artifacts — render plans and packaged static entries —
+// resident between requests, bounded by entry count and by estimated decoded
+// bytes.
 //
 // The cache is a segmented LRU (SLRU): entries land in a probation segment on
 // first load and move to a protected segment on their next hit, so a one-off
@@ -29,11 +29,11 @@ import (
 	"time"
 )
 
-// Defaults from ADR 004. They are per-cache: a plan store and a static entry
+// Defaults are per-cache: a plan store and a static entry
 // store each get their own budgets.
 const (
 	// DefaultMaxEntries bounds resident entries when Options.MaxEntries is
-	// zero. ADR 004 uses 64 for plans and 128 for static entries; the plan
+	// zero. Plans use 64 and static entries use 128; the plan
 	// figure is the package default.
 	DefaultMaxEntries = 64
 	// DefaultMaxResidentBytes bounds total estimated decoded bytes when
@@ -53,8 +53,8 @@ const (
 )
 
 // ProtectedSegmentFraction is the share of the entry and byte budgets
-// reserved for the protected SLRU segment. It is a design-locked constant
-// (ADR 004), not an option.
+// reserved for the protected SLRU segment. It is a stable runtime contract,
+// not an option.
 const ProtectedSegmentFraction = 0.8
 
 // ErrClosed is returned by Get after Close.
@@ -240,7 +240,7 @@ func New[V any](opts Options) *Cache[V] {
 
 // Get returns the value for key, loading it with load on a miss. Concurrent
 // callers for the same key share one load. estimatedDecoded and estimatedPeak
-// come from the caller's index (pack index weights per ADR 004) and are used
+// come from the caller's pack index weights and are used
 // for the decode semaphore before the load has run; the entry's resident
 // weight uses the decodedWeight the load itself reports, falling back to
 // estimatedDecoded when the load reports nothing.

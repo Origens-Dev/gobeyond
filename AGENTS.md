@@ -1,8 +1,10 @@
 # GoBeyond Development Guide
 
-GoBeyond is website-first. React owns content and component composition; Go
-begins at request-time data, actions, middleware, API boundaries, and durable
-workflow definitions under `workflows/`.
+GoBeyond is application-first, with three equal authored surfaces: React and Go
+web routes under `app/`, durable definitions under `workflows/`, and direct or
+durable agents under `agents/`. Ordinary Go services and policy under
+`internal/` can be shared by all three without mixing framework-generated
+plumbing into application logic.
 
 ## Always-on guardrails
 
@@ -43,7 +45,7 @@ workflow definitions under `workflows/`.
 
 ## Task skills
 
-- Use `$add-page` for the website-first route workflow.
+- Use `$add-page` for the web route workflow.
 - Use `$connect-go-data` when converting a static route to request-time Go data.
 - Use `$add-action` for typed React-to-Go mutations.
 - Use `$add-api` for Go HTTP endpoints.

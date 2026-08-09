@@ -1,112 +1,120 @@
 # GoBeyond
 
-GoBeyond is an experimental, MIT-licensed framework for React websites with a
-Go production server. It compiles a documented portable subset of TSX into a
-language-neutral rendering plan. Go combines that plan with build-time or
-request-time props to return meaningful HTML, and React 19.2.8 hydrates the
-same component tree in the browser.
+GoBeyond is an experimental, MIT-licensed application framework for building
+web experiences, durable workflows, and AI agents in one Go application.
+React owns interactive UI, Go owns the production runtime, and Temporal is an
+optional durability layer for the definitions that need it.
 
-> GoBeyond generates meaningful, crawler-visible dynamic HTML from its
-> documented portable React profile, then hydrates it with a pinned React
-> version—without a Node production runtime.
+> Build the page, the long-running work behind it, and the agent that helps the
+> user—without shipping a Node production runtime.
 
-It is not a TypeScript-to-Go translator, a general JavaScript SSR engine, or an
-exact Next.js replacement. Node is required for development and builds. The
-production server artifact is a Go executable plus rendering plans and
-manifests; browser JavaScript, CSS, images, and fonts belong on a CDN.
+Node is used for development and builds. Production artifacts are Go
+executables, rendering plans, manifests, and browser assets; JavaScript, CSS,
+images, and fonts can be served from a CDN.
 
-## Website-first model
+## One project, three primitives
 
-Start with the page. Add Go only when the page crosses a request-time boundary.
+| Primitive | Author in | Use it for | Runtime |
+| --- | --- | --- | --- |
+| Web | `app/` | React pages, typed actions, HTTP APIs, middleware, and request-time data | Go site server plus browser assets |
+| Workflows | `workflows/` | Durable orchestration and reusable standalone activities | Temporal queue workers |
+| Agents | `agents/` | Typed handlers or AI agents with tools and streaming | Direct in the site process, or durable through Temporal |
+
+All three surfaces share ordinary application code under `internal/`:
 
 ```text
-app/products/[slug]/page.tsx        React content, composition, interaction
-app/products/[slug]/page.schema.ts  generated React props contract (Go-owned routes)
-app/products/[slug]/actions.ts      browser-visible action contract
-app/products/[slug]/page.go         request-time data, status, metadata, cache
-app/products/[slug]/actions.go       authorization and mutations
-app/api/products/route.go            Go HTTP API
-internal/                            shared Go services and policy
+app/                         web routes, actions, and APIs
+agents/<id>/                 one typed or AI agent definition
+workflows/<id>/              one workflow or standalone activity definition
+internal/                    shared services, integrations, and policy
+generated/                   GoBeyond-owned projections and registries
 ```
 
-`page.tsx` is the single source of truth for initial markup. The build produces
-both its browser bundle and its Go rendering plan. Developers do not maintain a
-second Go template. GoBeyond also creates ignored, managed `go.mod` sidecars in
-route folders so `gopls` can type-check names such as `[slug]`; production code
-imports only the generated packages under `generated/`.
+The compiler discovers definitions from the filesystem, generates safe Go
+registries, and groups durable work by logical task queue. Application code
+does not maintain worker mains, provider plumbing, session routes, or Temporal
+registration by hand.
 
-For a request-time route, `page.go` owns the JSON payload: declare `Props` with
-ordinary Go imports (for example, an app-owned CMS package) and return
-`gb.PageResult[Props]`. `gobeyond generate` derives the ignored sibling
-`page.schema.ts` from that Go type, which keeps React's
-`InferPageProps<typeof page>` aligned with the value Go actually serializes.
-Declare `var Config = gb.PageConfig{...}` beside `Props` when the route uses
-origin props caching. Do not edit generated `page.schema.ts` files.
+### Web
 
-## What the MVP proves
+`page.tsx` is the source of truth for initial markup and browser interaction. A
+sibling `page.go` opts a route into request-time Go data; `actions.go` adds
+typed mutations and `app/api/**/route.go` adds Go HTTP endpoints.
 
-- Cross-file project React components compile to versioned rendering plans.
-- Intrinsic HTML/SVG, fragments, props, conditions, keyed lists, forms,
-  deterministic initial state, events, opaque effects, and `ClientOnly` have a
-  strict portable profile.
-- Portable compilation is attempted below `use client`. Unsupported render
-  behavior may downgrade only at the nearest marked boundary, is reported in a
-  deterministic manifest, and is transformed at that exact browser call site.
-  Unmarked unsupported code and non-portability failures remain fatal.
-- Go-owned page props generate deterministic React contracts; TypeScript action
-  schemas continue to generate deterministic Go action types.
-- Go produces full metadata, canonical URLs, JSON-LD, semantic body HTML,
-  hydration data, real redirects, and real `404` responses.
-- Same-origin links use build-aware soft navigation, reconcile SEO metadata,
-  restore history/scroll/focus, and fall back to full documents for redirects
-  and errors. Stale actions are rejected before user code and never replayed.
-- Static build props and metadata are packaged with the Go server and loaded
-  once at startup, so middleware-promoted static pages and soft navigation do
-  not execute Node or fetch rendering data from object storage.
-- Filesystem agents under `agents/` run directly by default or opt into
-  Temporal durability per definition. `DefineAI` compiles `instructions.md`,
-  Go AI SDK streaming/tools, and granular Temporal AI SDK model/tool steps;
-  authored workflows and standalone activities live under `workflows/` and
-  resolve logical task queues at build.
-- The production artifact audit rejects Node/npm executables and dependency
-  trees in `dist/server`.
+```text
+app/products/[slug]/page.tsx        React content and interaction
+app/products/[slug]/page.go         request-time props, status, and metadata
+app/products/[slug]/actions.go      authorization and mutations
+app/api/products/route.go           Go HTTP API
+```
 
-The conformance gate renders the same portable fixture with Go, hydrates it in
-a browser-like DOM using pinned React, asserts zero recoverable hydration
-errors, and verifies post-hydration interaction.
+GoBeyond compiles the documented portable React profile into a
+language-neutral rendering plan. Go returns meaningful HTML and React hydrates
+the same component tree. It is not a TypeScript-to-Go translator, a general
+JavaScript SSR engine, or an exact Next.js replacement.
+
+### Workflows
+
+Each immediate child of `workflows/` defines one workflow or standalone
+activity. Workflow-owned activities and child workflows stay inside that
+definition folder. Empty task queues inherit from their owner and ultimately
+resolve to the logical `default` queue.
+
+```text
+workflows/orders/workflow.go
+workflows/orders/activities/charge/activity.go
+workflows/send-receipt/activity.go
+```
+
+Builds emit one Go poller binary per resolved queue. Local and preview modes
+supervise those binaries when Temporal definitions are present; GoBeyond does
+not start or manage Temporal itself.
+
+### Agents
+
+Each immediate child of `agents/` defines one agent. Typed handlers run
+directly by default for low latency. `DefineAI` hides model streaming, tools,
+provider binding, and the model/tool loop behind a compiler-visible definition
+and an `instructions.md` prompt.
+
+Set `Durable: true` per agent to run model and tool steps as Temporal
+activities. Direct and durable agents share the generated session API and the
+browser-safe `@go-beyond/agents` client, so durability is an execution choice
+rather than a different application contract.
 
 ## Try the repository
 
 Requirements: Go 1.24+, Node 22+, and pnpm 10.33.0.
 
-For full-stack development with automatic Go rebuilds and browser reloads:
-
-```bash
-go run ./cmd/gobeyond dev
-go run ./cmd/gobeyond dev --port 4000
-```
-
-The public address defaults to `http://localhost:3000`. Each change builds a
-replacement server on a fresh internal port. GoBeyond switches the stable
-proxy only after the replacement passes readiness, then gracefully drains the
-old process. Failed builds leave the last working server online and appear in
-the browser development overlay. Independent build stages overlap: compiler
-preparation runs with the website type-check, and the browser bundle runs with
-the Go server build after generated contracts are ready. Editing an existing
-Go file under `app/`, `server/`, or `internal/` takes a dependency-aware fast
-path: GoBeyond reuses the
-unchanged render plans, hydration contract, static documents, and browser
-assets, then compiles and swaps only the Go server. Route-owned Go source is
-projected into generated packages before its candidate is built; shared Go
-code under `internal/` uses the same Go-only path. Structural or frontend
-changes automatically fall back to a complete staged build. Development also
-reuses the already-prepared portable compiler until the compiler's own source
-changes.
-
 ```bash
 pnpm install
 go run ./cmd/gobeyond doctor
 go run ./cmd/gobeyond generate
+go run ./cmd/gobeyond dev
+```
+
+The public address defaults to `http://localhost:3000`. Development builds a
+replacement Go server on a fresh internal port, switches the stable proxy only
+after readiness passes, and keeps the last working server online after failed
+builds. Direct agents run with the site process.
+
+When the project contains workflows or durable agents, `dev` also builds and
+supervises the required queue workers. They retry while user-managed Temporal
+is unavailable. Pass `--no-workflows` to run the site and direct agents without
+Temporal pollers.
+
+The durable example includes local Temporal setup and web, workflow, and agent
+entry points:
+
+```bash
+docker compose -f examples/durables-site/docker-compose.temporal.yml up -d
+export GOBEYOND_WEBSITE=examples/durables-site
+go run ./cmd/gobeyond dev
+```
+
+## Build and verify
+
+```bash
 go run ./cmd/gobeyond generate --check
 go test ./...
 go test ./... -C imageopt/s3
@@ -115,109 +123,79 @@ go run ./cmd/gobeyond build
 ./scripts/verify-node-free-server.sh
 ```
 
-`gobeyond doctor` checks Go/Node/pnpm, verifies each `@go-beyond/{react,schema,compiler,vite}`
-package's compiled exports entrypoints exist, and fails on linked version skew
-(instead of a later raw `ERR_MODULE_NOT_FOUND`). The nested `imageopt/s3`
-module is tested separately so the AWS SDK stays out of the root module graph.
-
-The build emits:
+The nested `imageopt/s3` module is tested separately so the AWS SDK stays out
+of the root module graph. A build emits:
 
 ```text
 dist/
-  static/   # CDN documents and browser assets
-  server/   # Go executable, render plans, runtime manifest
-  deploy/   # contracts and artifact manifest
+  static/    CDN documents and browser assets
+  server/    Go site executable, rendering plans, and runtime manifest
+  workers/   Go Temporal poller binaries grouped by logical task queue
+  deploy/    route, worker, and artifact manifests
 ```
 
-CSS imported by the browser entry graph is emitted with a content-hashed name.
-The build records that exact URL in both static documents and the runtime
-manifest, so dynamic Go documents link the same stylesheet. Files under
-`public/` are copied unchanged and listed as `staticAssetPaths` in the deploy
-route trie for CDN origin routing.
-
-If `app/icon.png` is present, the build also generates 16- and 32-pixel
-favicons plus a 180-pixel Apple touch icon in `dist/static` and lists them for
-static-origin routing. Social images remain authored files under `public/`.
-
-## Environment variables and CSS tooling
-
-`gobeyond dev` loads `.env`, `.env.development`, `.env.local`, then
-`.env.development.local`. `gobeyond build` uses the same order with
-`production` in place of `development`. A variable already supplied by the
-process always wins; dotenv loading never mutates the CLI process. The resolved
-environment is passed to the compiler, Go build, Vite build, and the dev Go
-runtime.
-
-Vite receives the resolved environment but exposes only `VITE_*` values to
-browser modules. Keep Contentful delivery/preview tokens and all other secrets
-unprefixed; static props and generated route data remain public as well.
-
-Vite owns CSS processing through each project's `vite.config.*` and optional
-`postcss.config.*`. Tailwind v4 is an opt-in project capability: install
-`tailwindcss` and `@tailwindcss/postcss`, add a project-owned PostCSS config,
-and import Tailwind from your CSS. `create-gobeyond --tailwind my-site` creates
-that setup. GoBeyond has no Tailwind runtime dependency or framework config.
-
-Preview the complete built site (static assets plus dynamic Go pages):
+Preview serves the complete built application and supervises its built queue
+workers:
 
 ```bash
 go run ./cmd/gobeyond preview
+go run ./cmd/gobeyond preview --no-workflows
 ```
 
-Preview also runs locally built workflow queue pollers when present. Pass
-`--no-workflows` to serve only the website artifact.
+## What the MVP proves
 
-## Portable React boundary
+- **Web:** portable cross-file React components render meaningful HTML from Go,
+  hydrate without a second template, and support typed Go data, actions, APIs,
+  metadata, caching, redirects, `404` responses, and soft navigation.
+- **Workflows:** filesystem definitions compile into deterministic workflow and
+  activity registrations, inherit logical queues, and run in supervised local,
+  preview, and production worker binaries.
+- **Agents:** typed and AI definitions expose one session/streaming contract;
+  direct execution favors latency while durable execution uses granular model
+  and tool activities with exact build-revision fencing.
+- **Production:** site and worker runtimes are Go binaries, and the server
+  artifact audit rejects Node/npm executables and dependency trees under
+  `dist/server`.
+
+The web conformance gate renders the same portable fixture with Go, hydrates it
+in a browser-like DOM using pinned React, asserts zero recoverable hydration
+errors, and verifies post-hydration interaction.
+
+## Web rendering boundary
 
 SEO-critical initial markup may use project-owned components, schema-backed
 props, deterministic expressions, typed conditions, and stable keyed maps.
-Event handlers and effect bodies stay browser JavaScript and are not executed
-by Go. `ClientOnly` is available for genuinely browser-only third-party UI and
-its fallback is optional. Keep content required without JavaScript outside an
-empty client boundary, or provide a portable fallback explicitly.
+Event handlers and effect bodies stay browser JavaScript. Unsupported render
+behavior may downgrade only at an explicit client boundary; unmarked
+unsupported behavior and contract failures remain fatal.
 
-Rich HTML is explicit: validate/sanitize it into the schema package's branded
-`SafeHTML` value, then render `<SafeHTML as="div" value={body} />`. Plain
-strings cannot cross that trust boundary, and the wrapper is identical in the
-Go document and the hydrated React tree.
+Rich HTML crosses an explicit `SafeHTML` boundary. Static props and generated
+route data are public and must never contain secrets. Vite exposes only
+`VITE_*` environment values to browser modules; unprefixed provider, database,
+and CMS credentials remain server-side.
 
-The alpha intentionally defers arbitrary render helpers, streaming, generalized
-third-party render adapters, HTML-body caching, WebP image output, production
-S3-backed image loading with an applied CloudFront image-cache policy, and
-exact arbitrary React SSR compatibility. Props-only origin ISR, the data
-cache, request memoization, action refresh, and an in-memory client Router
-Cache (public payloads only, TTL capped at 30s) are
-available—see [Architecture and runtime boundary](docs/architecture.md#request-time-caching). Nested component default props, scalar ternaries, statically
-known JSX spreads, `useMemo` / `useCallback`, lazy `useState`, `useReducer`,
-provider-backed `useContext`, transparent `Suspense` children, keyed `Fragment`,
-static `Children` helpers, limited `createElement` / `cloneElement`, and React
-`useId()` (rewritten to stable call-site ids via the compiler + Vite plugin;
-parametric under `.map`, including nested inlines) are portable. Zero-arg
-`new Date().get*()` / `getUTC*()` use the render-snapshot clock (`renderNow` +
-Vite `renderSnapshotDate()`). Prefer form `defaultValue` / `defaultChecked` for
-first paint. Same-module portable `const` bindings are baked into the plan.
-Local and preview servers can use
-`imageSrc()` with `GOBEYOND_STATIC_DIR`; see
-[Runtime images](docs/guides/images.md).
+See the architecture and web guides for the complete portability, caching,
+metadata, image, and deployment contracts.
 
 ## Documentation
 
-- [Architecture and runtime boundary](docs/architecture.md)
+Start with the [documentation map](docs/README.md), or go directly to a
+primitive:
+
+- [Build agents](docs/guides/agents.md)
+- [Build workflows and activities](docs/guides/workflows.md)
 - [Add a React page](docs/guides/add-page.md)
 - [Connect request-time Go data](docs/guides/connect-go-data.md)
-- [Configure fixed or request-resolved public origins](docs/guides/public-origin.md)
-- [Configure icons and social sharing](docs/guides/icons-and-social.md)
-- [Optimize runtime images](docs/guides/images.md)
 - [Add a typed action](docs/guides/add-action.md)
 - [Add a Go API](docs/guides/add-api.md)
-- [Debug contracts and hydration](docs/guides/debug-contracts.md)
-- [AWS CloudFront, S3, ALB, and ECS reference](docs/guides/aws-reference.md)
-- [SEO acceptance site](examples/seo-site/README.md)
-- [Implementation evidence ledger](docs/plans/implementation-ledger.md)
+- [Architecture and runtime boundaries](docs/architecture.md)
+- [AWS deployment reference](docs/guides/aws-reference.md)
 
 ## Status
 
-This is an MVP implementation and compatibility experiment, not a stable
-release. React compatibility is deliberately pinned to 19.2.8. Expanding the
-portable profile requires new compiler, Go-renderer, browser-normalization, and
-hydration conformance cases—not an undocumented compatibility promise.
+GoBeyond is an MVP implementation and compatibility experiment, not a stable
+release. Web compatibility is deliberately pinned to React 19.2.8. Workflow
+and agent APIs are alpha surfaces, and hosted persistence/version-retention is
+still a separate integration boundary. Expanding any primitive requires an
+explicit contract plus conformance or integration coverage—not an undocumented
+compatibility promise.
