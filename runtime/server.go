@@ -161,12 +161,15 @@ type Config struct {
 	Pages               []PageRoute
 	Actions             []Action
 	APIs                []APIRoute
-	Middleware          []gbmiddleware.Rule
-	CSRF                *security.CSRF
-	Logger              *slog.Logger
-	Deadlines           gb.DeadlinePolicy
-	MaxHeaderSize       int
-	ImageLoader         imageopt.Loader
+	// Deprecated: authored application middleware now uses one root
+	// middleware.ts or middleware.js. This low-level hook remains for alpha
+	// runtime compatibility and is not compiler-discovered.
+	Middleware    []gbmiddleware.Rule
+	CSRF          *security.CSRF
+	Logger        *slog.Logger
+	Deadlines     gb.DeadlinePolicy
+	MaxHeaderSize int
+	ImageLoader   imageopt.Loader
 	// Cache installs the request-time cache (cache.Load, cache.Revalidate*).
 	// Leave it nil to run without one: loaders then compute every value. The
 	// server owns Cache.BuildID - it must be empty or equal to Config.BuildID,

@@ -1,14 +1,19 @@
 # GoBeyond architecture
 
+> [!WARNING]
+> GoBeyond is under heavy active development. These boundaries describe the
+> current alpha contract and can change before a stable release.
+
 ## Application model
 
 GoBeyond has three compiler-visible application surfaces:
 
 ```text
-app/       -> site registry, rendering plans, browser assets, Go server
-workflows/ -> workflow/activity registry, queue-grouped Temporal workers
-agents/    -> direct site registrations and optional durable agent workers
-internal/  -> ordinary Go packages shared by every surface
+app/             -> site registry, rendering plans, browser assets, Go server
+middleware.ts/js -> optional CDN/edge request module
+workflows/       -> workflow/activity registry, queue-grouped Temporal workers
+agents/          -> direct site registrations and optional durable agent workers
+internal/        -> ordinary Go packages shared by every surface
 ```
 
 Web, workflow, and agent definitions are authored independently but compiled
@@ -37,6 +42,9 @@ remain fatal.
   `app/api/**/route.go` stay beside the route they serve.
 - `internal/`: reusable Go services, policy, and integrations that are not
   owned by one route.
+- `middleware.ts` or `middleware.js`: one optional root Fetch-style request
+  function that executes before cache and origin routing. Both files may not
+  exist in the same application.
 - `agents/`: compiler-visible agent definitions. An `agents/<id>/agent.go`
   package exports `var Agent = agents.Define(...)` for a typed handler or
   `agents.DefineAI(...)` plus `instructions.md` for a framework-owned model/tool
@@ -46,7 +54,7 @@ remain fatal.
 - `generated/`: gobeyond-owned contracts, registries, process mains, and
   ignored safe Go projection packages. The runtime imports projections, never
   authored route or definition directories. Authors write `app/`, `agents/`,
-  `workflows/`, and `internal/` only.
+  `workflows/`, `internal/`, and optional root middleware only.
 - `render-plans/`: versioned language-neutral render artifacts packaged with
   the server.
 
@@ -102,9 +110,10 @@ effect mounts the original component after hydration. The build ID fingerprints 
 source tree and finalized plans, contracts, route modules, static props, and
 pinned React version.
 
-At request time, Go resolves middleware and a typed loader, renders metadata
-and body HTML, embeds the exact hydration props, and references immutable
-browser assets. No JavaScript executes on the server.
+At request time, optional JavaScript/TypeScript middleware executes before the
+cache and origin boundary. Requests that reach the Go runtime resolve a typed
+loader, render metadata and body HTML, embed the exact hydration props, and
+reference immutable browser assets. No JavaScript executes in the Go server.
 
 In development, one stable public listener proxies to a generated Go server.
 The watcher records content digests for build inputs and classifies their
@@ -119,6 +128,11 @@ own source tree changed.
 After either candidate passes `readyz`, the proxy atomically changes targets,
 emits a browser reload event, and gracefully shuts down the prior process. A
 failed candidate never replaces the last working server.
+
+When a root middleware entry exists, complete builds also emit its standalone
+module. Development and preview start that exact bundle in a local Fetch
+runtime before the candidate Go server; readiness must pass through both
+processes before traffic switches.
 
 ## Workflow runtime
 
@@ -148,16 +162,36 @@ cancellation, and SSE HTTP contract. Session persistence and cross-process
 protocol-v2 delivery remain hosting-adapter concerns rather than hidden
 in-process shortcuts.
 
+## Middleware boundaries
+
+GoBeyond accepts exactly one optional root `middleware.ts` or `middleware.js`.
+The file default-exports a function that receives a standard Fetch `Request`
+and returns a `Response` (or promise of one). Returning `fetch(request)`
+continues to the application. Matchers are ordinary code in that function;
+middleware currently runs for every request.
+
+Build wraps the authored function in a module-worker `export default { fetch }`
+entry and emits `dist/edge-middleware/worker.mjs`. `dev` and `preview` execute
+the same module before the Go server. Production deployment adapters install
+that artifact in a compatible CDN or edge runtime; it is deliberately separate
+from the Node-free Go server artifact.
+
+Middleware must not receive origin credentials or call a private origin
+directly. Same-origin `fetch(request)` is a platform-controlled subrequest:
+the hosting adapter owns cache/origin selection, tenant admission, and trusted
+identity headers. A CDN that cannot provide that outbound boundary must not run
+the middleware artifact as though it can safely reach a shared origin.
+
 ## Production web request flow
 
 ```text
-CloudFront document request
-  -> static HTML in private S3, when a route has build props only
-  -> Go runtime, when a route has page.go or request-time middleware
+CDN or edge document request
+  -> optional middleware.ts/js module
+  -> static HTML from a static origin, when a route has build props only
+  -> Go runtime, when a route has page.go or another dynamic boundary
 
 Go runtime
   -> strip reserved headers and validate host
-  -> apply ordered middleware and bounded rewrites
   -> resolve route, status, cache policy, metadata, and typed props
   -> interpret the packaged rendering plan
   -> emit one complete non-streamed HTML document
@@ -165,17 +199,18 @@ Go runtime
 
 The renderer opens local plan/static packs at startup and decodes records on
 demand into a bounded residency cache. It does not fetch plans or page data
-from S3 per request. Browser assets and manifests are immutable and keyed by
-build ID. Process shutdown remains the definitive full memory reclaim.
+from object storage per request. Browser assets and manifests are immutable and
+keyed by build ID. Process shutdown remains the definitive full memory reclaim.
 Vite-emitted stylesheets are discovered after bundling and recorded in the
 runtime/browser manifests; both static documents and dynamic page
 registrations use those exact URLs. Copied `public/` files are listed in the
 deployment route trie so the edge can select the static origin explicitly.
 
-Optional request middleware is a website-root `middleware.go` exporting
-`Middleware() []gbmiddleware.Rule`. Omit the file when unused. Cache wiring and
-`ctx.PublicOrigin` are owned by the generated registry/runtime; `internal/` is
-for ordinary app code. Next-compatible Metadata files (`robots`, `sitemap`, `manifest`, icons, Open Graph / Twitter images) live under `app/` and are materialized into `dist/static` at build time. `public/` remains a generic static escape hatch.
+Cache wiring and `ctx.PublicOrigin` are owned by the generated registry/runtime;
+`internal/` is for ordinary app code. Next-compatible Metadata files (`robots`,
+`sitemap`, `manifest`, icons, Open Graph / Twitter images) live under `app/` and
+are materialized into `dist/static` at build time. `public/` remains a generic
+static escape hatch.
 Process mains are generated under `generated/cmd/{site,workflows}`. Durable
 authors define workflow and activity packages under `workflows/`; the durable
 runtime artifacts intentionally remain worker-shaped (`dist/workers/` and
@@ -183,7 +218,7 @@ runtime artifacts intentionally remain worker-shaped (`dist/workers/` and
 not the authored source tree.
 
 When the Go process serves origin static files itself (local preview, or an
-origin without CloudFront in front), wrap the server with
+origin without a CDN in front), wrap the server with
 `runtime.StaticFiles(directory, handler)` (or `StaticFilesFromEnv`). It serves
 `buildpaths.IsStaticArtifact` paths and existing public files from
 `GOBEYOND_STATIC_DIR`, sets `Cache-Control: public, max-age=31536000, immutable`
@@ -243,8 +278,9 @@ taken from the response's `CachePolicy` (`maxAge`/`sharedMaxAge`) and capped
 at 30s; prefetch (hover/focus) warms it ahead of navigation. Soft navigation
 still replaces props/metadata only; it does not refresh hydration `renderNow`.
 
-Store tiers are an in-process L1 (`cache/memstore`) and an optional shared L2
-(`cache/redisstore`, ElastiCache Serverless Valkey in the AWS reference). Keys
+Store tiers are an in-process L1 (`cache/memstore`) and an optional
+Redis-compatible shared L2 (`cache/redisstore`). The AWS reference uses Valkey,
+but the architecture does not depend on that provider. Keys
 include `{deployPrefix}/{buildID}/…`; the deploy prefix is the tenant boundary
 when Redis is shared. There is no application-level encrypt/decrypt—do not put
 secrets, session tokens, or viewer-specific payloads in cached values. L2 is
@@ -253,12 +289,13 @@ opt-in via `GOBEYOND_CACHE_*` environment variables. Apps should call
 Redis when an endpoint is present, starts the tag-bump watcher, and returns a
 `Close` for shutdown.
 
-At the edge, CloudFront's dynamic cache key includes cookies, query strings,
-and `Authorization`, but not the middleware auth-context header. For those
-viewer-authenticated requests, the origin's `Cache-Control: private, no-store`
-downgrade is the sole edge-cache isolator. Workload identity does not identify
-the viewer or vary rendered content. See `infra/opentofu/README.md` for
-optional Valkey wiring and the edge boundary.
+At the CDN, any dynamic cache key must account for cookies, query strings, and
+`Authorization`; a platform-injected middleware auth-context header is not a
+viewer-controlled cache dimension. For viewer-authenticated requests, the
+origin's `Cache-Control: private, no-store` downgrade remains the final
+edge-cache isolator. Workload identity does not identify the viewer or vary
+rendered content. See the AWS deployment reference for one concrete cache and
+edge configuration.
 
 ## Browser protocol
 

@@ -6,6 +6,10 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+- Replace authored Go middleware with exactly one optional root
+  `middleware.ts` or `middleware.js` default export. Build emits a standalone
+  `dist/edge-middleware/worker.mjs` module, while `dev` and `preview` execute
+  that same bundle before the Go site server.
 - Add filesystem agents under `agents/<id>/`, including typed handlers and
   framework-owned Go AI SDK model/tool loops with direct or per-agent Temporal
   durability, native session/SSE APIs, and browser-safe TypeScript transport.
@@ -20,8 +24,10 @@ surfaces; alpha releases may revise them with explicit changelog entries.
   only after dispatch succeeds, and reject approval-gated tools until shared
   interaction delivery is available.
 - Reframe the public README and documentation around web, workflow, and agent
-  primitives, and retire internal ADR/spike/implementation-ledger documents
-  after folding their lasting runtime contracts into the architecture guide.
+  primitives, mark the framework's heavily evolving alpha status, use a
+  provider-neutral CDN boundary in the architecture, and retire internal
+  ADR/spike/implementation-ledger documents after folding their lasting runtime
+  contracts into the architecture guide.
 
 ## 0.1.0-alpha.26 - 2026-08-01
 

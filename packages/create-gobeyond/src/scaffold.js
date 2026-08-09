@@ -58,8 +58,8 @@ function projectFiles(projectName, { tailwind }) {
         routes: 'gobeyond routes',
         doctor: 'gobeyond doctor',
         dev: 'gobeyond dev',
-        serve: './dist/server/gobeyond-server',
-        preview: 'pnpm serve',
+        serve: 'gobeyond preview',
+        preview: 'gobeyond preview',
         typecheck: 'tsc -p tsconfig.json --noEmit',
         test: 'gobeyond generate && gobeyond generate --check && pnpm typecheck && go test ./...',
       },
@@ -82,7 +82,7 @@ function projectFiles(projectName, { tailwind }) {
       },
     }),
     'go.mod': `module ${modulePath}\n\ngo 1.24.0\n\nrequire github.com/Origens-Dev/gobeyond v${GOBEYOND_VERSION}\n`,
-    '.gitignore': `.gobeyond/\n**/generated/routes/*/\n**/generated/api/\n**/generated/workers/\n**/generated/cmd/\n**/generated/registry/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n**/app/**/go.mod\n**/workers/**/go.mod\n`,
+    '.gitignore': `.gobeyond/\n**/generated/routes/*/\n**/generated/api/\n**/generated/workflows/\n**/generated/agents/\n**/generated/cmd/\n**/generated/registry/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n**/app/**/go.mod\n**/workflows/**/go.mod\n**/agents/**/go.mod\n`,
     '.env.example': `GOBEYOND_PUBLIC_ORIGIN=http://localhost:8080\n`,
     'tsconfig.json': json({
       compilerOptions: {
@@ -91,7 +91,7 @@ function projectFiles(projectName, { tailwind }) {
         noUncheckedIndexedAccess: true, exactOptionalPropertyTypes: true,
         verbatimModuleSyntax: true, skipLibCheck: true,
       },
-      include: ['app/**/*.ts', 'app/**/*.tsx', 'components/**/*.ts', 'components/**/*.tsx', 'client.tsx'],
+      include: ['app/**/*.ts', 'app/**/*.tsx', 'components/**/*.ts', 'components/**/*.tsx', 'client.tsx', 'middleware.ts'],
     }),
     'AGENTS.md': managedAgentsBlock(),
     'README.md': starterReadme(projectName),
@@ -126,7 +126,7 @@ function projectFiles(projectName, { tailwind }) {
       .replace('return gb.ActionResult[contract.Output]{}, errors.New', 'return contract.Output{}, errors.New')
       .replace('return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil', 'return contract.Output{Added: true}, nil'),
     'app/api/products/route.go': apiHandler(),
-    'middleware.go': siteMiddleware(),
+    'middleware.ts': siteMiddleware(),
   }
 }
 
@@ -137,6 +137,7 @@ function managedAgentsBlock() {
     '- Start with `app/`: React owns content, layout, and component composition.',
     '- `page.tsx` alone is static; add its sibling `page.go` only for request-time data, status, metadata, or cache policy.',
     '- Keep route-specific actions in `actions.go` and APIs in `app/api/**/route.go`; keep reusable Go code in ordinary `internal/` packages.',
+    '- Use exactly one root `middleware.ts` or `middleware.js` default export for request middleware; return `fetch(request)` to continue to the application.',
     '- The runtime imports generated-safe route projections, never `app/` source directories directly.',
     '- Do not build React fragments or duplicate templates in Go.',
     '- Values crossing TypeScript and Go must use a schema-generated contract.',
@@ -189,7 +190,7 @@ function starterReadme(projectName) {
     'pnpm install',
     'pnpm dev',
     '```', '',
-    'Open `http://localhost:3000/` or `http://localhost:3000/products/portable-react`. `pnpm dev` watches the project, builds each replacement Go server on a fresh internal port, switches traffic only after readiness succeeds, and reloads the browser. Use `pnpm dev --port 4000` to select another public port. `pnpm serve` starts an existing production build on port 8080.', '',
+    'Open `http://localhost:3000/` or `http://localhost:3000/products/portable-react`. `pnpm dev` watches the project, builds each replacement Go server and middleware bundle, switches traffic only after readiness succeeds, and reloads the browser. Use `pnpm dev --port 4000` to select another public port. `pnpm serve` previews an existing production build on port 8080.', '',
     '## Environment variables', '',
     '`gobeyond dev` reads `.env`, `.env.development`, `.env.local`, and `.env.development.local`; `gobeyond build` uses the corresponding `production` files. Later files override earlier files, while variables already present in the shell always win. The values are available to the Go build and runtime and to Vite. Only Vite variables whose names start with `VITE_` are included in browser code—keep Contentful tokens and other secrets unprefixed.', '',
     'Tailwind is optional. Start a new Tailwind v4 project with `create-gobeyond --tailwind my-site`; it adds `tailwindcss`, `@tailwindcss/postcss`, a project-owned `postcss.config.mjs`, and the CSS import. Existing projects can opt in by adding those same dependencies and PostCSS config. GoBeyond does not add a Tailwind runtime layer.', '',
@@ -201,14 +202,14 @@ function starterReadme(projectName) {
     '- `app/products/[slug]/actions.go`: typed Go mutation handler beside its browser contract.',
     '- `app/api/products/route.go`: Go HTTP API.',
     '- `internal/`: reusable Go for your app (not a gobeyond hook surface).',
-    '- `middleware.go` (optional): request middleware via `Middleware() []gbmiddleware.Rule`.',
+    '- `middleware.ts` (optional): request middleware that runs before cache/origin routing.',
     '- `app/robots.ts`, `app/sitemap.ts`, `app/icon.png`, ...: Next-compatible Metadata files.',
     '- `public/`: generic static files (not the Metadata conventions above).',
     '- `generated/`: gobeyond-owned projections, contracts, registry, and process mains.', '',
     'Run `pnpm generate` after changing schemas/routes. It commits the route registry and Go contracts under `generated/`; check them with `pnpm generate:check`.', '',
     'Generation also creates ignored, managed `go.mod` sidecars in route folders so `gopls` can type-check names such as `[slug]`. The production server imports only the safe generated packages.', '',
     '## Production', '',
-    'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN separately.', '',
+    'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN and install `dist/edge-middleware/worker.mjs` through a compatible deployment adapter; the middleware module is deliberately separate from the origin image.', '',
     'Add Metadata files under `app/` (`icon.png`, `robots.ts`, `sitemap.ts`, `opengraph-image.png`, ...). `public/` is for other static assets; use absolute HTTPS URLs in social metadata.', '',
     'GoBeyond generates the browser page/layout registry and safe Go route projections during `pnpm build`. The runtime imports those generated projections rather than source directories in `app/`. See `AGENTS.md` for the cross-language rules.', '',
   ].join('\n')
@@ -315,26 +316,13 @@ export function metadata(_props: Props): DocumentMetadata {
 
 
 function siteMiddleware() {
-  return `// Optional request middleware for the generated site registry.
-// Omit this file entirely when you do not need middleware.
-package middleware
-
-import (
-  gb "github.com/Origens-Dev/gobeyond"
-  gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
-)
-
-func Middleware() []gbmiddleware.Rule {
-  return []gbmiddleware.Rule{{
-    Name: "starter-request-id",
-    Config: gb.MiddlewareConfig{Patterns: []string{"/products/[slug]"}},
-    Middleware: func(next gb.Handler) gb.Handler {
-      return func(ctx *gb.RequestContext) (gb.Response, error) {
-        ctx.Values["source"] = "starter"
-        return next(ctx)
-      }
-    },
-  }}
+  return `// Optional request middleware. Omit this file when it is not needed.
+export default function middleware(request: Request): Response | Promise<Response> {
+  const url = new URL(request.url)
+  if (url.pathname === '/products/old-portable-react') {
+    return Response.redirect(new URL('/products/portable-react', request.url), 308)
+  }
+  return fetch(request)
 }
 `
 }

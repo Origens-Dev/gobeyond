@@ -32,7 +32,7 @@ does not include those resources.
 
 For a deployment, upload immutable static artifacts first, start and validate
 the new Go target, then switch document/runtime routing. Retain previous static
-assets for the configured period. The MVP does not promise that old browser
+assets for the configured period. The current alpha does not guarantee that old browser
 clients remain pinned to old Go deployments.
 
 Before an apply:

@@ -1,4 +1,8 @@
-// Package middleware composes statically discoverable GoBeyond middleware.
+// Package middleware composes the legacy low-level Go runtime middleware hook.
+//
+// Deprecated: GoBeyond applications author exactly one root middleware.ts or
+// middleware.js default export. This package remains for runtime compatibility
+// during the alpha line and is no longer compiler-discovered.
 package middleware
 
 import (

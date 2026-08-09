@@ -119,6 +119,10 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 
 func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string, browserMode string) error {
 	projectRoot := websiteRoot(root)
+	middlewareSource, err := project.DiscoverMiddlewareSource(projectRoot)
+	if err != nil {
+		return err
+	}
 	imageConfig, hasImageConfig, err := imageopt.LoadDeploymentConfig(projectRoot)
 	if err != nil {
 		return err
@@ -211,10 +215,6 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := os.MkdirAll(filepath.Join(dist, "server", "runtime-data"), 0o755); err != nil {
 		return err
 	}
-	middlewareTarget, err := middlewareBuildTarget(projectRoot)
-	if err != nil {
-		return err
-	}
 	workerTargets, err := workerBuildTargets(projectRoot)
 	if err != nil {
 		return err
@@ -242,17 +242,11 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 			},
 		},
 	}
-	if middlewareTarget != "" {
-		middlewareOutput := filepath.Join(dist, buildpaths.MiddlewareDir, buildpaths.MiddlewareEntryName)
-		if err := os.MkdirAll(filepath.Dir(middlewareOutput), 0o755); err != nil {
-			return err
-		}
+	if middlewareSource != "" {
 		tasks = append(tasks, buildTask{
-			name: "build middleware binary",
+			name: "build edge middleware",
 			run: func() error {
-				// The middleware artifact must be statically linked so it
-				// runs inside a scratch tenant sandbox.
-				return runCommandWithEnvironment(root, withEnvironment(environment, "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", middlewareOutput, middlewareTarget)
+				return buildEdgeMiddleware(root, projectRoot, dist, middlewareSource, environment, browserMode)
 			},
 		})
 	}
@@ -274,16 +268,6 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	}
 	publicAssets = mergeAssetPaths(publicAssets, generatedIconAssets, generatedMetadataAssets)
 	assetLayout := buildpaths.AssetLayout
-	if middlewareTarget != "" {
-		assetLayout = buildpaths.AssetLayoutV2
-		if err := writeJSONFile(filepath.Join(dist, buildpaths.MiddlewareDir, buildpaths.MiddlewareManifestName), map[string]any{
-			"v":        1,
-			"entry":    buildpaths.MiddlewareEntryName,
-			"matchers": []string{"/*"},
-		}); err != nil {
-			return err
-		}
-	}
 	if len(workerTargets) > 0 {
 		assetLayout = buildpaths.AssetLayoutV3
 		workerEntries := make([]map[string]any, 0, len(workerTargets))
@@ -302,6 +286,9 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.WorkersManifest), workersDeployManifest(workerEntries)); err != nil {
 			return err
 		}
+	}
+	if middlewareSource != "" {
+		assetLayout = buildpaths.AssetLayoutV4
 	}
 	browserAssets, err := collectBrowserAssets(staticDir, manifest.BuildID, clientEntry)
 	if err != nil {
@@ -355,6 +342,9 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		"browserAssets": browserAssets,
 		"publicAssets":  publicAssets,
 	}
+	if middlewareSource != "" {
+		artifacts["edgeMiddleware"] = path.Join(buildpaths.EdgeMiddlewareDir, buildpaths.EdgeMiddlewareEntryName)
+	}
 	if err := writeJSONFile(filepath.Join(dist, "deploy", "artifacts.json"), artifacts); err != nil {
 		return err
 	}
@@ -378,7 +368,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	}); err != nil {
 		return err
 	}
-	if err := writeJSONFile(filepath.Join(dist, "deploy", "compatibility.json"), map[string]any{
+	compatibility := map[string]any{
 		"apiVersion":        "gobeyond.compatibility/v1alpha1",
 		"buildId":           manifest.BuildID,
 		"react":             "19.2.8",
@@ -389,7 +379,11 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		"assetLayout":       assetLayout,
 		"planPack":          pack.PlanPackCapability,
 		"staticPack":        pack.StaticPackCapability,
-	}); err != nil {
+	}
+	if middlewareSource != "" {
+		compatibility["edgeMiddleware"] = buildpaths.EdgeMiddlewareCapability
+	}
+	if err := writeJSONFile(filepath.Join(dist, "deploy", "compatibility.json"), compatibility); err != nil {
 		return err
 	}
 	if err := writeJSONFile(buildpaths.ManifestPath(staticDir, manifest.BuildID), map[string]any{
@@ -1587,23 +1581,6 @@ func serverBuildTarget(website string) (string, error) {
 	return "", errors.New("production server entry missing; run gobeyond generate (expected generated/cmd/site)")
 }
 
-// middlewareBuildTarget reports the optional middleware artifact entry
-// (server/cmd/middleware). Projects without one produce a v1 layout.
-func middlewareBuildTarget(website string) (string, error) {
-	target := filepath.Join(website, "server", "cmd", "middleware")
-	info, err := os.Stat(target)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if !info.IsDir() {
-		return "", errors.New("server/cmd/middleware must be a directory containing the middleware main package")
-	}
-	return target, nil
-}
-
 type workerBuildTargetInfo struct {
 	ID         string
 	Key        string
@@ -1739,18 +1716,39 @@ func preview(root string, args []string) error {
 	if err != nil {
 		return err
 	}
+	host := *address
+	if strings.HasPrefix(host, ":") {
+		host = "localhost" + host
+	} else if strings.HasPrefix(host, "0.0.0.0:") {
+		host = "localhost:" + strings.TrimPrefix(host, "0.0.0.0:")
+	}
+	publicOrigin := "http://" + host
+	_, hasMiddleware, err := edgeMiddlewareBundle(filepath.Join(root, "dist"))
+	if err != nil {
+		return err
+	}
+	if hasMiddleware {
+		ctx, cancel := interruptContext()
+		defer cancel()
+		if !*noWorkflows {
+			workflowSupervisor := newDevWorkflowSupervisor(ctx, root, environment, gb.PreviewEnvironment)
+			workflowSupervisor.replace(filepath.Join(root, "dist"))
+			defer workflowSupervisor.close()
+		}
+		backend, startErr := startDevBackend(ctx, root, filepath.Join(root, "dist"), publicOrigin, environment, gb.PreviewEnvironment)
+		if startErr != nil {
+			return startErr
+		}
+		defer backend.stop()
+		fmt.Println("GoBeyond preview listening on", *address)
+		return servePreviewTarget(ctx, *address, backend.target)
+	}
 	if !*noWorkflows {
 		workflowContext, cancelWorkflows := context.WithCancel(context.Background())
 		defer cancelWorkflows()
 		workflowSupervisor := newDevWorkflowSupervisor(workflowContext, root, environment, gb.PreviewEnvironment)
 		workflowSupervisor.replace(filepath.Join(root, "dist"))
 		defer workflowSupervisor.close()
-	}
-	host := *address
-	if strings.HasPrefix(host, ":") {
-		host = "localhost" + host
-	} else if strings.HasPrefix(host, "0.0.0.0:") {
-		host = "localhost:" + strings.TrimPrefix(host, "0.0.0.0:")
 	}
 	command := exec.Command(serverBinary)
 	command.Dir = root
@@ -1759,7 +1757,7 @@ func preview(root string, args []string) error {
 		"GOBEYOND_TEMPORAL_ENVIRONMENT="+gb.PreviewEnvironment,
 		"GOBEYOND_ADDR="+*address,
 		"GOBEYOND_BUILD_ID="+manifest.BuildID,
-		"GOBEYOND_PUBLIC_ORIGIN=http://"+host,
+		"GOBEYOND_PUBLIC_ORIGIN="+publicOrigin,
 		"GOBEYOND_PLAN_PACK="+filepath.Join(root, "dist", "server", "render-plans"+pack.ExtPlans),
 		"GOBEYOND_STATIC_PACK="+filepath.Join(root, "dist", "server", "runtime-data", "static-build"+pack.ExtStatic),
 		"GOBEYOND_RUNTIME_DATA_DIR="+filepath.Join(root, "dist", "server", "runtime-data"),

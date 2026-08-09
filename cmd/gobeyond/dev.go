@@ -66,6 +66,10 @@ func dev(root string, args []string) error {
 	return runDev(ctx, root, options)
 }
 
+func interruptContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
 func runDev(ctx context.Context, root string, options devOptions) error {
 	environment, err := projectEnvironment(websiteRoot(root), "development")
 	if err != nil {
@@ -117,7 +121,7 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 	if err := buildToModeWithCompilerAndEnvironment(root, initialBuild, false, "", environment, "development"); err != nil {
 		return fmt.Errorf("initial development build: %w", err)
 	}
-	current, err := startDevBackend(ctx, root, initialBuild, publicOrigin, environment)
+	current, err := startDevBackend(ctx, root, initialBuild, publicOrigin, environment, gb.LocalEnvironment)
 	if err != nil {
 		return err
 	}
@@ -191,7 +195,7 @@ func runDev(ctx context.Context, root string, options devOptions) error {
 				gateway.broadcast(devEvent{name: "build-error", data: buildErr.Error()})
 				continue
 			}
-			candidate, err := startDevBackend(ctx, root, candidateBuild, publicOrigin, environment)
+			candidate, err := startDevBackend(ctx, root, candidateBuild, publicOrigin, environment, gb.LocalEnvironment)
 			if err != nil {
 				_ = os.RemoveAll(candidateBuild)
 				fmt.Fprintln(os.Stderr, "GoBeyond dev replacement failed; keeping current server:", err)
@@ -367,13 +371,18 @@ func buildDevGoServer(root, currentBuild, candidateBuild string, environment []s
 
 type devBackend struct {
 	buildDirectory string
-	command        *exec.Cmd
-	done           chan error
+	processes      []*devProcess
 	target         *url.URL
 	stopOnce       sync.Once
 }
 
-func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin string, environment []string) (*devBackend, error) {
+type devProcess struct {
+	name    string
+	command *exec.Cmd
+	done    chan error
+}
+
+func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin string, environment []string, temporalEnvironment string) (*devBackend, error) {
 	manifestData, err := os.ReadFile(filepath.Join(buildDirectory, "server", "runtime-manifest.json"))
 	if err != nil {
 		return nil, err
@@ -384,40 +393,82 @@ func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin str
 	if err := json.Unmarshal(manifestData, &manifest); err != nil || manifest.BuildID == "" {
 		return nil, errors.New("development runtime manifest is invalid")
 	}
+	middlewareEntry, hasMiddleware, err := edgeMiddlewareBundle(buildDirectory)
+	if err != nil {
+		return nil, err
+	}
 
 	address, err := availableLoopbackAddress()
 	if err != nil {
 		return nil, err
 	}
-	target, _ := url.Parse("http://" + address)
+	siteTarget, _ := url.Parse("http://" + address)
 	command := exec.CommandContext(ctx, filepath.Join(buildDirectory, "server", "gobeyond-server"))
 	command.Dir = root
-	command.Env = withEnvironment(environment,
-		"GOBEYOND_ADDR="+address,
-		"GOBEYOND_BUILD_ID="+manifest.BuildID,
-		"GOBEYOND_PUBLIC_ORIGIN="+publicOrigin,
-		"GOBEYOND_PLAN_PACK="+filepath.Join(buildDirectory, "server", "render-plans"+pack.ExtPlans),
-		"GOBEYOND_STATIC_PACK="+filepath.Join(buildDirectory, "server", "runtime-data", "static-build"+pack.ExtStatic),
-		"GOBEYOND_RUNTIME_DATA_DIR="+filepath.Join(buildDirectory, "server", "runtime-data"),
-		"GOBEYOND_STATIC_DIR="+filepath.Join(buildDirectory, "static"),
+	runtimeEnvironment := []string{
+		"GOBEYOND_ADDR=" + address,
+		"GOBEYOND_BUILD_ID=" + manifest.BuildID,
+		"GOBEYOND_PUBLIC_ORIGIN=" + publicOrigin,
+		"GOBEYOND_TEMPORAL_ENVIRONMENT=" + temporalEnvironment,
+		"GOBEYOND_PLAN_PACK=" + filepath.Join(buildDirectory, "server", "render-plans"+pack.ExtPlans),
+		"GOBEYOND_STATIC_PACK=" + filepath.Join(buildDirectory, "server", "runtime-data", "static-build"+pack.ExtStatic),
+		"GOBEYOND_RUNTIME_DATA_DIR=" + filepath.Join(buildDirectory, "server", "runtime-data"),
+		"GOBEYOND_STATIC_DIR=" + filepath.Join(buildDirectory, "static"),
 		"GOBEYOND_AGENT_DEV_LOOPBACK=1",
-	)
+	}
+	if hasMiddleware {
+		// The Go server is reachable only through the loopback middleware
+		// bridge, which has already admitted the public request. Node's Fetch
+		// implementation owns the upstream Host header, so disable the direct-
+		// internet single-host fallback for this internal hop.
+		runtimeEnvironment = append(runtimeEnvironment, "GOBEYOND_HOSTED_RUNTIME=1")
+	}
+	command.Env = withEnvironment(environment, runtimeEnvironment...)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
-	if err := command.Start(); err != nil {
+	site, err := startDevProcess("Go server", command)
+	if err != nil {
 		return nil, err
 	}
 	backend := &devBackend{
 		buildDirectory: buildDirectory,
-		command:        command,
-		done:           make(chan error, 1),
-		target:         target,
+		processes:      []*devProcess{site},
+		target:         siteTarget,
 	}
-	go func() { backend.done <- command.Wait() }()
-	if err := waitForDevBackend(backend, publicOrigin); err != nil {
+	if err := waitForDevProcess(site, siteTarget, publicOrigin); err != nil {
 		backend.stop()
 		return nil, err
 	}
+
+	if hasMiddleware {
+		middlewareAddress, addressErr := availableLoopbackAddress()
+		if addressErr != nil {
+			backend.stop()
+			return nil, addressErr
+		}
+		middlewareTarget, _ := url.Parse("http://" + middlewareAddress)
+		middlewareCommand := edgeMiddlewareCommand(ctx, root, middlewareEntry, middlewareAddress, siteTarget.String(), publicOrigin, environment)
+		middleware, startErr := startDevProcess("middleware", middlewareCommand)
+		if startErr != nil {
+			backend.stop()
+			return nil, startErr
+		}
+		backend.processes = append(backend.processes, middleware)
+		backend.target = middlewareTarget
+		if readyErr := waitForDevProcess(middleware, middlewareTarget, publicOrigin); readyErr != nil {
+			backend.stop()
+			return nil, readyErr
+		}
+	}
 	return backend, nil
+}
+
+func startDevProcess(name string, command *exec.Cmd) (*devProcess, error) {
+	if err := command.Start(); err != nil {
+		return nil, fmt.Errorf("start %s: %w", name, err)
+	}
+	process := &devProcess{name: name, command: command, done: make(chan error, 1)}
+	go func() { process.done <- command.Wait() }()
+	return process, nil
 }
 
 func availableLoopbackAddress() (string, error) {
@@ -432,20 +483,20 @@ func availableLoopbackAddress() (string, error) {
 	return address, nil
 }
 
-func waitForDevBackend(backend *devBackend, publicOrigin string) error {
+func waitForDevProcess(process *devProcess, target *url.URL, publicOrigin string) error {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case err := <-backend.done:
-			backend.done <- err
+		case err := <-process.done:
+			process.done <- err
 			if err == nil {
-				return errors.New("development server exited before becoming ready")
+				return fmt.Errorf("%s exited before becoming ready", process.name)
 			}
-			return fmt.Errorf("development server exited before becoming ready: %w", err)
+			return fmt.Errorf("%s exited before becoming ready: %w", process.name, err)
 		default:
 		}
-		request, _ := http.NewRequest(http.MethodGet, backend.target.String()+"/__gobeyond/readyz", nil)
+		request, _ := http.NewRequest(http.MethodGet, target.String()+"/__gobeyond/readyz", nil)
 		request.Host = strings.TrimPrefix(publicOrigin, "http://")
 		response, err := client.Do(request)
 		if err == nil {
@@ -456,23 +507,65 @@ func waitForDevBackend(backend *devBackend, publicOrigin string) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return errors.New("development server readiness timed out")
+	return fmt.Errorf("%s readiness timed out", process.name)
 }
 
 func (backend *devBackend) stop() {
 	backend.stopOnce.Do(func() {
-		if backend.command.Process == nil {
-			return
-		}
-		_ = backend.command.Process.Signal(os.Interrupt)
-		select {
-		case <-backend.done:
-			return
-		case <-time.After(12 * time.Second):
-			_ = backend.command.Process.Kill()
-			<-backend.done
+		for index := len(backend.processes) - 1; index >= 0; index-- {
+			stopDevProcess(backend.processes[index])
 		}
 	})
+}
+
+func stopDevProcess(process *devProcess) {
+	if process == nil || process.command.Process == nil {
+		return
+	}
+	_ = process.command.Process.Signal(os.Interrupt)
+	select {
+	case <-process.done:
+		return
+	case <-time.After(12 * time.Second):
+		_ = process.command.Process.Kill()
+		<-process.done
+	}
+}
+
+func servePreviewTarget(ctx context.Context, address string, target *url.URL) error {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.SetURL(target)
+			request.Out.Host = request.In.Host
+		},
+		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, err error) {
+			http.Error(writer, "GoBeyond preview upstream failed: "+err.Error(), http.StatusBadGateway)
+		},
+	}
+	server := &http.Server{
+		Handler:           proxy,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	result := make(chan error, 1)
+	go func() { result <- server.Serve(listener) }()
+	select {
+	case <-ctx.Done():
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdown)
+		return nil
+	case err := <-result:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
 }
 
 type devEvent struct {

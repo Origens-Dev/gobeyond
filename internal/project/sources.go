@@ -35,6 +35,9 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 }
 
 func syncGoSources(root string, routes []Route, buildID string, check bool) error {
+	if _, err := DiscoverMiddlewareSource(root); err != nil {
+		return err
+	}
 	moduleRoot, modulePath, goVersion, err := findModule(root)
 	if err != nil {
 		return err

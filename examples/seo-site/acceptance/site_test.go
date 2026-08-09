@@ -3,8 +3,8 @@ package acceptance
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -127,7 +127,7 @@ func TestCrawlerControlDocuments(t *testing.T) {
 	}
 }
 
-func TestLiveSEOStatusAndRedirectSemantics(t *testing.T) {
+func TestLiveSEOStatusSemantics(t *testing.T) {
 	server := newTestSite(t, "", nil)
 	tests := []struct {
 		path     string
@@ -135,7 +135,6 @@ func TestLiveSEOStatusAndRedirectSemantics(t *testing.T) {
 		location string
 	}{
 		{path: "/articles/missing", status: http.StatusNotFound},
-		{path: "/articles/old-portable-react", status: http.StatusPermanentRedirect, location: "/articles/portable-react"},
 	}
 	for _, test := range tests {
 		recorder := httptest.NewRecorder()

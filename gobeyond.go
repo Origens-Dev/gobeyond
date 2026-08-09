@@ -320,8 +320,17 @@ func Rewrite(path string) Response {
 
 type Handler func(*RequestContext) (Response, error)
 
+// Middleware is the legacy low-level Go runtime hook.
+//
+// Deprecated: application request middleware is authored as exactly one root
+// middleware.ts or middleware.js default export. This type remains only for
+// runtime compatibility during the alpha line.
 type Middleware func(Handler) Handler
 
+// MiddlewareConfig configures the legacy low-level Go runtime hook.
+//
+// Deprecated: application request middleware is authored as exactly one root
+// middleware.ts or middleware.js default export.
 type MiddlewareConfig struct {
 	Patterns []string
 	Methods  []string

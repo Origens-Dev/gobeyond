@@ -108,8 +108,7 @@ func generateSiteArtifacts(root, websiteImport string, routes []Route) (map[stri
 		return nil, err
 	}
 
-	hasMiddleware := siteMiddlewarePresent(root)
-	registry, err := renderRegistry(websiteImport, pages, apis, actions, agents, hasMiddleware)
+	registry, err := renderRegistry(websiteImport, pages, apis, actions, agents)
 	if err != nil {
 		return nil, err
 	}
@@ -128,22 +127,6 @@ func generateSiteArtifacts(root, websiteImport string, routes []Route) (map[stri
 		filepath.Join(root, GeneratedDir, "registry", "site.go"):    registry,
 		filepath.Join(root, GeneratedDir, "cmd", "site", "main.go"): siteMain,
 	}, nil
-}
-
-// siteMiddlewarePresent reports whether the website root has an optional
-// middleware.go that exports Middleware(). internal/ is left for app code.
-func siteMiddlewarePresent(root string) bool {
-	file := filepath.Join(root, "middleware.go")
-	funcs, err := exportedFuncs(file)
-	if err != nil {
-		return false
-	}
-	for _, name := range funcs {
-		if name == "Middleware" {
-			return true
-		}
-	}
-	return false
 }
 
 func findRouteContract(root, websiteImport, routeID string) (string, bool, error) {
@@ -466,7 +449,7 @@ func httpMethodFuncs(file string) ([]string, error) {
 	return methods, nil
 }
 
-func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, agents []AgentDefinition, hasMiddleware bool) ([]byte, error) {
+func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, agents []AgentDefinition) ([]byte, error) {
 	needsGB := false
 	for _, page := range pages {
 		if page.HasPage {
@@ -494,10 +477,6 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 		for index, definition := range agents {
 			imports = append(imports, fmt.Sprintf(`agent%d "%s"`, index, path.Join(websiteImport, GeneratedDir, "agents", definition.Key)))
 		}
-	}
-	if hasMiddleware {
-		// Optional website-root middleware.go (package middleware).
-		imports = append(imports, `middleware "`+websiteImport+`"`)
 	}
 	for _, page := range pages {
 		if page.HasPage {
@@ -620,9 +599,6 @@ func New(opts Options) (*gbruntime.Server, func() error, error) {
 		Actions:       actions,
 		APIs:          apis,
 `)
-	if hasMiddleware {
-		b.WriteString("\t\tMiddleware:    middleware.Middleware(),\n")
-	}
 	b.WriteString(`	}
 	var closeFn func() error
 	if opts.Static != nil {

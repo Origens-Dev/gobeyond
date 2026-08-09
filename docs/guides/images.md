@@ -120,7 +120,7 @@ nothing.
 A request for `/brand/logo.png` therefore reads
 `s3://gobeyond-{env}-site-static/landing/brand/logo.png` (or the corresponding
 `app/` key). An external hosting platform may also add cross-account S3
-`GetObject` plus a CloudFront cache policy and ordered behavior for
+`GetObject` plus a CDN cache policy and ordered behavior for
 `/_gobeyond/image*` (query keys `url`, `w`, `q`, `f`, and trusted viewer host).
 That infrastructure is outside the public single-site reference and has not
 been applied by this repository.

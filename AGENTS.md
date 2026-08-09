@@ -2,7 +2,8 @@
 
 GoBeyond is application-first, with three equal authored surfaces: React and Go
 web routes under `app/`, durable definitions under `workflows/`, and direct or
-durable agents under `agents/`. Ordinary Go services and policy under
+durable agents under `agents/`. Optional request middleware is one root
+`middleware.ts` or `middleware.js`. Ordinary Go services and policy under
 `internal/` can be shared by all three without mixing framework-generated
 plumbing into application logic.
 
@@ -13,6 +14,9 @@ plumbing into application logic.
 - Keep route-specific mutations in a sibling `actions.go` and HTTP endpoints in
   `app/api/**/route.go`. Put reusable Go services and policy in ordinary
   `internal/` packages, never in a second route tree.
+- Keep at most one root `middleware.ts` or `middleware.js`; never both. It must
+  default-export a Fetch-style request function and return `fetch(request)` to
+  continue through the platform-controlled path to the application.
 - Keep durable definitions in `workflows/<id>/workflow.go` or a standalone
   `workflows/<id>/activity.go`. Workflow-owned activities live under
   `activities/<id>/activity.go`; owned subworkflows live under
@@ -26,8 +30,9 @@ plumbing into application logic.
   `var Agent = agents.Define(...)`. Agent configs and tool, skill, subagent,
   schedule, and channel slots must remain compiler-visible literals. Direct is
   the zero-value execution mode; durable agents opt in with `Durable: true`.
-- Authors write `app/`, `agents/`, `workflows/`, and `internal/` only. Generated
-  projections, contracts, registries, and process mains live under `generated/`.
+- Authors write `app/`, `agents/`, `workflows/`, `internal/`, and optional root
+  middleware only. Generated projections, contracts, registries, and process
+  mains live under `generated/`.
 - Do not move React component composition into Go handlers.
 - Initial Go-rendered markup must stay inside the documented portable profile.
 - Always attempt portable compilation, including inside `use client` modules.

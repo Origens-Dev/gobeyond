@@ -20,6 +20,7 @@ operations references when you cross a runtime boundary.
 - [Connect request-time Go data](guides/connect-go-data.md)
 - [Add a typed action](guides/add-action.md)
 - [Add a Go API](guides/add-api.md)
+- [Add request middleware](guides/middleware.md)
 - [Debug generated contracts and hydration](guides/debug-contracts.md)
 - [Configure public origins](guides/public-origin.md)
 - [Configure icons and social sharing](guides/icons-and-social.md)

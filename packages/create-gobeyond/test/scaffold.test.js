@@ -30,7 +30,7 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
     'app/products/[slug]/page.go',
     'app/products/[slug]/actions.go',
     'app/api/products/route.go',
-    'middleware.go',
+    'middleware.ts',
     'public/portable-react.svg',
     'public/social/home.svg',
     'Dockerfile',
@@ -57,10 +57,15 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
   assert.equal(packageJSON.scripts.build, 'gobeyond build')
   assert.match(packageJSON.scripts.generate, /^gobeyond generate$/)
   assert.equal(packageJSON.scripts.dev, 'gobeyond dev')
+  assert.equal(packageJSON.scripts.serve, 'gobeyond preview')
+  assert.equal(packageJSON.scripts.preview, 'gobeyond preview')
 
   const gitignore = await readFile(join(destination, '.gitignore'), 'utf8')
   assert.match(gitignore, /^\.env\.local$/m)
   assert.match(gitignore, /^\.env\.\*\.local$/m)
+  assert.match(gitignore, /generated\/workflows/)
+  assert.match(gitignore, /generated\/agents/)
+  assert.doesNotMatch(gitignore, /generated\/workers/)
 
   const goMod = await readFile(join(destination, 'go.mod'), 'utf8')
   assert.ok(
@@ -84,19 +89,18 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
   const vite = await readFile(join(destination, 'vite.config.ts'), 'utf8')
   assert.match(vite, /dedupe: \['react', 'react-dom'\]/)
   assert.match(vite, /sourcemap: false/)
+  const tsconfig = JSON.parse(await readFile(join(destination, 'tsconfig.json'), 'utf8'))
+  assert.ok(tsconfig.include.includes('middleware.ts'))
   const loader = await readFile(join(destination, 'app/products/[slug]/page.go'), 'utf8')
   assert.match(loader, /type Props struct/)
   assert.match(loader, /var Config = gb\.PageConfig/)
   assert.match(loader, /func Page\(ctx \*gb\.PageContext\)/)
   const action = await readFile(join(destination, 'app/products/[slug]/actions.go'), 'utf8')
   assert.match(action, /contracts\/actions\/r_products_slug_3e2e8eb9_add_to_cart/)
-  const middleware = await readFile(join(destination, 'middleware.go'), 'utf8')
-  assert.match(middleware, /package middleware/)
-  assert.match(middleware, /func Middleware\(\)/)
-  assert.match(middleware, /starter-request-id/)
-  assert.match(middleware, /Patterns: \[\]string\{"\/products\/\[slug\]"\}/)
-  assert.doesNotMatch(middleware, /openfromenv\.OpenFromEnv\(\)/)
-  assert.doesNotMatch(middleware, /WithPublicOrigin/)
+  const middleware = await readFile(join(destination, 'middleware.ts'), 'utf8')
+  assert.match(middleware, /export default function middleware/)
+  assert.match(middleware, /Response\.redirect/)
+  assert.match(middleware, /return fetch\(request\)/)
   const gitignoreFull = await readFile(join(destination, '.gitignore'), 'utf8')
   assert.match(gitignoreFull, /generated\/cmd\//)
 

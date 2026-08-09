@@ -90,8 +90,8 @@ var Agent = gbagents.DefineAI(gbagents.AIConfig{
 Built-in model references use `anthropic/...`, `openrouter/...`, `bedrock/...`,
 or `vertex/...` and read the provider package's normal environment credentials.
 `AIConfig.Provider` accepts a custom Go AI SDK provider without copying it or
-its credentials into the generated manifest or Temporal input. In this local
-MVP the authored package is linked into both the site registration and durable
+its credentials into the generated manifest or Temporal input. In the current
+alpha, the authored package is linked into both the site registration and durable
 worker binaries, so custom provider construction must remain lazy and free of
 secret-loading side effects; splitting transport metadata from worker-only
 executors belongs to the hosted integration.
@@ -106,13 +106,13 @@ The compiler requires non-empty `instructions.md`, embeds it in generated Go,
 and uses the finalized GoBeyond build identity as the durable runtime revision.
 Workers resolve an exact AgentID + revision pair. A stale worker therefore fails
 with the Temporal SDK's non-retryable runtime mismatch before it can execute a
-different build's provider or tools. This MVP intentionally fails an old
+different build's provider or tools. The current alpha intentionally fails an old
 in-flight run after its local revision worker is replaced; retaining old
 revisions through Temporal Worker Deployment Versioning is a hosted rollout
 concern.
 
 Tools, skills, subagents, schedules, and channels are compiler-visible slots.
-This MVP records their stable IDs in `.gobeyond/agents.json`; provider binding
+The current alpha records their stable IDs in `.gobeyond/agents.json`; provider binding
 and scheduled invocation are later layers. Put reusable application code under
 `internal/`, not imports between authored agent packages.
 
@@ -167,15 +167,16 @@ names such as `support__local`, and retry while user-managed Temporal is absent.
 `gobeyond preview` uses the separate `support__preview` suffix for both the
 site dispatcher and its supervised poller.
 
-## Current MVP boundary
+## Current alpha limitations
 
 Session and event storage is process-local in the public framework runtime;
 hosted persistence belongs to the out-of-scope hosting integration. Durable
 typed handlers keep their legacy one-activity workflow. Durable AI agents use
-the released Origens `go-ai` and `go-temporal-ai-sdk` packages for granular
+the released `github.com/Origens-Dev/go-ai` and
+`github.com/Origens-Dev/go-temporal-ai-sdk` packages for granular
 model/tool durability, cancellation, records, and terminal ownership. Tools
 whose static or dynamic policy requires human approval are rejected at agent
-registration in this MVP: the durable workflow can wait on the signal, but the
+registration in the current alpha: the durable workflow can wait on the signal, but the
 native local event store cannot yet expose its pending interaction safely.
 Native SSE currently carries session lifecycle, direct deltas, and final
 output; shared protocol-v2 preview/replay and approval delivery are a hosting

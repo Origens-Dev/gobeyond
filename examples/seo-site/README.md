@@ -1,6 +1,6 @@
 # GoBeyond SEO acceptance site
 
-This website-first fixture defines the crawler-visible contract for the MVP.
+This SEO acceptance fixture defines GoBeyond's crawler-visible web contract.
 The pages intentionally stay within GoBeyond's portable React profile: typed
 props, intrinsic markup, project-owned components, conditions, and keyed lists.
 
@@ -22,7 +22,7 @@ robots.txt, and sitemap.xml.
 Its route source is co-located: a static route has `page.tsx` only, while each
 request-time route adds a sibling `page.go`; the product mutation lives beside
 its declaration in `app/products/[slug]/actions.go`. Shared Go helpers live in
-`internal/site`; optional request middleware is website-root `middleware.go`.
+`internal/site`; optional request middleware is website-root `middleware.ts`.
 `robots.txt` / `sitemap.xml` come from `app/robots.ts` and `app/sitemap.ts` (build-time Metadata files). The runtime imports
 generated-safe projections of route files, never the `app/` source directories
 directly.
@@ -30,6 +30,6 @@ directly.
 It also imports a real stylesheet and ships product/Open Graph image fixtures.
 `gobeyond build` links the content-hashed CSS in static and dynamic documents,
 copies the images to `dist/static`, and records their public URLs in
-`dist/deploy/route-trie.json` for CloudFront/S3 routing.
+`dist/deploy/route-trie.json` for CDN/static-origin routing.
 
 For local Temporal durables, see `examples/durables-site`.

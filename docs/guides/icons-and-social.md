@@ -82,5 +82,5 @@ Do not author the same URL under both `app/` and `public/`.
 3. Fetch each icon / crawler path (`/robots.txt`, `/sitemap.xml`, `/favicon.ico`).
 4. Refresh the page in the Facebook, X, and LinkedIn sharing debuggers.
 
-CloudFront or another front door must route these public paths to the static
+The CDN or another front door must route these public paths to the static
 origin. Do not route social preview images through `/_gobeyond/image`.
