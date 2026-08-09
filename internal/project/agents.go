@@ -30,7 +30,9 @@ type AgentDefinition struct {
 	Kind         string
 	Mode         string
 	TaskQueue    string
+	TaskQueueSet bool
 	Durable      bool
+	Realtime     bool
 	Public       bool
 	Model        string
 	MaxSteps     int
@@ -44,6 +46,17 @@ type AgentDefinition struct {
 	OutputType   string
 	SourceFiles  []string
 	Slots        AgentSlots
+	Tools        []AgentToolDefinition
+}
+
+// AgentToolDefinition is the compiler-visible execution metadata for one
+// DefineAI tool. Variable is retained only for source validation; manifests
+// expose the stable map key and resolved logical queue.
+type AgentToolDefinition struct {
+	ID           string `json:"id"`
+	Variable     string `json:"-"`
+	TaskQueue    string `json:"taskQueue,omitempty"`
+	TaskQueueSet bool   `json:"-"`
 }
 
 // AgentSlots contains all author-visible extension references.
@@ -89,6 +102,9 @@ func DiscoverAgentDefinitions(root string) ([]AgentDefinition, error) {
 		definitions = append(definitions, definition)
 	}
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].ID < definitions[j].ID })
+	if err := resolveAgentGraph(definitions); err != nil {
+		return nil, err
+	}
 	return definitions, nil
 }
 
@@ -109,7 +125,7 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 	if err != nil {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 	}
-	taskQueue, durable, public, model, maxSteps, err := parseAgentConfig(call.Config, call.Kind)
+	taskQueue, durable, realtime, public, model, maxSteps, err := parseAgentConfig(call.Config, call.Kind)
 	if err != nil {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 	}
@@ -119,20 +135,27 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 			return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 		}
 	}
-	if durable && taskQueue == "" {
-		taskQueue = DefaultWorkflowQueueID
-	}
 	mode := AgentModeDirect
 	if durable {
 		mode = AgentModeDurable
 	}
+	tools, err := parseAgentTools(call.Config, call.Kind, parsed)
+	if err != nil {
+		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
+	}
 	definition := AgentDefinition{
 		ID: id, Key: AgentDefinitionKey(id), Kind: call.Kind, Mode: mode, TaskQueue: taskQueue,
-		Durable: durable, Public: public, SourceDir: authorPath(root, dir),
+		TaskQueueSet: taskQueue != "", Durable: durable, Realtime: realtime, Public: public, SourceDir: authorPath(root, dir),
 		EntryFile: authorPath(root, entryFile), PackageName: packageName,
 		Handler: call.Handler, SourceFiles: files, Slots: call.Slots,
-		Model: model, MaxSteps: maxSteps,
+		Model: model, MaxSteps: maxSteps, Tools: tools,
 	}
+	for _, tool := range tools {
+		if !containsString(definition.Slots.Tools, tool.ID) {
+			definition.Slots.Tools = append(definition.Slots.Tools, tool.ID)
+		}
+	}
+	sort.Strings(definition.Slots.Tools)
 	if call.Kind == AgentKindAI {
 		instructionsFile := filepath.Join(dir, "instructions.md")
 		instructions, readErr := os.ReadFile(instructionsFile)
@@ -222,69 +245,344 @@ func findAgentCall(file *ast.File) (agentCall, error) {
 	return agentCall{}, errors.New("missing exported var Agent = agents.Define(...) or agents.DefineAI(...)")
 }
 
-func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable bool, public bool, model string, maxSteps int, err error) {
+func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable bool, realtime bool, public bool, model string, maxSteps int, err error) {
 	composite, ok := config.(*ast.CompositeLit)
 	if !ok {
-		return "", false, false, "", 0, errors.New("agent config must be an inline literal so the compiler can resolve its build metadata")
+		return "", false, false, false, "", 0, errors.New("agent config must be an inline literal so the compiler can resolve its build metadata")
 	}
 	seen := map[string]bool{}
 	for _, element := range composite.Elts {
 		field, ok := element.(*ast.KeyValueExpr)
 		if !ok {
-			return "", false, false, "", 0, errors.New("agent config must use named fields")
+			return "", false, false, false, "", 0, errors.New("agent config must use named fields")
 		}
 		key, ok := field.Key.(*ast.Ident)
 		if !ok {
-			return "", false, false, "", 0, errors.New("agent config field must be named")
+			return "", false, false, false, "", 0, errors.New("agent config field must be named")
 		}
 		if seen[key.Name] {
-			return "", false, false, "", 0, fmt.Errorf("agent config field %s is duplicated", key.Name)
+			return "", false, false, false, "", 0, fmt.Errorf("agent config field %s is duplicated", key.Name)
 		}
 		seen[key.Name] = true
 		switch key.Name {
 		case "TaskQueue":
 			taskQueue, err = staticString(field.Value, "TaskQueue")
 			if err != nil {
-				return "", false, false, "", 0, err
+				return "", false, false, false, "", 0, err
 			}
 		case "Durable":
 			durable, err = staticBool(field.Value, "Durable")
 			if err != nil {
-				return "", false, false, "", 0, err
+				return "", false, false, false, "", 0, err
+			}
+		case "Realtime":
+			realtime, err = staticBool(field.Value, "Realtime")
+			if err != nil {
+				return "", false, false, false, "", 0, err
 			}
 		case "Public":
 			public, err = staticBool(field.Value, "Public")
 			if err != nil {
-				return "", false, false, "", 0, err
+				return "", false, false, false, "", 0, err
 			}
 		case "Model":
 			if kind != AgentKindAI {
-				return "", false, false, "", 0, errors.New("agent config field Model is only supported by DefineAI")
+				return "", false, false, false, "", 0, errors.New("agent config field Model is only supported by DefineAI")
 			}
 			model, err = staticString(field.Value, "Model")
 			if err != nil {
-				return "", false, false, "", 0, err
+				return "", false, false, false, "", 0, err
 			}
 		case "MaxSteps":
 			if kind != AgentKindAI {
-				return "", false, false, "", 0, errors.New("agent config field MaxSteps is only supported by DefineAI")
+				return "", false, false, false, "", 0, errors.New("agent config field MaxSteps is only supported by DefineAI")
 			}
 			maxSteps, err = staticInt(field.Value, "MaxSteps")
 			if err != nil {
-				return "", false, false, "", 0, err
+				return "", false, false, false, "", 0, err
 			}
 		case "Tools", "Provider":
 			if kind != AgentKindAI {
-				return "", false, false, "", 0, fmt.Errorf("agent config field %s is only supported by DefineAI", key.Name)
+				return "", false, false, false, "", 0, fmt.Errorf("agent config field %s is only supported by DefineAI", key.Name)
 			}
 		default:
-			return "", false, false, "", 0, fmt.Errorf("agent config field %s is not supported", key.Name)
+			return "", false, false, false, "", 0, fmt.Errorf("agent config field %s is not supported", key.Name)
 		}
 	}
 	if kind == AgentKindAI && strings.TrimSpace(model) == "" {
-		return "", false, false, "", 0, errors.New("AI agent Model is required")
+		return "", false, false, false, "", 0, errors.New("AI agent Model is required")
 	}
-	return taskQueue, durable, public, model, maxSteps, nil
+	return taskQueue, durable, realtime, public, model, maxSteps, nil
+}
+
+func parseAgentTools(config ast.Expr, kind string, files map[string]*ast.File) ([]AgentToolDefinition, error) {
+	if kind != AgentKindAI {
+		return nil, nil
+	}
+	composite, ok := config.(*ast.CompositeLit)
+	if !ok {
+		return nil, nil
+	}
+	var toolsExpression ast.Expr
+	for _, element := range composite.Elts {
+		field, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := field.Key.(*ast.Ident)
+		if ok && key.Name == "Tools" {
+			toolsExpression = field.Value
+			break
+		}
+	}
+	if toolsExpression == nil {
+		return nil, nil
+	}
+	toolsMap, ok := toolsExpression.(*ast.CompositeLit)
+	if !ok {
+		return nil, errors.New("AI agent Tools must be an inline map literal so the compiler can resolve tool queues")
+	}
+	definitions := make([]AgentToolDefinition, 0, len(toolsMap.Elts))
+	seen := map[string]struct{}{}
+	for _, element := range toolsMap.Elts {
+		entry, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			return nil, errors.New("AI agent Tools entries must use explicit string keys")
+		}
+		id, err := staticString(entry.Key, "AI tool ID")
+		if err != nil || strings.TrimSpace(id) == "" {
+			return nil, errors.New("AI agent Tools entries require non-empty string literal IDs")
+		}
+		if _, exists := seen[id]; exists {
+			return nil, fmt.Errorf("AI agent Tools duplicates ID %q", id)
+		}
+		seen[id] = struct{}{}
+		definition := AgentToolDefinition{ID: id}
+		switch value := entry.Value.(type) {
+		case *ast.Ident:
+			definition.Variable = value.Name
+			call := findVariableCall(files, value.Name)
+			if call != nil && calledName(call.Fun) == "DefineTool" {
+				definition.TaskQueue, definition.TaskQueueSet, err = parseToolTaskQueue(call)
+				if err != nil {
+					return nil, fmt.Errorf("AI tool %q: %w", id, err)
+				}
+			}
+		case *ast.CallExpr:
+			if calledName(value.Fun) != "DefineTool" {
+				return nil, fmt.Errorf("AI tool %q must reference a variable or inline agents.DefineTool", id)
+			}
+			definition.TaskQueue, definition.TaskQueueSet, err = parseToolTaskQueue(value)
+			if err != nil {
+				return nil, fmt.Errorf("AI tool %q: %w", id, err)
+			}
+		default:
+			return nil, fmt.Errorf("AI tool %q must reference a variable or inline agents.DefineTool", id)
+		}
+		definitions = append(definitions, definition)
+	}
+	sort.Slice(definitions, func(i, j int) bool { return definitions[i].ID < definitions[j].ID })
+	return definitions, nil
+}
+
+func findVariableCall(files map[string]*ast.File, name string) *ast.CallExpr {
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			general, ok := declaration.(*ast.GenDecl)
+			if !ok || general.Tok != token.VAR {
+				continue
+			}
+			for _, specification := range general.Specs {
+				value, ok := specification.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index, candidate := range value.Names {
+					if candidate.Name != name || index >= len(value.Values) {
+						continue
+					}
+					call, _ := value.Values[index].(*ast.CallExpr)
+					return call
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func parseToolTaskQueue(call *ast.CallExpr) (string, bool, error) {
+	if call == nil || len(call.Args) < 1 {
+		return "", false, errors.New("DefineTool requires an inline ToolConfig")
+	}
+	config, ok := call.Args[0].(*ast.CompositeLit)
+	if !ok {
+		return "", false, errors.New("DefineTool ToolConfig must be an inline literal so the compiler can resolve TaskQueue")
+	}
+	for _, element := range config.Elts {
+		field, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := field.Key.(*ast.Ident)
+		if !ok || key.Name != "TaskQueue" {
+			continue
+		}
+		queue, err := staticString(field.Value, "Tool TaskQueue")
+		if err != nil {
+			return "", false, err
+		}
+		return queue, strings.TrimSpace(queue) != "", nil
+	}
+	return "", false, nil
+}
+
+func resolveAgentGraph(definitions []AgentDefinition) error {
+	byID := make(map[string]int, len(definitions))
+	parents := make(map[string][]string, len(definitions))
+	for index := range definitions {
+		definition := &definitions[index]
+		byID[definition.ID] = index
+		if definition.Realtime {
+			if !definition.Durable {
+				return fmt.Errorf("%s: Realtime requires Durable: true", definition.EntryFile)
+			}
+			if definition.TaskQueueSet {
+				return fmt.Errorf("%s: Realtime agents use a compiler-derived unique TaskQueue", definition.EntryFile)
+			}
+		}
+		if !definition.Durable && definition.TaskQueueSet {
+			return fmt.Errorf("%s: direct agents cannot set TaskQueue", definition.EntryFile)
+		}
+	}
+	for index := range definitions {
+		definition := &definitions[index]
+		for _, childID := range definition.Slots.Subagents {
+			childIndex, ok := byID[childID]
+			if !ok {
+				return fmt.Errorf("%s: subagent %q does not exist", definition.EntryFile, childID)
+			}
+			child := &definitions[childIndex]
+			if definition.Durable != child.Durable {
+				return fmt.Errorf("%s: subagent %q must use the same durability mode", definition.EntryFile, childID)
+			}
+			parents[childID] = append(parents[childID], definition.ID)
+		}
+	}
+	state := map[string]uint8{}
+	var visit func(string) error
+	visit = func(id string) error {
+		switch state[id] {
+		case 1:
+			return fmt.Errorf("agent subagent graph contains a cycle at %q", id)
+		case 2:
+			return nil
+		}
+		state[id] = 1
+		definition := definitions[byID[id]]
+		for _, childID := range definition.Slots.Subagents {
+			if err := visit(childID); err != nil {
+				return err
+			}
+		}
+		state[id] = 2
+		return nil
+	}
+	for id := range byID {
+		if err := visit(id); err != nil {
+			return err
+		}
+	}
+	resolved := map[string]string{}
+	var resolveQueue func(string) (string, error)
+	resolveQueue = func(id string) (string, error) {
+		if queue, ok := resolved[id]; ok {
+			return queue, nil
+		}
+		definition := &definitions[byID[id]]
+		if !definition.Durable {
+			resolved[id] = ""
+			return "", nil
+		}
+		if definition.Realtime {
+			queue := realtimeAgentQueueID(definition.ID)
+			resolved[id] = queue
+			return queue, nil
+		}
+		if definition.TaskQueueSet {
+			resolved[id] = definition.TaskQueue
+			return definition.TaskQueue, nil
+		}
+		parentIDs := parents[id]
+		if len(parentIDs) == 0 {
+			resolved[id] = DefaultWorkflowQueueID
+			return DefaultWorkflowQueueID, nil
+		}
+		queues := map[string]struct{}{}
+		for _, parentID := range parentIDs {
+			queue, err := resolveQueue(parentID)
+			if err != nil {
+				return "", err
+			}
+			queues[queue] = struct{}{}
+		}
+		if len(queues) != 1 {
+			return "", fmt.Errorf("%s: subagent %q has parents on different task queues; set TaskQueue explicitly", definition.EntryFile, id)
+		}
+		for queue := range queues {
+			resolved[id] = queue
+			return queue, nil
+		}
+		return "", errors.New("unreachable agent queue resolution")
+	}
+	for index := range definitions {
+		definition := &definitions[index]
+		queue, err := resolveQueue(definition.ID)
+		if err != nil {
+			return err
+		}
+		definition.TaskQueue = queue
+		definition.Mode = AgentModeDirect
+		if definition.Durable {
+			definition.Mode = AgentModeDurable
+		}
+		for toolIndex := range definition.Tools {
+			tool := &definition.Tools[toolIndex]
+			if tool.TaskQueueSet {
+				if !definition.Durable {
+					return fmt.Errorf("%s: direct agent tool %q cannot set TaskQueue", definition.EntryFile, tool.ID)
+				}
+				if definition.Realtime {
+					return fmt.Errorf("%s: realtime agent tool %q cannot set TaskQueue because it executes locally", definition.EntryFile, tool.ID)
+				}
+				normalized, err := normalizeLogicalQueue(tool.TaskQueue)
+				if err != nil {
+					return fmt.Errorf("%s: tool %q: %w", definition.EntryFile, tool.ID, err)
+				}
+				tool.TaskQueue = normalized
+			} else {
+				tool.TaskQueue = queue
+			}
+		}
+	}
+	return nil
+}
+
+func realtimeAgentQueueID(id string) string {
+	candidate := "realtime-" + id
+	if normalized, err := normalizeLogicalQueue(candidate); err == nil {
+		return normalized
+	}
+	digest := sha256.Sum256([]byte("realtime-agent-queue:" + id))
+	return "realtime-" + hex.EncodeToString(digest[:8])
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func parseAgentSlots(value ast.Expr) (AgentSlots, error) {

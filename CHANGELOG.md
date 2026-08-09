@@ -6,6 +6,22 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.35 - 2026-08-09
+
+- Resolve durable agent, tool, and subagent task queues as one validated graph:
+  tools inherit their owner agent queue, agents inherit their root queue, and
+  authored queue overrides produce explicit poller artifacts.
+- Keep realtime agents durable while assigning a unique queue per agent and
+  selecting local model/tool activities where allowed. Long-running remote
+  boundaries heartbeat through the Temporal AI SDK.
+- Emit the cumulative v1alpha2 agent manifest and prompt-free hosted bundle so
+  internal builders can discover queues only after compilation.
+- Add optional Temporal Worker Deployment name/build identity with a pinned
+  default versioning behavior; local development remains unversioned when both
+  values are absent.
+- Preserve application-owned server composition and middleware by compiling a
+  custom `server/cmd/app` target when present.
+
 ## 0.1.0-alpha.34 - 2026-08-09
 
 - Replace authored Go middleware with exactly one optional root

@@ -32,12 +32,16 @@ const (
 type Config struct {
 	TaskQueue string
 	Durable   bool
-	Public    bool
+	// Realtime keeps the agent durable while selecting a compiler-owned,
+	// agent-unique task queue and local model/tool activity boundaries. It is
+	// intentionally an execution hint rather than a persistence mode.
+	Realtime bool
+	Public   bool
 }
 
 // Mode resolves the configured execution model. The zero value is direct.
 func (config Config) Mode() Mode {
-	if config.Durable {
+	if config.Durable || config.Realtime {
 		return DurableMode
 	}
 	return DirectMode

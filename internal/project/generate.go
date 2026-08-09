@@ -43,20 +43,29 @@ type WorkflowManifestQueue struct {
 
 type AgentsManifest struct {
 	APIVersion string                    `json:"apiVersion"`
+	BuildID    string                    `json:"buildId"`
 	Agents     []AgentManifestDefinition `json:"agents"`
 }
 
 type AgentManifestDefinition struct {
-	ID        string     `json:"id"`
-	Kind      string     `json:"kind"`
-	Mode      string     `json:"mode"`
-	TaskQueue string     `json:"taskQueue,omitempty"`
-	Durable   bool       `json:"durable"`
-	Public    bool       `json:"public"`
-	Model     string     `json:"model,omitempty"`
-	MaxSteps  int        `json:"maxSteps,omitempty"`
-	Revision  string     `json:"revision,omitempty"`
-	Slots     AgentSlots `json:"slots"`
+	ID         string              `json:"id"`
+	Kind       string              `json:"kind"`
+	Mode       string              `json:"mode"`
+	TaskQueue  string              `json:"taskQueue,omitempty"`
+	TaskQueues []string            `json:"taskQueues,omitempty"`
+	Durable    bool                `json:"durable"`
+	Realtime   bool                `json:"realtime"`
+	Public     bool                `json:"public"`
+	Model      string              `json:"model,omitempty"`
+	MaxSteps   int                 `json:"maxSteps,omitempty"`
+	Revision   string              `json:"revision,omitempty"`
+	Slots      AgentSlots          `json:"slots"`
+	Tools      []AgentManifestTool `json:"tools"`
+}
+
+type AgentManifestTool struct {
+	ID        string `json:"id"`
+	TaskQueue string `json:"taskQueue,omitempty"`
 }
 
 func Generate(root, buildRoot string, check bool) error {
@@ -94,8 +103,8 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 	if err != nil {
 		return err
 	}
-	setAIAgentRevisions(agentDefinitions, buildID)
-	agentsManifest := portableAgentsManifest(agentDefinitions)
+	setAgentRevisions(agentDefinitions, buildID)
+	agentsManifest := portableAgentsManifest(agentDefinitions, buildID)
 	agentsManifestBytes, err := json.MarshalIndent(agentsManifest, "", "  ")
 	if err != nil {
 		return err
@@ -146,8 +155,8 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 	return nil
 }
 
-func portableAgentsManifest(definitions []AgentDefinition) AgentsManifest {
-	manifest := AgentsManifest{APIVersion: "gobeyond.agents/v1alpha1"}
+func portableAgentsManifest(definitions []AgentDefinition, buildID string) AgentsManifest {
+	manifest := AgentsManifest{APIVersion: "gobeyond.agents/v1alpha2", BuildID: buildID}
 	for _, definition := range definitions {
 		slots := definition.Slots
 		slots.Tools = nonNilStrings(slots.Tools)
@@ -155,17 +164,32 @@ func portableAgentsManifest(definitions []AgentDefinition) AgentsManifest {
 		slots.Subagents = nonNilStrings(slots.Subagents)
 		slots.Schedules = nonNilStrings(slots.Schedules)
 		slots.Channels = nonNilStrings(slots.Channels)
+		tools := make([]AgentManifestTool, 0, len(definition.Tools))
+		queues := []string{}
+		if definition.TaskQueue != "" {
+			queues = append(queues, definition.TaskQueue)
+		}
+		for _, tool := range definition.Tools {
+			tools = append(tools, AgentManifestTool{ID: tool.ID, TaskQueue: tool.TaskQueue})
+			if tool.TaskQueue != "" && !containsString(queues, tool.TaskQueue) {
+				queues = append(queues, tool.TaskQueue)
+			}
+		}
+		sort.Strings(queues)
 		manifest.Agents = append(manifest.Agents, AgentManifestDefinition{
-			ID:        definition.ID,
-			Kind:      definition.Kind,
-			Mode:      definition.Mode,
-			TaskQueue: definition.TaskQueue,
-			Durable:   definition.Durable,
-			Public:    definition.Public,
-			Model:     definition.Model,
-			MaxSteps:  definition.MaxSteps,
-			Revision:  definition.Revision,
-			Slots:     slots,
+			ID:         definition.ID,
+			Kind:       definition.Kind,
+			Mode:       definition.Mode,
+			TaskQueue:  definition.TaskQueue,
+			TaskQueues: queues,
+			Durable:    definition.Durable,
+			Realtime:   definition.Realtime,
+			Public:     definition.Public,
+			Model:      definition.Model,
+			MaxSteps:   definition.MaxSteps,
+			Revision:   definition.Revision,
+			Slots:      slots,
+			Tools:      tools,
 		})
 	}
 	if manifest.Agents == nil {
@@ -174,11 +198,9 @@ func portableAgentsManifest(definitions []AgentDefinition) AgentsManifest {
 	return manifest
 }
 
-func setAIAgentRevisions(definitions []AgentDefinition, buildID string) {
+func setAgentRevisions(definitions []AgentDefinition, buildID string) {
 	for index := range definitions {
-		if definitions[index].Kind == AgentKindAI {
-			definitions[index].Revision = buildID
-		}
+		definitions[index].Revision = buildID
 	}
 }
 
@@ -251,6 +273,26 @@ func LoadManifest(root string) (Manifest, error) {
 	}
 	if manifest.APIVersion != "gobeyond.routes/v1alpha1" {
 		return Manifest{}, errors.New("unsupported route manifest API version")
+	}
+	return manifest, nil
+}
+
+// LoadAgentsManifest reads the compiler-owned portable agent deployment
+// projection. Build copies this validated value to dist/deploy/agents.json.
+func LoadAgentsManifest(root string) (AgentsManifest, error) {
+	data, err := os.ReadFile(filepath.Join(root, ".gobeyond", "agents.json"))
+	if err != nil {
+		return AgentsManifest{}, err
+	}
+	var manifest AgentsManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return AgentsManifest{}, err
+	}
+	if manifest.APIVersion != "gobeyond.agents/v1alpha2" || strings.TrimSpace(manifest.BuildID) == "" {
+		return AgentsManifest{}, errors.New("unsupported or incomplete agent manifest")
+	}
+	if manifest.Agents == nil {
+		manifest.Agents = []AgentManifestDefinition{}
 	}
 	return manifest, nil
 }

@@ -193,7 +193,7 @@ func syncGoSources(root string, routes []Route, buildID string, check bool) erro
 	if err != nil {
 		return err
 	}
-	setAIAgentRevisions(agentDefinitions, buildID)
+	setAgentRevisions(agentDefinitions, buildID)
 	for _, definition := range agentDefinitions {
 		authorDir := filepath.Join(root, filepath.FromSlash(definition.SourceDir))
 		moduleFile := filepath.Join(authorDir, "go.mod")

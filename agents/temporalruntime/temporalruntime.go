@@ -322,7 +322,7 @@ func Register[Input any, Output any](registry worker.Registry, agentID string, d
 	)
 	registry.RegisterWorkflowWithOptions(
 		func(ctx workflow.Context, input agents.DurableRunInput) (agents.DurableRunOutput, error) {
-			return executeWorkflow(ctx, activityName, input)
+			return executeWorkflow(ctx, activityName, input, definition.Config.Realtime)
 		},
 		workflow.RegisterOptions{Name: workflowName},
 	)
@@ -330,6 +330,8 @@ func Register[Input any, Output any](registry worker.Registry, agentID string, d
 }
 
 func executeActivity[Input any, Output any](ctx context.Context, definition agents.Definition[Input, Output], input agents.DurableRunInput) (agents.DurableRunOutput, error) {
+	stopHeartbeat := startActivityHeartbeat(ctx)
+	defer stopHeartbeat()
 	var typedInput Input
 	payload := input.Input
 	if len(payload) == 0 {
@@ -349,10 +351,44 @@ func executeActivity[Input any, Output any](ctx context.Context, definition agen
 	return agents.DurableRunOutput{Output: encoded}, nil
 }
 
-func executeWorkflow(ctx workflow.Context, activityName string, input agents.DurableRunInput) (agents.DurableRunOutput, error) {
-	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: activityTimeout})
+func startActivityHeartbeat(ctx context.Context) func() {
+	if !activity.IsActivity(ctx) || activity.GetInfo(ctx).IsLocalActivity {
+		return func() {}
+	}
+	activity.RecordHeartbeat(ctx, "agent-handler")
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				activity.RecordHeartbeat(ctx, "agent-handler")
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
+}
+
+func executeWorkflow(ctx workflow.Context, activityName string, input agents.DurableRunInput, realtime bool) (agents.DurableRunOutput, error) {
 	var output agents.DurableRunOutput
-	if err := workflow.ExecuteActivity(ctx, activityName, input).Get(ctx, &output); err != nil {
+	var future workflow.Future
+	if realtime {
+		ctx = workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: activityTimeout})
+		future = workflow.ExecuteLocalActivity(ctx, activityName, input)
+	} else {
+		ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: activityTimeout,
+			HeartbeatTimeout:    30 * time.Second,
+		})
+		future = workflow.ExecuteActivity(ctx, activityName, input)
+	}
+	if err := future.Get(ctx, &output); err != nil {
 		return agents.DurableRunOutput{}, err
 	}
 	return output, nil
@@ -467,16 +503,26 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 	if maxSteps <= 0 {
 		maxSteps = 8
 	}
-	run, err := dispatcher.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID: workflowID, TaskQueue: physicalQueue,
-	}, temporalai.AgentWorkflowName, temporalai.AgentInput{
+	toolDefinitions, err := durableToolDefinitions(definition, dispatcher.environment)
+	if err != nil {
+		return err
+	}
+	agentInput := temporalai.AgentInput{
 		AgentID: definitionID(call), CompiledRevision: definition.AI.Revision,
 		ModelID: definition.AI.Model, Instructions: definition.AI.Instructions,
 		Prompt: input.PromptText(), Messages: activities.MessagesFromAI(messages),
-		Tools: activities.ToolDefinitionsFromAI(definition.AI.Tools), MaxSteps: maxSteps,
+		Tools: toolDefinitions, MaxSteps: maxSteps,
 		Stream:      updates.Options{StreamID: call.Run.ID, Scope: updates.Scope{AgentID: call.Run.AgentID}},
 		ToolContext: map[string]any{"gobeyondActor": call.Actor},
-	})
+	}
+	if definition.Config.Realtime {
+		agentInput.DefaultModelBoundary = activities.ToolExecutionBoundaryLocalActivity
+		agentInput.DefaultToolBoundary = activities.ToolExecutionBoundaryLocalActivity
+		agentInput.LocalToolTimeoutFallback = temporalai.LocalToolTimeoutFallbackNone
+	}
+	run, err := dispatcher.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: workflowID, TaskQueue: physicalQueue,
+	}, temporalai.AgentWorkflowName, agentInput)
 	if err != nil {
 		return fmt.Errorf("start durable AI agent workflow: %w", err)
 	}
@@ -491,6 +537,36 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 		Text: result.Text, FinishReason: result.FinishReason,
 		RawFinishReason: result.RawFinishReason, Model: result.ModelID,
 	})
+}
+
+func durableToolDefinitions(definition agents.AIDefinition, environment string) ([]activities.ToolDefinition, error) {
+	definitions := activities.ToolDefinitionsFromAI(definition.AI.Tools)
+	for index := range definitions {
+		if definition.Config.Realtime {
+			definitions[index].ExecutionBoundary = activities.ToolExecutionBoundaryLocalActivity
+			definitions[index].TaskQueue = ""
+			continue
+		}
+		logicalQueue := definition.Config.TaskQueue
+		for key, tool := range definition.AI.Tools {
+			name := key
+			if strings.TrimSpace(tool.Name) != "" {
+				name = tool.Name
+			}
+			if name == definitions[index].Name {
+				if queue := strings.TrimSpace(agents.ToolTaskQueue(tool)); queue != "" {
+					logicalQueue = queue
+				}
+				break
+			}
+		}
+		physicalQueue, err := gb.TaskQueueName(logicalQueue, environment)
+		if err != nil {
+			return nil, fmt.Errorf("AI agent tool %q task queue: %w", definitions[index].Name, err)
+		}
+		definitions[index].TaskQueue = physicalQueue
+	}
+	return definitions, nil
 }
 
 func definitionID(call httpruntime.StartCall) string { return call.Run.AgentID }

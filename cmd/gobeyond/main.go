@@ -290,6 +290,16 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if middlewareSource != "" {
 		assetLayout = buildpaths.AssetLayoutV4
 	}
+	agentsManifest, err := project.LoadAgentsManifest(projectRoot)
+	if err != nil {
+		return fmt.Errorf("load deploy agents manifest: %w", err)
+	}
+	if agentsManifest.BuildID != manifest.BuildID {
+		return fmt.Errorf("deploy agents manifest build ID %q does not match build %q", agentsManifest.BuildID, manifest.BuildID)
+	}
+	if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.AgentsManifest), agentsManifest); err != nil {
+		return err
+	}
 	browserAssets, err := collectBrowserAssets(staticDir, manifest.BuildID, clientEntry)
 	if err != nil {
 		return err
@@ -1574,11 +1584,19 @@ func browserNodeEnvironment(mode string) string {
 }
 
 func serverBuildTarget(website string) (string, error) {
-	target := filepath.Join(website, project.GeneratedDir, "cmd", "site")
-	if info, err := os.Stat(target); err == nil && info.IsDir() {
-		return target, nil
+	// Platform applications may own the final server composition (auth,
+	// observability, image loaders) while still using compiler-generated route
+	// registries. Prefer that explicit entry for both build and dev so local and
+	// hosted execution cannot silently bypass the same middleware chain.
+	custom := filepath.Join(website, "server", "cmd", "app")
+	if info, err := os.Stat(custom); err == nil && info.IsDir() {
+		return custom, nil
 	}
-	return "", errors.New("production server entry missing; run gobeyond generate (expected generated/cmd/site)")
+	generated := filepath.Join(website, project.GeneratedDir, "cmd", "site")
+	if info, err := os.Stat(generated); err == nil && info.IsDir() {
+		return generated, nil
+	}
+	return "", errors.New("production server entry missing; run gobeyond generate (expected generated/cmd/site or server/cmd/app)")
 }
 
 type workerBuildTargetInfo struct {

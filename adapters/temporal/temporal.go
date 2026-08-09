@@ -9,6 +9,8 @@
 //   - GOBEYOND_TEMPORAL_API_KEY — optional Temporal Cloud API key (mutually exclusive with mTLS)
 //   - GOBEYOND_TEMPORAL_TLS_CERT — optional client certificate PEM (requires TLS_KEY)
 //   - GOBEYOND_TEMPORAL_TLS_KEY — optional client private key PEM (requires TLS_CERT)
+//   - GOBEYOND_TEMPORAL_DEPLOYMENT_NAME — optional stable project-environment deployment name
+//   - GOBEYOND_TEMPORAL_BUILD_ID — optional immutable build version (requires DEPLOYMENT_NAME)
 //
 // Auth modes: local plaintext (neither API key nor mTLS), API-key TLS, or
 // mTLS via X509KeyPair. Setting only one of TLS_CERT/TLS_KEY is an error;
@@ -36,6 +38,7 @@ import (
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 )
 
 const (
@@ -45,6 +48,10 @@ const (
 	EnvAPIKey    = "GOBEYOND_TEMPORAL_API_KEY"
 	EnvTLSCert   = "GOBEYOND_TEMPORAL_TLS_CERT"
 	EnvTLSKey    = "GOBEYOND_TEMPORAL_TLS_KEY"
+	// DeploymentName and BuildID opt hosted workers into Temporal Worker
+	// Deployment Versioning. Both must be set; local dev leaves both empty.
+	EnvDeploymentName = "GOBEYOND_TEMPORAL_DEPLOYMENT_NAME"
+	EnvBuildID        = "GOBEYOND_TEMPORAL_BUILD_ID"
 	// Hosted readiness contract matches adapters/listen (gbhost unixgram nonce).
 	EnvReadinessNonce  = "GOBEYOND_READINESS_NONCE"
 	EnvReadinessSignal = "GOBEYOND_READINESS_SIGNAL"
@@ -60,9 +67,11 @@ type Options struct {
 	TaskQueue string
 	APIKey    string
 	// TLSCert and TLSKey are PEM-encoded client certificate material for mTLS.
-	TLSCert  string
-	TLSKey   string
-	Register RegisterFunc
+	TLSCert        string
+	TLSKey         string
+	DeploymentName string
+	BuildID        string
+	Register       RegisterFunc
 }
 
 // Serve dials Temporal, runs one worker for Options.TaskQueue, and blocks
@@ -86,6 +95,9 @@ func Serve(ctx context.Context, options Options) error {
 	}
 	if options.Namespace == "" {
 		options.Namespace = "default"
+	}
+	if err := validateDeploymentVersioning(options); err != nil {
+		return err
 	}
 
 	clientOptions, err := clientOptions(options)
@@ -127,13 +139,7 @@ func Serve(ctx context.Context, options Options) error {
 
 	runStart := time.Now()
 	tracker := &healthTracker{maxConcurrent: 100}
-	w := worker.New(c, options.TaskQueue, worker.Options{
-		MaxConcurrentActivityExecutionSize: int(tracker.maxConcurrent),
-		Interceptors: []interceptor.WorkerInterceptor{
-			&healthInterceptor{tracker: tracker},
-			&sorWorkerInterceptor{},
-		},
-	})
+	w := worker.New(c, options.TaskQueue, temporalWorkerOptions(options, tracker))
 	registerSorActivities(w)
 	options.Register(w)
 	startHealthReporter(runCtx, tracker)
@@ -320,7 +326,47 @@ func optionsFromEnv(options Options) Options {
 	if options.TLSKey == "" {
 		options.TLSKey = strings.TrimSpace(os.Getenv(EnvTLSKey))
 	}
+	if options.DeploymentName == "" {
+		options.DeploymentName = strings.TrimSpace(os.Getenv(EnvDeploymentName))
+	}
+	if options.BuildID == "" {
+		options.BuildID = strings.TrimSpace(os.Getenv(EnvBuildID))
+	}
+	options.DeploymentName = strings.TrimSpace(options.DeploymentName)
+	options.BuildID = strings.TrimSpace(options.BuildID)
 	return options
+}
+
+func validateDeploymentVersioning(options Options) error {
+	hasDeployment := strings.TrimSpace(options.DeploymentName) != ""
+	hasBuild := strings.TrimSpace(options.BuildID) != ""
+	if hasDeployment != hasBuild {
+		return fmt.Errorf("temporal adapter: %s and %s must both be set or both empty", EnvDeploymentName, EnvBuildID)
+	}
+	return nil
+}
+
+func temporalWorkerOptions(options Options, tracker *healthTracker) worker.Options {
+	result := worker.Options{
+		MaxConcurrentActivityExecutionSize: int(tracker.maxConcurrent),
+		Interceptors: []interceptor.WorkerInterceptor{
+			&healthInterceptor{tracker: tracker},
+			&sorWorkerInterceptor{},
+		},
+	}
+	if options.DeploymentName != "" {
+		result.DeploymentOptions = worker.DeploymentOptions{
+			UseVersioning: true,
+			Version: worker.WorkerDeploymentVersion{
+				DeploymentName: options.DeploymentName,
+				BuildID:        options.BuildID,
+			},
+			// Generated authored workflows, durable agents, and wrapper workflows
+			// all register on this worker. Pinned is the safe compatibility default.
+			DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
+		}
+	}
+	return result
 }
 
 func isInterrupt(err error) bool {

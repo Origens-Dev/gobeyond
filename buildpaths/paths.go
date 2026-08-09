@@ -61,6 +61,7 @@ const (
 	WorkersDir      = "workers"
 	WorkerEntryName = "gobeyond-worker"
 	WorkersManifest = "workers.json"
+	AgentsManifest  = "agents.json"
 	// DurablesAdapterTemporal is the v1 runtime adapter stamped into
 	// dist/deploy/workers.json. Platform ensure/provisioning keys off this id.
 	DurablesAdapterTemporal = "temporal"
