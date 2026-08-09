@@ -22,7 +22,8 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 - Preserve application-owned server composition and middleware by compiling a
   custom `server/cmd/app` target when present.
 - Publish hosted review events through the existing slot-private host-report
-  socket, so workers need no second mount or platform storage credentials.
+  socket, carrying the compiled agent identity so the host can validate it;
+  workers need no second mount or platform storage credentials.
 
 ## 0.1.0-alpha.34 - 2026-08-09
 
