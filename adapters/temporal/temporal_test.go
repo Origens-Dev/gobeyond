@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 )
 
 // stopStub implements the Stop half of worker.Worker for waitProbeOrWorker tests.
@@ -94,12 +95,50 @@ func TestOptionsFromEnv(t *testing.T) {
 	t.Setenv(EnvTaskQueue, "demo__local")
 	t.Setenv(EnvTLSCert, "cert-pem")
 	t.Setenv(EnvTLSKey, "key-pem")
+	t.Setenv(EnvDeploymentName, "project-env")
+	t.Setenv(EnvBuildID, "build-123")
 	got := optionsFromEnv(Options{})
 	if got.Address != "temporal:7233" || got.Namespace != "default" || got.TaskQueue != "demo__local" {
 		t.Fatalf("got %#v", got)
 	}
 	if got.TLSCert != "cert-pem" || got.TLSKey != "key-pem" {
 		t.Fatalf("TLS from env: %#v", got)
+	}
+	if got.DeploymentName != "project-env" || got.BuildID != "build-123" {
+		t.Fatalf("deployment identity from env: %#v", got)
+	}
+}
+
+func TestValidateDeploymentVersioningRequiresBothIdentityParts(t *testing.T) {
+	for _, options := range []Options{{DeploymentName: "project-env"}, {BuildID: "build-123"}} {
+		if err := validateDeploymentVersioning(options); err == nil {
+			t.Fatalf("expected deployment identity error for %#v", options)
+		}
+	}
+	if err := validateDeploymentVersioning(Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDeploymentVersioning(Options{DeploymentName: "project-env", BuildID: "build-123"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTemporalWorkerOptionsPinsHostedDeploymentVersion(t *testing.T) {
+	tracker := &healthTracker{maxConcurrent: 17}
+	got := temporalWorkerOptions(Options{DeploymentName: "project-env", BuildID: "build-123"}, tracker)
+	if !got.DeploymentOptions.UseVersioning || got.DeploymentOptions.Version.DeploymentName != "project-env" ||
+		got.DeploymentOptions.Version.BuildID != "build-123" || got.DeploymentOptions.DefaultVersioningBehavior != workflow.VersioningBehaviorPinned {
+		t.Fatalf("worker options = %#v", got.DeploymentOptions)
+	}
+	if got.MaxConcurrentActivityExecutionSize != 17 {
+		t.Fatalf("max concurrent = %d", got.MaxConcurrentActivityExecutionSize)
+	}
+}
+
+func TestTemporalWorkerOptionsLeavesLocalDevUnversioned(t *testing.T) {
+	got := temporalWorkerOptions(Options{}, &healthTracker{maxConcurrent: 1})
+	if got.DeploymentOptions.UseVersioning || got.DeploymentOptions.Version.DeploymentName != "" || got.DeploymentOptions.Version.BuildID != "" {
+		t.Fatalf("local worker unexpectedly versioned: %#v", got.DeploymentOptions)
 	}
 }
 

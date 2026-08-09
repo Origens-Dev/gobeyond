@@ -74,6 +74,15 @@ Worker process auth (hosted): set both `GOBEYOND_TEMPORAL_TLS_CERT` and
 `GOBEYOND_TEMPORAL_TLS_KEY` for mTLS, or `GOBEYOND_TEMPORAL_API_KEY` for
 API-key TLS — not both. Local Docker Temporal uses neither (plaintext).
 
+Hosted Worker Deployment Versioning sets both
+`GOBEYOND_TEMPORAL_DEPLOYMENT_NAME` and `GOBEYOND_TEMPORAL_BUILD_ID`. The
+deployment name is stable for the project environment and one immutable build
+ID covers the complete set of queues in that deployment. Generated workflows
+default to pinned behavior. The hosting rollout controller must prewarm every
+queue, promote with no missing pollers, retain exact-version artifacts, and
+wait for Temporal drainage before retiring an old build. Local development
+leaves both values empty and remains unversioned.
+
 ## Trigger client
 
 Configure a client before starting or signaling workflows. Browser code must

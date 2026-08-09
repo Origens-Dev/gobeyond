@@ -28,6 +28,7 @@ type AITool = ai.Tool
 type AIConfig struct {
 	TaskQueue string
 	Durable   bool
+	Realtime  bool
 	Public    bool
 
 	Model        string
@@ -39,7 +40,7 @@ type AIConfig struct {
 }
 
 func (config AIConfig) baseConfig() Config {
-	return Config{TaskQueue: config.TaskQueue, Durable: config.Durable, Public: config.Public}
+	return Config{TaskQueue: config.TaskQueue, Durable: config.Durable, Realtime: config.Realtime, Public: config.Public}
 }
 
 // AIDefinition is the fixed conversational agent definition produced by

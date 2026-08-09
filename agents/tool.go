@@ -11,12 +11,21 @@ import (
 
 const toolActorContextKey = "gobeyondActor"
 
+const (
+	toolMetadataNamespace = "gobeyond"
+	toolTaskQueueKey      = "taskQueue"
+)
+
 // ToolConfig is the provider-neutral authoring surface for a model-callable
 // function. Schemas use ordinary JSON Schema values (usually map[string]any).
 type ToolConfig struct {
-	Name             string
-	Title            string
-	Description      string
+	Name        string
+	Title       string
+	Description string
+	// TaskQueue is a logical Temporal queue. Durable agents inherit their own
+	// resolved queue when this is empty. Realtime agents reject explicit tool
+	// queues because their tools execute as local activities.
+	TaskQueue        string
 	InputSchema      any
 	OutputSchema     any
 	RequiresApproval bool
@@ -28,9 +37,16 @@ type ToolHandler[Input any, Output any] func(context.Context, Actor, Input) (Out
 // tool contract. Model input is schema-validated by go-ai before this decoder
 // runs; the authenticated actor comes from framework-owned runtime context.
 func DefineTool[Input any, Output any](config ToolConfig, handler ToolHandler[Input, Output]) AITool {
+	metadata := ai.ProviderMetadata(nil)
+	if config.TaskQueue != "" {
+		metadata = ai.ProviderMetadata{
+			toolMetadataNamespace: map[string]any{toolTaskQueueKey: config.TaskQueue},
+		}
+	}
 	return ai.Tool{
 		Name: config.Name, Title: config.Title, Description: config.Description,
 		InputSchema: config.InputSchema, OutputSchema: config.OutputSchema,
+		ToolMetadata:     metadata,
 		RequiresApproval: config.RequiresApproval,
 		Execute: func(ctx context.Context, call ai.ToolCall, options ai.ToolExecutionOptions) (any, error) {
 			if handler == nil {
@@ -51,6 +67,18 @@ func DefineTool[Input any, Output any](config ToolConfig, handler ToolHandler[In
 			return handler(ctx, actor, input)
 		},
 	}
+}
+
+// ToolTaskQueue returns the logical task queue embedded by DefineTool. It is
+// used by compiler-generated durable dispatch and never interpreted by model
+// providers.
+func ToolTaskQueue(tool AITool) string {
+	namespace, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)
+	if !ok {
+		return ""
+	}
+	queue, _ := namespace[toolTaskQueueKey].(string)
+	return queue
 }
 
 func toolActor(value any) (Actor, error) {

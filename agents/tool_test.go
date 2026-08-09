@@ -11,7 +11,7 @@ func TestDefineToolDecodesInputAndPropagatesActor(t *testing.T) {
 	type input struct {
 		OrderID string `json:"orderId"`
 	}
-	tool := DefineTool(ToolConfig{Description: "Look up an order"}, func(_ context.Context, actor Actor, input input) (string, error) {
+	tool := DefineTool(ToolConfig{Description: "Look up an order", TaskQueue: "lookups"}, func(_ context.Context, actor Actor, input input) (string, error) {
 		return actor.ID + ":" + input.OrderID, nil
 	})
 	output, err := tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"orderId": "order-1"}}, ai.ToolExecutionOptions{
@@ -19,5 +19,8 @@ func TestDefineToolDecodesInputAndPropagatesActor(t *testing.T) {
 	})
 	if err != nil || output != "user-1:order-1" {
 		t.Fatalf("tool output = %#v, err = %v", output, err)
+	}
+	if queue := ToolTaskQueue(tool); queue != "lookups" {
+		t.Fatalf("tool queue = %q", queue)
 	}
 }

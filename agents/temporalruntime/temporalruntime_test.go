@@ -136,6 +136,47 @@ func TestStartAIAgentUsesStableSDKRootAndCompiledRuntime(t *testing.T) {
 	}
 }
 
+func TestStartAIAgentResolvesToolQueuesAndRealtimeBoundaries(t *testing.T) {
+	model := ai.NewMockLanguageModel("assistant")
+	provider := ai.NewMockProvider()
+	provider.LanguageModels["assistant"] = model
+	tool := agents.DefineTool(agents.ToolConfig{TaskQueue: "tools"}, func(context.Context, agents.Actor, string) (string, error) {
+		return "ok", nil
+	})
+	fake := &fakeClient{run: &fakeRun{output: temporalai.AgentResult{ModelID: "assistant"}}}
+	dispatcher, err := New(context.Background(), Options{Client: fake, Environment: "preview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dispatcher.Close()
+	definition := agents.DefineAI(agents.AIConfig{
+		Durable: true, TaskQueue: "support", Model: "assistant", Provider: provider,
+		Revision: "revision-1", Tools: map[string]ai.Tool{"lookup": tool},
+	})
+	if err := dispatcher.Start(context.Background(), httpruntime.AdaptAI(definition), durableStartCall(), &recordingEmitter{}); err != nil {
+		t.Fatal(err)
+	}
+	input := fake.args[0].(temporalai.AgentInput)
+	if len(input.Tools) != 1 || input.Tools[0].TaskQueue != "tools__preview" {
+		t.Fatalf("durable tool definitions = %#v", input.Tools)
+	}
+
+	fake.run = &fakeRun{output: temporalai.AgentResult{ModelID: "assistant"}}
+	realtime := definition
+	realtime.Config.Realtime = true
+	realtime.AI.Realtime = true
+	if err := dispatcher.Start(context.Background(), httpruntime.AdaptAI(realtime), durableStartCall(), &recordingEmitter{}); err != nil {
+		t.Fatal(err)
+	}
+	realtimeInput := fake.args[0].(temporalai.AgentInput)
+	if realtimeInput.DefaultModelBoundary != activities.ToolExecutionBoundaryLocalActivity ||
+		realtimeInput.DefaultToolBoundary != activities.ToolExecutionBoundaryLocalActivity ||
+		realtimeInput.LocalToolTimeoutFallback != temporalai.LocalToolTimeoutFallbackNone ||
+		len(realtimeInput.Tools) != 1 || realtimeInput.Tools[0].TaskQueue != "" {
+		t.Fatalf("realtime input = %#v", realtimeInput)
+	}
+}
+
 func TestRegisterAIRejectsApprovalPolicies(t *testing.T) {
 	model := ai.NewMockLanguageModel("assistant")
 	provider := ai.NewMockProvider()

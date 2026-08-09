@@ -70,6 +70,8 @@ type LookupOutput struct { Status string `json:"status"` }
 var lookupOrder = gbagents.DefineTool(
   gbagents.ToolConfig{
     Description: "Look up an order visible to the current customer.",
+    // Optional. Empty inherits the owning durable agent's queue.
+    TaskQueue: "order-lookups",
     InputSchema: map[string]any{
       "type": "object",
       "properties": map[string]any{"orderId": map[string]any{"type": "string"}},
@@ -102,19 +104,36 @@ Direct AI agents stream `agent.text.delta` events and finish with one
 separate Temporal activity, selected through a queue-wide AgentID + compiled
 revision resolver. The same HTTP/session contract is used in both modes.
 
+A durable root agent with no `TaskQueue` uses `default`. A durable subagent with
+no queue inherits its parent's queue; if it has parents on different queues the
+compiler requires an explicit queue. Each tool likewise uses its explicit
+`ToolConfig.TaskQueue` or inherits the owning agent queue. Tool-only queues emit
+their own worker binary and appear in `dist/deploy/workers.json`.
+
+`Realtime: true` currently remains durable, but receives a compiler-derived
+agent-unique queue and uses bounded local-activity model/tool boundaries to
+reduce dispatch latency. Realtime requires `Durable: true`; neither the agent
+nor its tools may author a task queue. Local activities do not heartbeat, so
+their start-to-close limits and worker drainage remain the enforcement
+boundary. Ordinary remote model and tool activities heartbeat while running.
+
 The compiler requires non-empty `instructions.md`, embeds it in generated Go,
 and uses the finalized GoBeyond build identity as the durable runtime revision.
 Workers resolve an exact AgentID + revision pair. A stale worker therefore fails
 with the Temporal SDK's non-retryable runtime mismatch before it can execute a
-different build's provider or tools. The current alpha intentionally fails an old
-in-flight run after its local revision worker is replaced; retaining old
-revisions through Temporal Worker Deployment Versioning is a hosted rollout
-concern.
+different build's provider or tools. Hosted workers can opt into Temporal Worker
+Deployment Versioning with both `GOBEYOND_TEMPORAL_DEPLOYMENT_NAME` and
+`GOBEYOND_TEMPORAL_BUILD_ID`; all generated workflows default to pinned
+versioning behavior. The hosting control plane must promote the complete queue
+set and retain every old build until Temporal reports it drained. Merely setting
+these variables without that rollout controller is not a safe hosted rollout.
 
 Tools, skills, subagents, schedules, and channels are compiler-visible slots.
-The current alpha records their stable IDs in `.gobeyond/agents.json`; provider binding
-and scheduled invocation are later layers. Put reusable application code under
-`internal/`, not imports between authored agent packages.
+The compiler records their stable IDs in `.gobeyond/agents.json` and copies a
+prompt-free deployment projection to `dist/deploy/agents.json`; instructions and
+credentials are never included. Provider binding and scheduled invocation are
+later layers. Put reusable application code under `internal/`, not imports
+between authored agent packages.
 
 ## HTTP and TypeScript client
 
@@ -183,3 +202,8 @@ output; shared protocol-v2 preview/replay and approval delivery are a hosting
 adapter boundary rather than an in-process worker shortcut. Skills, subagents,
 schedules, and non-HTTP channels remain compiler-visible extension slots for
 later framework slices.
+
+Worker Deployment Versioning promotion, exact-version wake/restore, drainage,
+rollback, and old-version garbage collection remain hosting release gates. The
+public adapter's pinned worker identity is scaffolding for that control plane,
+not permission to drain a previous worker at deployment cutover.

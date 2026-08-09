@@ -485,12 +485,23 @@ func GroupWorkerQueues(definitions []WorkflowDefinition, agents []AgentDefinitio
 	for _, definition := range definitions {
 		byQueue[definition.TaskQueue] = append(byQueue[definition.TaskQueue], definition)
 	}
-	agentsByQueue := make(map[string][]AgentDefinition)
+	agentsByQueue := make(map[string]map[string]AgentDefinition)
 	for _, definition := range agents {
 		if !definition.Durable {
 			continue
 		}
-		agentsByQueue[definition.TaskQueue] = append(agentsByQueue[definition.TaskQueue], definition)
+		queues := []string{definition.TaskQueue}
+		for _, tool := range definition.Tools {
+			if tool.TaskQueue != "" && !containsString(queues, tool.TaskQueue) {
+				queues = append(queues, tool.TaskQueue)
+			}
+		}
+		for _, queue := range queues {
+			if agentsByQueue[queue] == nil {
+				agentsByQueue[queue] = map[string]AgentDefinition{}
+			}
+			agentsByQueue[queue][definition.ID] = definition
+		}
 	}
 	ids := make([]string, 0, len(byQueue))
 	for id := range byQueue {
@@ -506,7 +517,10 @@ func GroupWorkerQueues(definitions []WorkflowDefinition, agents []AgentDefinitio
 	for _, id := range ids {
 		definitions := byQueue[id]
 		sort.Slice(definitions, func(i, j int) bool { return definitions[i].ID < definitions[j].ID })
-		agentDefinitions := agentsByQueue[id]
+		agentDefinitions := make([]AgentDefinition, 0, len(agentsByQueue[id]))
+		for _, definition := range agentsByQueue[id] {
+			agentDefinitions = append(agentDefinitions, definition)
+		}
 		sort.Slice(agentDefinitions, func(i, j int) bool { return agentDefinitions[i].ID < agentDefinitions[j].ID })
 		queues = append(queues, WorkflowQueue{
 			ID: id, Key: WorkflowQueueKey(id), Definitions: definitions, Agents: agentDefinitions,
