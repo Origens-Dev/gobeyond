@@ -301,7 +301,7 @@ func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable b
 			if err != nil {
 				return "", false, false, false, "", 0, err
 			}
-		case "Tools", "Provider":
+		case "Tools", "Provider", "DurableUpdates", "OnReviewPublicationFailure":
 			if kind != AgentKindAI {
 				return "", false, false, false, "", 0, fmt.Errorf("agent config field %s is only supported by DefineAI", key.Name)
 			}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Origens-Dev/go-temporal-ai-sdk/activities"
+	hostreviewconnector "github.com/Origens-Dev/go-temporal-ai-sdk/connectors/hostreview"
 	"github.com/Origens-Dev/go-temporal-ai-sdk/temporalai"
 	"github.com/Origens-Dev/go-temporal-ai-sdk/updates"
 	gb "github.com/Origens-Dev/gobeyond"
@@ -29,9 +30,11 @@ import (
 )
 
 const (
-	EnvAddress     = "GOBEYOND_TEMPORAL_ADDRESS"
-	EnvNamespace   = "GOBEYOND_TEMPORAL_NAMESPACE"
-	EnvEnvironment = "GOBEYOND_TEMPORAL_ENVIRONMENT"
+	EnvAddress          = "GOBEYOND_TEMPORAL_ADDRESS"
+	EnvNamespace        = "GOBEYOND_TEMPORAL_NAMESPACE"
+	EnvEnvironment      = "GOBEYOND_TEMPORAL_ENVIRONMENT"
+	EnvHostedRuntime    = "GOBEYOND_HOSTED_RUNTIME"
+	EnvHostReportSocket = "GOBEYOND_HOST_REPORT_SOCKET"
 
 	DefaultAddress   = "localhost:7233"
 	DefaultNamespace = "default"
@@ -64,6 +67,7 @@ type Client interface {
 type AIRegistry struct {
 	mu          sync.RWMutex
 	definitions map[aiRuntimeKey]agents.AIDefinition
+	connectors  map[aiRuntimeKey]updates.Connector
 	registered  bool
 }
 
@@ -73,7 +77,10 @@ type aiRuntimeKey struct {
 }
 
 func NewAIRegistry() *AIRegistry {
-	return &AIRegistry{definitions: map[aiRuntimeKey]agents.AIDefinition{}}
+	return &AIRegistry{
+		definitions: map[aiRuntimeKey]agents.AIDefinition{},
+		connectors:  map[aiRuntimeKey]updates.Connector{},
+	}
 }
 
 func RegisterAI(_ worker.Worker, runtimes *AIRegistry, agentID string, definition agents.AIDefinition) error {
@@ -111,6 +118,10 @@ func RegisterAI(_ worker.Worker, runtimes *AIRegistry, agentID string, definitio
 		return fmt.Errorf("AI agent %q revision %q is already registered", agentID, compiledRevision)
 	}
 	runtimes.definitions[key] = definition
+	if runtimes.connectors == nil {
+		runtimes.connectors = map[aiRuntimeKey]updates.Connector{}
+	}
+	runtimes.connectors[key] = updateConnectorForDefinition(definition)
 	return nil
 }
 
@@ -134,10 +145,109 @@ func (runtimes *AIRegistry) Register(registry worker.Worker) error {
 	temporalai.RegisterAgentWorkflow(registry)
 	temporalai.RegisterActivities(registry, activities.New(activities.Options{
 		RuntimeResolver: runtimes,
-		UpdateConnector: updates.NoopConnector{},
+		UpdateConnector: agentUpdateRouter{registry: runtimes},
 	}))
 	runtimes.registered = true
 	return nil
+}
+
+func updateConnectorForDefinition(definition agents.AIDefinition) updates.Connector {
+	store := definition.AI.DurableUpdates
+	if store == nil {
+		return updates.NoopConnector{}
+	}
+	if strings.TrimSpace(os.Getenv(EnvHostedRuntime)) == "1" {
+		return hostreviewconnector.New(hostreviewconnector.Options{
+			Durable: store, SocketPath: strings.TrimSpace(os.Getenv(EnvHostReportSocket)),
+			OnPublicationFailure: definition.AI.OnReviewPublicationFailure,
+		})
+	}
+	return updates.NewCompositeConnector(updates.CompositeOptions{
+		PreviewStore: store, RecordStore: store,
+	})
+}
+
+type agentUpdateRouter struct{ registry *AIRegistry }
+
+func (r agentUpdateRouter) connector(event updates.UpdateEvent) (updates.Connector, error) {
+	if event == nil {
+		return nil, errors.New("agent update event is required")
+	}
+	agentID, err := normalizeAgentID(event.EventBase().AgentID)
+	if err != nil {
+		return nil, err
+	}
+	if r.registry == nil {
+		return nil, errors.New("agent update registry is required")
+	}
+	compiledRevision := strings.TrimSpace(event.EventBase().CompiledRevision)
+	r.registry.mu.RLock()
+	connector, ok := r.registry.connectors[aiRuntimeKey{agentID: agentID, compiledRevision: compiledRevision}]
+	if !ok && compiledRevision == "" {
+		for key, candidate := range r.registry.connectors {
+			if key.agentID != agentID {
+				continue
+			}
+			if ok {
+				connector = nil
+				break
+			}
+			connector, ok = candidate, true
+		}
+	}
+	r.registry.mu.RUnlock()
+	if !ok || connector == nil {
+		return nil, fmt.Errorf("agent %q revision %q has no unambiguous compiled update connector", agentID, compiledRevision)
+	}
+	return connector, nil
+}
+
+func (r agentUpdateRouter) BeginPreview(ctx context.Context, event updates.PreviewBeginEvent) error {
+	connector, err := r.connector(event)
+	if err != nil {
+		return err
+	}
+	return connector.BeginPreview(ctx, event)
+}
+
+func (r agentUpdateRouter) CheckpointPreview(ctx context.Context, event updates.PreviewSnapshotEvent) error {
+	connector, err := r.connector(event)
+	if err != nil {
+		return err
+	}
+	return connector.CheckpointPreview(ctx, event)
+}
+
+func (r agentUpdateRouter) EndPreview(ctx context.Context, event updates.PreviewEndEvent) error {
+	connector, err := r.connector(event)
+	if err != nil {
+		return err
+	}
+	return connector.EndPreview(ctx, event)
+}
+
+func (r agentUpdateRouter) UpsertRecord(ctx context.Context, event updates.RecordUpsertEvent) error {
+	connector, err := r.connector(event)
+	if err != nil {
+		return err
+	}
+	return connector.UpsertRecord(ctx, event)
+}
+
+func (r agentUpdateRouter) EndStream(ctx context.Context, event updates.StreamEndEvent) error {
+	connector, err := r.connector(event)
+	if err != nil {
+		return err
+	}
+	return connector.EndStream(ctx, event)
+}
+
+func (r agentUpdateRouter) PublishUpdate(ctx context.Context, event updates.UpdateEvent) error {
+	connector, err := r.connector(event)
+	if err != nil {
+		return err
+	}
+	return connector.PublishUpdate(ctx, event)
 }
 
 func (runtimes *AIRegistry) ResolveAgentRuntime(_ context.Context, scope activities.RuntimeScope) (activities.AgentRuntime, error) {
@@ -514,7 +624,8 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 		Tools: toolDefinitions, MaxSteps: maxSteps,
 		Stream: updates.Options{
 			StreamID: call.Run.ID, ConversationID: call.Session.ID,
-			Scope: updates.Scope{AgentID: call.Run.AgentID},
+			CompiledRevision: definition.AI.Revision,
+			Scope:            updates.Scope{AgentID: call.Run.AgentID},
 		},
 		ToolContext: map[string]any{"gobeyondActor": call.Actor},
 	}

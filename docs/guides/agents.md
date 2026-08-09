@@ -104,6 +104,27 @@ Direct AI agents stream `agent.text.delta` events and finish with one
 separate Temporal activity, selected through a queue-wide AgentID + compiled
 revision resolver. The same HTTP/session contract is used in both modes.
 
+Hosted review streaming is opt-in with the customer-owned durable update store.
+GoBeyond composes that store with the host review publisher only inside a hosted
+worker; local execution continues to use the same store without needing an
+hosting service or platform credentials:
+
+```go
+var Agent = gbagents.DefineAI(gbagents.AIConfig{
+  Model:          "openrouter/openai/gpt-4o-mini",
+  Durable:        true,
+  DurableUpdates: customerDynamoConnector,
+  OnReviewPublicationFailure: func(ctx context.Context, event updates.UpdateEvent, err error) {
+    logger.ErrorContext(ctx, "agent review publication gap", "event_id", event.EventBase().EventID, "error", err)
+  },
+})
+```
+
+The durable commit remains authoritative. A later slot-socket publication
+failure invokes `OnReviewPublicationFailure` and does not retry the model, tool
+side effect, or committed customer write. Valkey, S3, KMS, and platform catalog
+credentials are never passed to the agent worker.
+
 A durable root agent with no `TaskQueue` uses `default`. A durable subagent with
 no queue inherits its parent's queue; if it has parents on different queues the
 compiler requires an explicit queue. Each tool likewise uses its explicit
