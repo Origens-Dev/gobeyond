@@ -3,9 +3,9 @@ import { dirname, join } from 'node:path'
 
 export class CreateProjectError extends Error {}
 
-// This is the first public MVP release line. Keep the Go module and every
-// published JavaScript package on the exact same release line in a starter.
-const GOBEYOND_VERSION = '0.1.0-alpha.27'
+// Keep the Go module and every published JavaScript package on the exact same
+// release line in a starter.
+const GOBEYOND_VERSION = '0.1.0-alpha.34'
 const REACT_VERSION = '19.2.8'
 
 /**

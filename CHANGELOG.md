@@ -6,6 +6,8 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.34 - 2026-08-09
+
 - Replace authored Go middleware with exactly one optional root
   `middleware.ts` or `middleware.js` default export. Build emits a standalone
   `dist/edge-middleware/worker.mjs` module, while `dev` and `preview` execute
@@ -28,6 +30,11 @@ surfaces; alpha releases may revise them with explicit changelog entries.
   provider-neutral CDN boundary in the architecture, and retire internal
   ADR/spike/implementation-ledger documents after folding their lasting runtime
   contracts into the architecture guide.
+- Add allowlisted remote-image optimization, negotiated WebP delivery, explicit
+  cache profiles and invalidation metadata, and a deployment-owned image policy
+  that hosted runtimes can consume without project-specific configuration.
+- Allow hosted runtimes to serve platform-assigned domains while preserving the
+  framework's public-origin and preview robots-policy boundaries.
 
 ## 0.1.0-alpha.26 - 2026-08-01
 
