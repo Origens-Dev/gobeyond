@@ -6,6 +6,11 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.37 - 2026-08-09
+
+- Publish the JavaScript workspace packages at the same release revision as
+  the alpha.36 Go conversation-identity contract.
+
 ## 0.1.0-alpha.36 - 2026-08-09
 
 - Keep durable agent conversation/session identity separate from each
