@@ -143,6 +143,78 @@ func TestConventionHelpers(t *testing.T) {
 	}
 }
 
+func TestHostedDispatcherUsesBoundUnixBrokerWithoutTemporalCredentials(t *testing.T) {
+	temporarySocket, err := os.CreateTemp("", "gb-agent-host-*.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := temporarySocket.Name()
+	if err := temporarySocket.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case hostAgentExecutePath:
+			var request hostedAgentExecuteRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode execute: %v", err)
+			}
+			if request.AgentID != "support-agent" || request.Kind != "typed" || request.WorkerID != "support" || request.SessionID != "ses_1" || request.RunID != "run_2" {
+				t.Errorf("execute request = %#v", request)
+			}
+			_, _ = w.Write([]byte(`{"result":{"output":{"answer":42}}}`))
+		case hostWorkflowSignalPath, hostWorkflowCancelPath:
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+		_ = os.Remove(socket)
+	})
+
+	t.Setenv(EnvHostedRuntime, "1")
+	t.Setenv(EnvHostReportSocket, socket)
+	t.Setenv(EnvEnvironment, "production")
+	t.Setenv(EnvAddress, "")
+	t.Setenv(EnvNamespace, "")
+	dispatcher, err := NewLazyFromEnv(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dispatcher.Close()
+	emitter := &recordingEmitter{}
+	adapter := httpruntime.AdapterFuncs{AgentConfig: agents.Config{Durable: true, TaskQueue: "support"}}
+	call := durableStartCall()
+	if err := dispatcher.Start(context.Background(), adapter, call, emitter); err != nil {
+		t.Fatal(err)
+	}
+	if emitter.eventType != "agent.output" || string(emitter.data.(json.RawMessage)) != `{"answer":42}` {
+		t.Fatalf("emitted = %q %#v", emitter.eventType, emitter.data)
+	}
+	if err := dispatcher.hosted.signal(context.Background(), "workflow-1", "approve", map[string]bool{"approved": true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.Cancel(context.Background(), adapter, httpruntime.CancelCall{Session: call.Session, Run: call.Run}, emitter); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(paths, []string{hostAgentExecutePath, hostWorkflowSignalPath, hostWorkflowCancelPath}) {
+		t.Fatalf("paths = %v", paths)
+	}
+}
+
 func TestStartUsesGeneratedContractQueueAndEmitsJSONOutput(t *testing.T) {
 	fake := &fakeClient{run: &fakeRun{output: json.RawMessage(`{"answer":42}`)}}
 	dispatcher, err := New(context.Background(), Options{Client: fake, Environment: "preview"})

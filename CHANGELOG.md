@@ -6,6 +6,13 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.40 - 2026-08-09
+
+- Route hosted durable agent execution, approval signals, and cancellation
+  through the site-bound GoBeyond host socket. Hosted web sandboxes no longer
+  require direct Temporal credentials; local development retains the lazy
+  direct Temporal client.
+
 ## 0.1.0-alpha.39 - 2026-08-09
 
 - Fixed API-only generated registries so projects with static pages and API
