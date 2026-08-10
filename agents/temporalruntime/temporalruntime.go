@@ -307,6 +307,7 @@ type Options struct {
 // agent workflows.
 type Dispatcher struct {
 	client      Client
+	hosted      *hostedAgentClient
 	environment string
 	closed      atomic.Bool
 	closeOnce   sync.Once
@@ -320,14 +321,9 @@ func New(ctx context.Context, options Options) (*Dispatcher, error) {
 	if options.Client != nil && options.Factory != nil {
 		return nil, errors.New("agent Temporal dispatcher Client and Factory are mutually exclusive")
 	}
-	environment := strings.TrimSpace(options.Environment)
-	if environment == "" {
-		environment = gb.LocalEnvironment
-	}
-	var err error
-	environment, err = gb.NormalizeEnvironment(environment)
+	environment, err := normalizeEnvironment(options.Environment)
 	if err != nil {
-		return nil, fmt.Errorf("agent Temporal dispatcher environment: %w", err)
+		return nil, err
 	}
 
 	temporalClient := options.Client
@@ -353,6 +349,18 @@ func New(ctx context.Context, options Options) (*Dispatcher, error) {
 		}
 	}
 	return &Dispatcher{client: temporalClient, environment: environment}, nil
+}
+
+func normalizeEnvironment(value string) (string, error) {
+	environment := strings.TrimSpace(value)
+	if environment == "" {
+		environment = gb.LocalEnvironment
+	}
+	environment, err := gb.NormalizeEnvironment(environment)
+	if err != nil {
+		return "", fmt.Errorf("agent Temporal dispatcher environment: %w", err)
+	}
+	return environment, nil
 }
 
 func dialClient(ctx context.Context, options client.Options) (Client, error) {
@@ -567,6 +575,26 @@ func (dispatcher *Dispatcher) Start(ctx context.Context, adapter httpruntime.Ada
 	if !json.Valid(payload) {
 		return errors.New("agent Temporal dispatcher input must be valid JSON")
 	}
+	if dispatcher.hosted != nil {
+		result, err := dispatcher.hosted.execute(ctx, hostedAgentExecuteRequest{
+			AgentID: agentID, Kind: "typed", SessionID: call.Session.ID,
+			RunID: call.Run.ID, WorkerID: adapter.Config().TaskQueue,
+			Args: []any{agents.DurableRunInput{
+				Session: call.Session, Run: call.Run, Actor: call.Actor, Input: payload,
+			}},
+		})
+		if err != nil {
+			return err
+		}
+		var output agents.DurableRunOutput
+		if err := json.Unmarshal(result, &output); err != nil {
+			return fmt.Errorf("decode hosted durable agent result: %w", err)
+		}
+		if len(output.Output) == 0 || !json.Valid(output.Output) {
+			return errors.New("hosted durable agent workflow returned invalid JSON output")
+		}
+		return emit.Emit(ctx, "agent.output", cloneRaw(output.Output))
+	}
 	run, err := dispatcher.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: physicalQueue,
 	}, workflowName, agents.DurableRunInput{
@@ -633,6 +661,24 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 		agentInput.DefaultModelBoundary = activities.ToolExecutionBoundaryLocalActivity
 		agentInput.DefaultToolBoundary = activities.ToolExecutionBoundaryLocalActivity
 		agentInput.LocalToolTimeoutFallback = temporalai.LocalToolTimeoutFallbackNone
+	}
+	if dispatcher.hosted != nil {
+		result, err := dispatcher.hosted.execute(ctx, hostedAgentExecuteRequest{
+			AgentID: definitionID(call), Kind: "ai", SessionID: call.Session.ID,
+			RunID: call.Run.ID, WorkerID: definition.Config.TaskQueue,
+			Args: []any{agentInput},
+		})
+		if err != nil {
+			return err
+		}
+		var hostedResult temporalai.AgentResult
+		if err := json.Unmarshal(result, &hostedResult); err != nil {
+			return fmt.Errorf("decode hosted durable AI agent result: %w", err)
+		}
+		return emit.Emit(ctx, "agent.output", agents.AIOutput{
+			Text: hostedResult.Text, FinishReason: hostedResult.FinishReason,
+			RawFinishReason: hostedResult.RawFinishReason, Model: hostedResult.ModelID,
+		})
 	}
 	run, err := dispatcher.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: physicalQueue,
@@ -729,9 +775,17 @@ func (dispatcher *Dispatcher) Respond(ctx context.Context, adapter httpruntime.A
 	if err != nil {
 		return err
 	}
-	if err := dispatcher.client.SignalWorkflow(ctx, workflowID, "", temporalai.ToolApprovalResponseSignalName(approvalID), temporalai.ToolApprovalResponse{
+	signalName := temporalai.ToolApprovalResponseSignalName(approvalID)
+	signal := temporalai.ToolApprovalResponse{
 		ApprovalID: approvalID, Approved: *approved, Reason: reason,
-	}); err != nil {
+	}
+	if dispatcher.hosted != nil {
+		if err := dispatcher.hosted.signal(ctx, workflowID, signalName, signal); err != nil {
+			return fmt.Errorf("signal hosted durable AI agent approval: %w", err)
+		}
+		return nil
+	}
+	if err := dispatcher.client.SignalWorkflow(ctx, workflowID, "", signalName, signal); err != nil {
 		return fmt.Errorf("signal durable AI agent approval: %w", err)
 	}
 	return nil
@@ -746,6 +800,12 @@ func (dispatcher *Dispatcher) Cancel(ctx context.Context, _ httpruntime.Adapter,
 	if err != nil {
 		return err
 	}
+	if dispatcher.hosted != nil {
+		if err := dispatcher.hosted.cancel(ctx, workflowID); err != nil {
+			return fmt.Errorf("cancel hosted durable agent workflow: %w", err)
+		}
+		return nil
+	}
 	if err := dispatcher.client.CancelWorkflow(ctx, workflowID, ""); err != nil {
 		return fmt.Errorf("cancel durable agent workflow: %w", err)
 	}
@@ -753,7 +813,7 @@ func (dispatcher *Dispatcher) Cancel(ctx context.Context, _ httpruntime.Adapter,
 }
 
 func (dispatcher *Dispatcher) ready() error {
-	if dispatcher == nil || dispatcher.client == nil || dispatcher.closed.Load() {
+	if dispatcher == nil || (dispatcher.client == nil && dispatcher.hosted == nil) || dispatcher.closed.Load() {
 		return ErrClosed
 	}
 	return nil
@@ -768,6 +828,9 @@ func (dispatcher *Dispatcher) Close() {
 		dispatcher.closed.Store(true)
 		if dispatcher.client != nil {
 			dispatcher.client.Close()
+		}
+		if dispatcher.hosted != nil {
+			dispatcher.hosted.close()
 		}
 	})
 }

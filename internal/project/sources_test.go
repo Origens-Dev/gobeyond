@@ -305,7 +305,7 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true, Public: true}, Run, g
 	)
 	assertSourceTestContains(t, filepath.Join(root, GeneratedDir, "cmd", "site", "main.go"),
 		`AllowLoopbackAgentActor: os.Getenv("GOBEYOND_AGENT_DEV_LOOPBACK") == "1"`,
-		"temporalruntime.NewLazyLocalFromEnv(context.Background())",
+		"temporalruntime.NewLazyFromEnv(context.Background())",
 		"AgentDispatcher:         dispatcher",
 	)
 	assertSourceTestContains(t, filepath.Join(root, "agents", "support", "go.mod"),

@@ -707,7 +707,7 @@ func renderSiteMain(websiteImport string, hasAgents, hasDurableAgents bool) ([]b
 	if hasDurableAgents {
 		agentStandardImports = "\t\"context\"\n"
 		agentPackageImport = "\ttemporalruntime \"github.com/Origens-Dev/gobeyond/agents/temporalruntime\"\n"
-		agentSetup = `	dispatcher, err := temporalruntime.NewLazyLocalFromEnv(context.Background())
+		agentSetup = `	dispatcher, err := temporalruntime.NewLazyFromEnv(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
