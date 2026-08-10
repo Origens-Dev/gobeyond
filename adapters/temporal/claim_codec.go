@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -164,9 +165,21 @@ func parseClaimIdentity(key string) (claimIdentity, error) {
 	if len(parts) != 7 || parts[3] != "claims" {
 		return claimIdentity{}, fmt.Errorf("invalid claim object key %q", key)
 	}
+	decoded := make([]string, len(parts))
+	for i, part := range parts {
+		if i == 3 {
+			decoded[i] = part
+			continue
+		}
+		value, err := url.PathUnescape(part)
+		if err != nil {
+			return claimIdentity{}, fmt.Errorf("invalid escaped claim object key %q: %w", key, err)
+		}
+		decoded[i] = value
+	}
 	id := claimIdentity{
-		org: parts[0], project: parts[1], env: parts[2],
-		workflowID: parts[4], runID: parts[5], ulid: parts[6],
+		org: decoded[0], project: decoded[1], env: decoded[2],
+		workflowID: decoded[4], runID: decoded[5], ulid: decoded[6],
 	}
 	if id.org == "" || id.project == "" || id.env == "" ||
 		id.workflowID == "" || id.runID == "" || id.ulid == "" {

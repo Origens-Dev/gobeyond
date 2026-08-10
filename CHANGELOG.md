@@ -6,6 +6,12 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.41 - 2026-08-09
+
+- Decode percent-escaped claim object-key segments before reconstructing AEAD
+  identity, allowing hosted agent workflow IDs to remain opaque even when they
+  contain path separators.
+
 ## 0.1.0-alpha.40 - 2026-08-09
 
 - Route hosted durable agent execution, approval signals, and cancellation

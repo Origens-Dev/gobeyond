@@ -18,13 +18,13 @@ func TestClaimPayloadCodecRoundTripArgs(t *testing.T) {
 	dek := bytesRepeat(7, 32)
 	id := claimIdentity{
 		org: "org", project: "proj", env: "env",
-		workflowID: "wf", runID: "pending", ulid: "ulid-1",
+		workflowID: "gobeyond-agent-run/session-1/run-1", runID: "pending", ulid: "ulid-1",
 	}
 	plaintext := []byte(`["hello from studiofallon-go"]`)
 	body := mustEncryptClaim(t, dek, plaintext, claimAAD(id))
 	ref := claimRef{
 		Version:   claimCodecVersion,
-		BucketKey: "org/proj/env/claims/wf/pending/ulid-1",
+		BucketKey: "org/proj/env/claims/gobeyond-agent-run%2Fsession-1%2Frun-1/pending/ulid-1",
 		Digest:    sha256Hex(plaintext),
 		ULID:      id.ulid,
 		Body:      base64.RawURLEncoding.EncodeToString(body),
@@ -65,6 +65,18 @@ func TestClaimPayloadCodecPassthrough(t *testing.T) {
 	}
 	if string(out[0].Data) != `"plain"` {
 		t.Fatalf("got %s", out[0].Data)
+	}
+}
+
+func TestParseClaimIdentityUnescapesOpaqueSegments(t *testing.T) {
+	key := "org%2Fone/project%20one/env%25one/claims/gobeyond-agent-run%2Fsession-1%2Frun-1/pending%2Frun/ulid%2F1"
+	id, err := parseClaimIdentity(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.org != "org/one" || id.project != "project one" || id.env != "env%one" ||
+		id.workflowID != "gobeyond-agent-run/session-1/run-1" || id.runID != "pending/run" || id.ulid != "ulid/1" {
+		t.Fatalf("unexpected identity: %+v", id)
 	}
 }
 
