@@ -6,6 +6,11 @@ surfaces; alpha releases may revise them with explicit changelog entries.
 
 ## Unreleased
 
+## 0.1.0-alpha.42 - 2026-08-11
+
+- Resolve hosted document and action origins from the platform-admitted request
+  host so one long-lived customer runtime can safely serve assigned domains.
+
 ## 0.1.0-alpha.41 - 2026-08-09
 
 - Decode percent-escaped claim object-key segments before reconstructing AEAD
