@@ -336,6 +336,30 @@ func TestHostedRuntimeAcceptsAssignedDomains(t *testing.T) {
 	}
 }
 
+func TestHostedRuntimeResolvesAssignedOriginForActions(t *testing.T) {
+	t.Setenv(HostedRuntimeEnv, "1")
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://default.example.com",
+		Actions: []Action{testAction("save", func(ctx *gb.ActionContext, _ json.RawMessage) (any, error) {
+			if ctx.PublicOrigin != "https://vanity.example.com" {
+				t.Fatalf("action public origin = %q", ctx.PublicOrigin)
+			}
+			return map[string]bool{"saved": true}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://vanity.example.com/_gobeyond/builds/build-1/actions/save", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "https://vanity.example.com")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestDirectRuntimeStillRejectsUnexpectedHost(t *testing.T) {
 	t.Setenv(HostedRuntimeEnv, "")
 	server, err := New(Config{BuildID: "build-1", PublicOrigin: "https://default.example.com"})

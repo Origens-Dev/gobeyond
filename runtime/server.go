@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -221,6 +222,16 @@ func New(config Config) (*Server, error) {
 	if config.BuildID == "" {
 		return nil, errors.New("runtime build ID is required")
 	}
+	// Hosted deployments are admitted by the GoBeyond platform before the
+	// customer process is reached. A single long-lived process may therefore
+	// serve several assigned domains, so its action/document origin must be
+	// resolved from the admitted request host rather than pinned to the
+	// deployment's default origin. Direct deployments retain the fixed-origin
+	// behavior and host allowlist below.
+	if config.PublicOrigin != "" && config.ResolvePublicOrigin == nil && hostedRuntime() {
+		config.PublicOrigin = ""
+		config.ResolvePublicOrigin = hostedPublicOrigin
+	}
 	if (config.PublicOrigin == "") == (config.ResolvePublicOrigin == nil) {
 		return nil, errors.New("runtime requires exactly one public origin strategy")
 	}
@@ -371,6 +382,58 @@ func hostedRuntime() bool {
 	default:
 		return false
 	}
+}
+
+// hostedPublicOrigin derives the public origin from the host that the
+// platform admitted for this request. The platform's customer hop always
+// uses HTTPS; it supplies the viewer host separately from any caller-chosen
+// Host value before forwarding to the customer process.
+func hostedPublicOrigin(request *http.Request) (string, error) {
+	if request == nil {
+		return "", errors.New("hosted runtime request is nil")
+	}
+	host := strings.TrimSpace(request.Host)
+	if host == "" || strings.ContainsAny(host, "/\\?#@ \t\r\n") {
+		return "", errors.New("hosted runtime request host is invalid")
+	}
+
+	if parsedHost, port, err := net.SplitHostPort(host); err == nil {
+		if parsedHost == "" || port == "" {
+			return "", errors.New("hosted runtime request host is invalid")
+		}
+		parsedHost = strings.TrimSuffix(strings.ToLower(parsedHost), ".")
+		if parsedHost == "" {
+			return "", errors.New("hosted runtime request host is invalid")
+		}
+		// Browsers omit the default HTTPS port from Origin, so normalize it
+		// before same-origin validation.
+		if port == "443" {
+			host = parsedHost
+		} else {
+			host = net.JoinHostPort(parsedHost, port)
+		}
+	} else {
+		if strings.Contains(host, ":") {
+			// An IPv6 host must be bracketed when it appears in an HTTP Host
+			// header. The platform uses DNS names, but reject malformed input
+			// rather than constructing an ambiguous origin.
+			if !strings.HasPrefix(host, "[") || !strings.HasSuffix(host, "]") {
+				return "", errors.New("hosted runtime request host is invalid")
+			}
+			host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+			if net.ParseIP(host) == nil {
+				return "", errors.New("hosted runtime request host is invalid")
+			}
+			host = "[" + strings.ToLower(host) + "]"
+		} else {
+			host = strings.TrimSuffix(strings.ToLower(host), ".")
+			if host == "" {
+				return "", errors.New("hosted runtime request host is invalid")
+			}
+		}
+	}
+
+	return (&url.URL{Scheme: "https", Host: host}).String(), nil
 }
 
 // newCacheRuntime builds the cache handle every RequestScope carries. BuildID
