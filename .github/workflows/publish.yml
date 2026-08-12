@@ -47,7 +47,11 @@ jobs:
           cache: pnpm
 
       - name: Ensure npm supports trusted publishing
-        run: npm install -g npm@latest
+        # Blacksmith's Node 24 image currently ships npm 11.6.x. npm@latest
+        # can advance to a major that requires a newer Node 24 patch release
+        # than the runner image provides, so keep trusted publishing on the
+        # compatible npm 11 line until the image moves.
+        run: npm install -g npm@11.6.2
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
