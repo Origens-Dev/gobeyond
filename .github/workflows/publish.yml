@@ -31,7 +31,10 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # npm Trusted Publishing currently requires a GitHub-hosted runner for
+    # provenance verification. Verification remains on Blacksmith in
+    # verify.yml; this release job is the intentional exception.
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,11 +50,18 @@ jobs:
           cache: pnpm
 
       - name: Ensure npm supports trusted publishing
-        # Blacksmith's Node 24 image currently ships npm 11.6.x. npm@latest
-        # can advance to a major that requires a newer Node 24 patch release
-        # than the runner image provides, so keep trusted publishing on the
-        # compatible npm 11 line until the image moves.
         run: npm install -g npm@11.6.2
+
+      - name: Strip setup-node authToken so OIDC can run
+        run: |
+          set -euo pipefail
+          unset NODE_AUTH_TOKEN || true
+          if [[ -f "$HOME/.npmrc" ]]; then
+            sed -i '/_authToken/d' "$HOME/.npmrc"
+          fi
+          if [[ -f .npmrc ]]; then
+            sed -i '/_authToken/d' .npmrc
+          fi
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
