@@ -44,6 +44,23 @@ type CachePolicy struct {
 type PageConfig struct {
 	Revalidate int
 	Tags       []string
+	Prefetch   PagePrefetchConfig
+}
+
+// PagePrefetchConfig opts a route into private, in-tab data warming and
+// explicit image variants after the runtime payload arrives.
+type PagePrefetchConfig struct {
+	Data   bool
+	Images []PagePrefetchImage
+}
+
+// PagePrefetchImage identifies a string prop and the exact imageSrc variant
+// to warm. Path is dot-separated from the page props root.
+type PagePrefetchImage struct {
+	Path string
+	W    int
+	Q    int
+	F    string
 }
 
 func (p CachePolicy) HeaderValue() string {

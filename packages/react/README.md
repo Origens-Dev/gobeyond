@@ -19,6 +19,23 @@ diverging segments plus the page.
 Eager registrations may use `{ page, layouts, pattern }` (or legacy
 `{ component, pattern }` with an empty layout chain).
 
+Routes default to code-only intent prefetch. Generated routes can opt into
+data and image warming with a page contract:
+
+```ts
+export const page = definePage({
+  props: schema.object({ hero: schema.string() }),
+  prefetch: {
+    data: true,
+    images: [{ path: "hero", w: 1920 }],
+  },
+});
+```
+
+Data warming is kept in the current tab's in-memory cache for up to 60 seconds
+and is never promoted to a shared HTTP or CDN cache. Repeated prefetches and a
+navigation that arrives while warming is in progress share the same request.
+
 ## Soft navigation lifecycle
 
 `bootstrap` / `bootstrapAsync` return a controller with `navigate`, `prefetch`,

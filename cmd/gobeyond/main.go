@@ -479,7 +479,18 @@ func generateClientEntry(website string, modules []compilerRouteModules, manifes
 			return browserBuildInput{}, err
 		}
 		input.RouteEntries[route.RouteID] = routePath
-		fmt.Fprintf(&source, "  %q: { load: () => import(%q), pattern: %q },\n", route.RouteID, browserGeneratedImport(generatedDirectory, routePath), patterns[route.RouteID])
+		fmt.Fprintf(&source, "  %q: { load: () => import(%q), pattern: %q", route.RouteID, browserGeneratedImport(generatedDirectory, routePath), patterns[route.RouteID])
+		if route.Prefetch != "" && route.Prefetch != "code" {
+			fmt.Fprintf(&source, ", prefetch: %q", route.Prefetch)
+		}
+		if len(route.PrefetchImages) > 0 {
+			encoded, err := json.Marshal(route.PrefetchImages)
+			if err != nil {
+				return browserBuildInput{}, fmt.Errorf("encode prefetch images for %s: %w", route.RouteID, err)
+			}
+			fmt.Fprintf(&source, ", prefetchImages: %s", encoded)
+		}
+		source.WriteString(" },\n")
 	}
 	source.WriteString("} })\n")
 	path := filepath.Join(generatedDirectory, "client-entry.tsx")
@@ -1080,9 +1091,18 @@ type compilerDateIntrinsicSite struct {
 }
 
 type compilerRouteModules struct {
-	RouteID     string   `json:"routeId"`
-	EntryFile   string   `json:"entryFile"`
-	LayoutFiles []string `json:"layoutFiles"`
+	RouteID        string                  `json:"routeId"`
+	EntryFile      string                  `json:"entryFile"`
+	LayoutFiles    []string                `json:"layoutFiles"`
+	Prefetch       string                  `json:"prefetch,omitempty"`
+	PrefetchImages []compilerPrefetchImage `json:"prefetchImages,omitempty"`
+}
+
+type compilerPrefetchImage struct {
+	Path string `json:"path"`
+	W    int    `json:"w"`
+	Q    *int   `json:"q,omitempty"`
+	F    string `json:"f,omitempty"`
 }
 
 type compilerStaticBuild struct {

@@ -313,12 +313,19 @@ test("bootstrapAsync hydrates a lazy initial route", async () => {
   }
 });
 
-test("delegated intent prefetch loads route code and warms cacheable route data", async () => {
+test("data prefetch loads route code and warms opted-in route data", async () => {
   const dom = documentFor();
   const restore = installDOM(dom);
   let imports = 0;
   let requests = 0;
+  const warmedImages: string[] = [];
   try {
+    dom.window.Image = class {
+      decoding = "async";
+      set src(value: string) {
+        warmedImages.push(value);
+      }
+    } as unknown as typeof dom.window.Image;
     let app: ReturnType<typeof bootstrap> | undefined;
     await act(async () => {
       app = bootstrap({
@@ -326,6 +333,8 @@ test("delegated intent prefetch loads route code and warms cacheable route data"
           home: { component: Home, pattern: "/" },
           product: {
             pattern: "/products/[slug]",
+            prefetch: "data",
+            prefetchImages: [{ path: "hero", w: 1920 }],
             load: async () => {
               imports += 1;
               return { default: Product };
@@ -337,7 +346,7 @@ test("delegated intent prefetch loads route code and warms cacheable route data"
           requests += 1;
           return new Response(
             JSON.stringify(
-              payload("product", { name: "Trail" }, "Trail", { mode: "public", maxAge: 60 }),
+              payload("product", { name: "Trail", hero: "/hero.jpg" }, "Trail", { mode: "public", maxAge: 60 }),
             ),
             { status: 200, headers: { "content-type": "application/json" } },
           );
@@ -353,6 +362,7 @@ test("delegated intent prefetch loads route code and warms cacheable route data"
     await waitFor(() => imports === 1);
     await waitFor(() => requests === 1);
     assert.equal(requests, 1, "prefetch warms the runtime data payload, not only the JS chunk");
+    assert.deepEqual(warmedImages, ["/_gobeyond/image?url=%2Fhero.jpg&w=1920&q=75"]);
     await app?.prefetch(linkTarget);
     assert.equal(imports, 1);
     assert.equal(requests, 1, "an already-warm, still-fresh entry is not re-fetched");
@@ -375,7 +385,7 @@ test("delegated intent prefetch loads route code and warms cacheable route data"
   }
 });
 
-test("prefetch never retains private/no-store route data, so navigate still re-fetches", async () => {
+test("default prefetch is code-only, so navigation performs the first data request", async () => {
   const dom = documentFor();
   const restore = installDOM(dom);
   let requests = 0;
@@ -399,15 +409,15 @@ test("prefetch never retains private/no-store route data, so navigate still re-f
       });
     });
     await app?.prefetch("/products/trail");
-    assert.equal(requests, 1, "prefetch still fetches to discover the route's CachePolicy");
+    assert.equal(requests, 0, "code-only prefetch does not fetch runtime data");
 
     await act(async () => {
       await app?.navigate("/products/trail");
     });
     assert.equal(
       requests,
-      2,
-      "a private/no-store payload is never retained, so navigate re-fetches",
+      1,
+      "navigation performs the first runtime request",
     );
 
     app?.destroy();

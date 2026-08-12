@@ -1763,6 +1763,25 @@ test('carries definePage route caching into the value contract', () => {
   assert.deepEqual(result.contract.tags, ['products', 'product'])
 })
 
+test('carries explicit navigation prefetch and image hints into the value contract', () => {
+  const result = compilePageContractSource({
+    routeId: 'products_slug',
+    sourceText: `
+      import { definePage, schema } from '@go-beyond/schema'
+      export const page = definePage({
+        props: schema.object({ hero: schema.string() }),
+        prefetch: { data: true, images: [{ path: 'hero', w: 1920, q: 82, f: 'auto' }] },
+      })
+    `,
+  })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.deepEqual(result.contract.prefetch, {
+    data: true,
+    images: [{ path: 'hero', w: 1920, q: 82, f: 'auto' }],
+  })
+})
+
 test('leaves route caching absent when definePage omits it', () => {
   const result = compilePageContractSource({
     routeId: 'products_slug',

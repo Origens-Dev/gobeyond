@@ -72,6 +72,7 @@ export {
   type CachePolicy,
   type LazyBrowserRoute,
   type MatchedBrowserRoute,
+  type PrefetchImageHint,
   type NavigateOptions,
   type NavigationHistoryMode,
   type NavigationLifecycleEvent,
@@ -91,6 +92,7 @@ export {
   subscribeActiveNavigation,
 } from "./active-navigation.js";
 export {
+  DEFAULT_PRIVATE_ROUTER_CACHE_TTL_MS,
   DEFAULT_ROUTER_CACHE_TTL_MS,
   createRouterCache,
   routerCacheKey,

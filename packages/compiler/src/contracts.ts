@@ -21,7 +21,7 @@ const primitiveKinds = new Map<string, ValueSchema['kind']>([
   ['safeHTML', 'safeHtml'],
 ] as const)
 
-const pageDefinitionKeys = new Set(['props', 'revalidate', 'tags'])
+const pageDefinitionKeys = new Set(['props', 'revalidate', 'tags', 'prefetch'])
 
 class ContractCompiler {
   readonly sourceFile: ts.SourceFile
@@ -103,7 +103,75 @@ class ContractCompiler {
       }
       contract.tags = tags
     }
+    const prefetchNode = this.objectProperty(definition, 'prefetch')
+    if (prefetchNode) {
+      const prefetch = this.pagePrefetch(prefetchNode)
+      if (prefetch === undefined) return undefined
+      contract.prefetch = prefetch
+    }
     return contract
+  }
+
+  private pagePrefetch(node: ts.Expression): RouteValueContract['prefetch'] | undefined {
+    const value = unwrap(node)
+    if (!ts.isObjectLiteralExpression(value)) {
+      this.report(node, 'GB1207', 'definePage prefetch must be an inline object.')
+      return undefined
+    }
+    const result: NonNullable<RouteValueContract['prefetch']> = {}
+    const dataNode = this.objectProperty(value, 'data')
+    if (dataNode) {
+      const data = this.literalValue(dataNode)
+      if (typeof data !== 'boolean') {
+        this.report(dataNode, 'GB1207', 'definePage prefetch.data must be a boolean literal.')
+        return undefined
+      }
+      result.data = data
+    }
+    const imagesNode = this.objectProperty(value, 'images')
+    if (imagesNode) {
+      const images = unwrap(imagesNode)
+      if (!ts.isArrayLiteralExpression(images)) {
+        this.report(imagesNode, 'GB1207', 'definePage prefetch.images must be an inline array.')
+        return undefined
+      }
+      result.images = []
+      for (const element of images.elements) {
+        if (!ts.isObjectLiteralExpression(element)) {
+          this.report(element, 'GB1207', 'Each prefetch image must be an inline object.')
+          return undefined
+        }
+        const pathNode = this.objectProperty(element, 'path')
+        const widthNode = this.objectProperty(element, 'w')
+        const path = pathNode ? this.literalValue(pathNode) : undefined
+        const width = widthNode ? this.literalValue(widthNode) : undefined
+        if (typeof path !== 'string' || path.length === 0 || typeof width !== 'number' || !Number.isSafeInteger(width) || width <= 0) {
+          this.report(element, 'GB1207', 'Each prefetch image requires a non-empty path and positive integer w.')
+          return undefined
+        }
+        const image: NonNullable<NonNullable<RouteValueContract['prefetch']>['images']>[number] = { path, w: width }
+        for (const name of ['q', 'f'] as const) {
+          const optionNode = this.objectProperty(element, name)
+          if (!optionNode) continue
+          const option = this.literalValue(optionNode)
+          if (name === 'q') {
+            if (typeof option !== 'number' || !Number.isSafeInteger(option) || option < 1 || option > 100) {
+              this.report(optionNode, 'GB1207', 'Prefetch image q must be an integer from 1 through 100.')
+              return undefined
+            }
+            image.q = option
+          } else {
+            if (option !== 'jpeg' && option !== 'png' && option !== 'auto') {
+              this.report(optionNode, 'GB1207', 'Prefetch image f must be jpeg, png, or auto.')
+              return undefined
+            }
+            image.f = option
+          }
+        }
+        result.images.push(image)
+      }
+    }
+    return result
   }
 
   /**

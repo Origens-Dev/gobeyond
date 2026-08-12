@@ -105,6 +105,18 @@ test("createRouterCache.set is a no-op for payloads without a cache policy", () 
   assert.equal(cache.get("/account"), undefined);
 });
 
+test("createRouterCache.setPrivate retains an explicit private payload for one minute", () => {
+  let now = 0;
+  const cache = createRouterCache({ now: () => now });
+  const stored = cache.setPrivate("/account", samplePayload({ mode: "private_no_store" }));
+  assert.equal(stored, true);
+  assert.ok(cache.get("/account"));
+  now = 59_999;
+  assert.ok(cache.get("/account"));
+  now = 60_000;
+  assert.equal(cache.get("/account"), undefined);
+});
+
 test("createRouterCache.delete removes a single entry", () => {
   const cache = createRouterCache();
   cache.set("/products/trail", samplePayload({ mode: "public", maxAge: 30 }));
