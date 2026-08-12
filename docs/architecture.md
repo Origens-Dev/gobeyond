@@ -246,7 +246,7 @@ bag, and a refresh recorder actions use to accumulate invalidation targets.
 | `cache.Load(ctx, Options{…}, codec, fn)` | Shared data cache keyed by deploy prefix, build ID, name, and args. |
 | `cache.LoadRoute(…)` | Props ISR keyed by route ID, path, raw query, and public origin. |
 | `cache.RevalidateTag` / `cache.RevalidatePath` | Bump tag versions, drop matching L1 entries, and record paths/tags on the scope. |
-| `gb.PageConfig` | Origin props ISR window and invalidation tags for a Go-owned page payload; generation writes them into `page.schema.ts`. |
+| `gb.PageConfig` | Origin props ISR window, invalidation tags, and explicit browser prefetch/image hints for a Go-owned page payload; generation writes them into `page.schema.ts`. |
 | `gb.CachePolicy` on loader results | HTTP `Cache-Control` only; not inferred from `PageConfig.Revalidate`. |
 
 `PageConfig.Revalidate` and loader `gb.CachePolicy` are separate knobs. When both
@@ -273,10 +273,15 @@ history change), which only re-renders the mounted route if it matches one of
 those paths. Either way, `refresh` invalidates the client Router Cache
 (`packages/react/src/router-cache.ts`): matching entries when `paths` is
 given, the whole cache otherwise. That cache is in-memory, keyed by
-path+search, and only stores `mode: "public"` soft-nav payloads, for a TTL
-taken from the response's `CachePolicy` (`maxAge`/`sharedMaxAge`) and capped
-at 30s; prefetch (hover/focus) warms it ahead of navigation. Soft navigation
-still replaces props/metadata only; it does not refresh hydration `renderNow`.
+path+search. Ordinary link intent prefetch is code-only; a page contract must
+explicitly opt into data prefetch. Public payloads use the response's
+`CachePolicy` (`maxAge`/`sharedMaxAge`) capped at 30s. Explicit data prefetches
+may also retain a private/no-store payload in the current tab for 60s; this is
+not an HTTP, CDN, or shared server cache. Prefetch and navigation share one
+in-flight request per route key, so a click arriving during a warm-up joins it.
+Explicit image hints can warm exact `imageSrc()` variants after the payload
+arrives. Soft navigation still replaces props/metadata only; it does not
+refresh hydration `renderNow`.
 
 Store tiers are an in-process L1 (`cache/memstore`) and an optional
 Redis-compatible shared L2 (`cache/redisstore`). The AWS reference uses Valkey,

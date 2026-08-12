@@ -311,6 +311,15 @@ export type ProjectRouteModules = {
   entryFile: string
   /** Project-relative React layouts, ordered outermost to innermost. */
   layoutFiles: string[]
+  /** Client navigation prefetch policy emitted from the page contract. */
+  prefetch?: 'code' | 'data' | 'off'
+  /** Explicit image variants to warm after a data prefetch. */
+  prefetchImages?: Array<{
+    path: string
+    w: number
+    q?: number
+    f?: 'jpeg' | 'png' | 'auto'
+  }>
 }
 
 export type CompileProjectResult =
@@ -353,6 +362,15 @@ export type RouteValueContract = {
   revalidate?: number
   /** Invalidation handles from `definePage({ tags })`. */
   tags?: string[]
+  prefetch?: {
+    data?: boolean
+    images?: Array<{
+      path: string
+      w: number
+      q?: number
+      f?: 'jpeg' | 'png' | 'auto'
+    }>
+  }
 }
 
 export type ActionValueContract = {

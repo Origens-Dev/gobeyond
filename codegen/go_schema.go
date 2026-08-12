@@ -56,6 +56,27 @@ func GeneratePageSchema(pageFile, moduleRoot, modulePath string) ([]byte, error)
 	if len(config.tags) > 0 {
 		source.WriteString("  tags: [" + quoteStrings(config.tags) + "],\n")
 	}
+	if config.prefetch.data || len(config.prefetch.images) > 0 {
+		source.WriteString("  prefetch: {\n")
+		if config.prefetch.data {
+			source.WriteString("    data: true,\n")
+		}
+		if len(config.prefetch.images) > 0 {
+			source.WriteString("    images: [\n")
+			for _, image := range config.prefetch.images {
+				source.WriteString("      { path: " + strconv.Quote(image.path) + ", w: " + strconv.Itoa(image.w))
+				if image.q > 0 {
+					source.WriteString(", q: " + strconv.Itoa(image.q))
+				}
+				if image.f != "" {
+					source.WriteString(", f: " + strconv.Quote(image.f))
+				}
+				source.WriteString(" },\n")
+			}
+			source.WriteString("    ],\n")
+		}
+		source.WriteString("  },\n")
+	}
 	source.WriteString("  props: " + indentSchema(shape, "  ") + ",\n")
 	source.WriteString("});\n")
 	return []byte(source.String()), nil
@@ -64,6 +85,19 @@ func GeneratePageSchema(pageFile, moduleRoot, modulePath string) ([]byte, error)
 type pageSchemaConfig struct {
 	revalidate int
 	tags       []string
+	prefetch   pagePrefetchConfig
+}
+
+type pagePrefetchConfig struct {
+	data   bool
+	images []pagePrefetchImage
+}
+
+type pagePrefetchImage struct {
+	path string
+	w    int
+	q    int
+	f    string
 }
 
 func parsePageConfig(pkg *goSchemaPackage) (pageSchemaConfig, error) {
@@ -112,12 +146,115 @@ func parsePageConfig(pkg *goSchemaPackage) (pageSchemaConfig, error) {
 				}
 				config.tags = append(config.tags, decoded)
 			}
+		case "Prefetch":
+			prefetch, err := parsePagePrefetch(field.Value)
+			if err != nil {
+				return config, err
+			}
+			config.prefetch = prefetch
 		}
 	}
 	if len(config.tags) > 0 && config.revalidate == 0 {
 		return config, fmt.Errorf("Config.Tags requires Config.Revalidate")
 	}
 	return config, nil
+}
+
+func parsePagePrefetch(expression ast.Expr) (pagePrefetchConfig, error) {
+	var result pagePrefetchConfig
+	literal, ok := expression.(*ast.CompositeLit)
+	if !ok {
+		return result, fmt.Errorf("Config.Prefetch must be a gb.PagePrefetchConfig literal")
+	}
+	for _, item := range literal.Elts {
+		field, ok := item.(*ast.KeyValueExpr)
+		if !ok {
+			return result, fmt.Errorf("Config.Prefetch must use named fields")
+		}
+		name, _ := field.Key.(*ast.Ident)
+		if name == nil {
+			return result, fmt.Errorf("Config.Prefetch contains an invalid field")
+		}
+		switch name.Name {
+		case "Data":
+			value, ok := field.Value.(*ast.Ident)
+			if !ok || (value.Name != "true" && value.Name != "false") {
+				return result, fmt.Errorf("Config.Prefetch.Data must be a boolean literal")
+			}
+			result.data = value.Name == "true"
+		case "Images":
+			images, ok := field.Value.(*ast.CompositeLit)
+			if !ok {
+				return result, fmt.Errorf("Config.Prefetch.Images must be a literal slice")
+			}
+			for _, element := range images.Elts {
+				image, err := parsePagePrefetchImage(element)
+				if err != nil {
+					return result, err
+				}
+				result.images = append(result.images, image)
+			}
+		}
+	}
+	return result, nil
+}
+
+func parsePagePrefetchImage(expression ast.Expr) (pagePrefetchImage, error) {
+	var result pagePrefetchImage
+	literal, ok := expression.(*ast.CompositeLit)
+	if !ok {
+		return result, fmt.Errorf("Config.Prefetch.Images entries must be literals")
+	}
+	for _, item := range literal.Elts {
+		field, ok := item.(*ast.KeyValueExpr)
+		if !ok {
+			return result, fmt.Errorf("Config.Prefetch.Images entries must use named fields")
+		}
+		name, _ := field.Key.(*ast.Ident)
+		if name == nil {
+			return result, fmt.Errorf("Config.Prefetch.Images contains an invalid field")
+		}
+		switch name.Name {
+		case "Path", "F":
+			value, ok := field.Value.(*ast.BasicLit)
+			if !ok || value.Kind != token.STRING {
+				return result, fmt.Errorf("Config.Prefetch image %s must be a string literal", name.Name)
+			}
+			decoded, err := strconv.Unquote(value.Value)
+			if err != nil || decoded == "" {
+				return result, fmt.Errorf("Config.Prefetch image %s must be non-empty", name.Name)
+			}
+			if name.Name == "Path" {
+				result.path = decoded
+			} else {
+				result.f = decoded
+			}
+		case "W", "Q":
+			value, ok := field.Value.(*ast.BasicLit)
+			if !ok || value.Kind != token.INT {
+				return result, fmt.Errorf("Config.Prefetch image %s must be a whole-number literal", name.Name)
+			}
+			decoded, err := strconv.Atoi(value.Value)
+			if err != nil || decoded <= 0 {
+				return result, fmt.Errorf("Config.Prefetch image %s must be positive", name.Name)
+			}
+			if name.Name == "W" {
+				result.w = decoded
+			} else {
+				result.q = decoded
+			}
+		}
+	}
+	if result.path == "" || result.w <= 0 {
+		return result, fmt.Errorf("Config.Prefetch image requires Path and positive W")
+	}
+	if result.q > 100 {
+		return result, fmt.Errorf("Config.Prefetch image Q must be from 1 through 100")
+	}
+	if result.f != "jpeg" && result.f != "png" && result.f != "auto" && result.f != "" {
+		return result, fmt.Errorf("Config.Prefetch image F must be jpeg, png, or auto")
+	}
+	return result, nil
 }
 
 type goSchemaPackage struct {

@@ -17,6 +17,13 @@ func TestGenerateClientEntryIncludesManifestPatterns(t *testing.T) {
 			RouteID:     "r_products",
 			EntryFile:   "app/products/[slug]/page.tsx",
 			LayoutFiles: []string{"app/layout.tsx"},
+			Prefetch:    "data",
+			PrefetchImages: []compilerPrefetchImage{{
+				Path: "hero.src",
+				W:    1920,
+				Q:    intPtr(82),
+				F:    "auto",
+			}},
 		}},
 		[]project.Route{{ID: "r_products", Pattern: "/products/[slug]"}},
 	)
@@ -33,7 +40,7 @@ func TestGenerateClientEntryIncludesManifestPatterns(t *testing.T) {
 	for _, expected := range []string{
 		`import { bootstrapAsync } from '@go-beyond/react/browser'`,
 		`"r_products": { load: () => import("./routes/`,
-		`pattern: "/products/[slug]" }`,
+		`pattern: "/products/[slug]", prefetch: "data", prefetchImages: [{"path":"hero.src","w":1920,"q":82,"f":"auto"}] }`,
 	} {
 		if !strings.Contains(string(source), expected) {
 			t.Fatalf("generated client entry is missing %q:\n%s", expected, source)
@@ -63,6 +70,8 @@ func TestGenerateClientEntryIncludesManifestPatterns(t *testing.T) {
 		}
 	}
 }
+
+func intPtr(value int) *int { return &value }
 
 func TestGenerateClientEntryExposesNestedLayoutChain(t *testing.T) {
 	website := t.TempDir()

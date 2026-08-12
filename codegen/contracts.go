@@ -44,7 +44,20 @@ type Route struct {
 	// returned.
 	Revalidate int
 	// Tags are the invalidation handles declared by definePage({ tags }).
-	Tags []string
+	Tags     []string
+	Prefetch *Prefetch
+}
+
+type Prefetch struct {
+	Data   bool
+	Images []PrefetchImage
+}
+
+type PrefetchImage struct {
+	Path string
+	W    int
+	Q    int
+	F    string
 }
 
 type Action struct {
@@ -106,6 +119,7 @@ type rawRoute struct {
 	Props      json.RawMessage `json:"props"`
 	Revalidate *int            `json:"revalidate"`
 	Tags       []string        `json:"tags"`
+	Prefetch   *Prefetch       `json:"prefetch"`
 }
 
 type rawAction struct {
@@ -142,7 +156,7 @@ func (raw rawDocument) decode() (Document, error) {
 		if err != nil {
 			return Document{}, err
 		}
-		decoded := Route{RouteID: route.RouteID, Props: value, Tags: route.Tags}
+		decoded := Route{RouteID: route.RouteID, Props: value, Tags: route.Tags, Prefetch: route.Prefetch}
 		if route.Revalidate != nil {
 			decoded.Revalidate = *route.Revalidate
 		}

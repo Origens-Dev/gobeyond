@@ -71,6 +71,23 @@ export interface PageDefinition<S extends Schema<unknown>> {
   readonly revalidate?: number
   /** Invalidation handles for this route's cached props. */
   readonly tags?: readonly string[]
+  /** Client navigation prefetch behavior. Defaults to code-only. */
+  readonly prefetch?: PrefetchDefinition
+}
+
+export interface PrefetchImageDefinition {
+  /** Dot-separated path into the runtime page props. */
+  readonly path: string
+  readonly w: number
+  readonly q?: number
+  readonly f?: 'jpeg' | 'png' | 'auto'
+}
+
+export interface PrefetchDefinition {
+  /** Fetch and privately retain runtime props during prefetch. */
+  readonly data?: boolean
+  /** Explicit imageSrc variants to warm after props arrive. */
+  readonly images?: readonly PrefetchImageDefinition[]
 }
 
 /**
@@ -89,12 +106,14 @@ export function definePage<S extends Schema<unknown>>(definition: {
   readonly props: S
   readonly revalidate?: number
   readonly tags?: readonly string[]
+  readonly prefetch?: PrefetchDefinition
 }): PageDefinition<S> {
   return {
     kind: 'page',
     props: definition.props,
     ...(definition.revalidate === undefined ? {} : { revalidate: definition.revalidate }),
     ...(definition.tags === undefined ? {} : { tags: definition.tags }),
+    ...(definition.prefetch === undefined ? {} : { prefetch: definition.prefetch }),
   }
 }
 

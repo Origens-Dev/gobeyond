@@ -36,6 +36,7 @@ import {
   type Diagnostic,
   type PageContractCompileResult,
   type ProjectRoute,
+  type ProjectRouteModules,
   type RouteValueContract,
   type SourceRoot,
 } from './types.js'
@@ -721,12 +722,13 @@ export async function compileProject(
 
     const absoluteEntry = resolve(options.projectRoot, route.entryFile)
     const layouts = await graph.routeLayouts(absoluteEntry)
-    routeModules.push({
+    const routeModule: ProjectRouteModules = {
       routeId: route.routeId,
       entryFile: toProjectPath(resolve(options.projectRoot), absoluteEntry),
       layoutFiles: layouts.map((fileName) =>
         toProjectPath(resolve(options.projectRoot), fileName)),
-    })
+    }
+    routeModules.push(routeModule)
     const schemaFile = route.schemaFile
       ? resolve(options.projectRoot, route.schemaFile)
       : resolve(dirname(absoluteEntry), 'page.schema.ts')
@@ -747,6 +749,10 @@ export async function compileProject(
         column: 1,
       })
     } else if (contractResult.ok) {
+      if (contractResult.contract.prefetch?.data) routeModule.prefetch = 'data'
+      if (contractResult.contract.prefetch?.images?.length) {
+        routeModule.prefetchImages = contractResult.contract.prefetch.images
+      }
       const isrDiagnostic = await routeCacheRequiresLoader(
         contractResult.contract,
         absoluteEntry,

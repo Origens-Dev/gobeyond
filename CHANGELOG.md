@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.43 - 2026-08-12
+
+- Make navigation prefetch code-only by default, with explicit private data
+  warming, request coalescing, and priority image warming.
+- Project page prefetch and image hints through Go and TypeScript route
+  generation.
+- Run verification and npm publishing on Blacksmith runners.
+
 GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.

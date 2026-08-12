@@ -11,6 +11,7 @@ import type { CachePolicy, RuntimeNavigationPayload } from "./navigation.js";
  * Router Cache `staleTimes.dynamic` (30s).
  */
 export const DEFAULT_ROUTER_CACHE_TTL_MS = 30_000;
+export const DEFAULT_PRIVATE_ROUTER_CACHE_TTL_MS = 60_000;
 
 /**
  * Compute how long (ms) a runtime-navigation payload may be kept in the
@@ -50,6 +51,8 @@ interface RouterCacheEntry {
 export interface RouterCacheOptions {
   /** Upper bound applied to every entry's TTL; see `DEFAULT_ROUTER_CACHE_TTL_MS`. */
   ttlCapMs?: number;
+  /** TTL for explicitly opted-in private prefetched data. */
+  privateTtlMs?: number;
   /** Injectable clock for tests. */
   now?: () => number;
 }
@@ -73,6 +76,8 @@ export interface RouterCache {
    * branch on privacy themselves.
    */
   set(key: string, payload: RuntimeNavigationPayload): boolean;
+  /** Store an explicitly opted-in private payload in tab memory only. */
+  setPrivate(key: string, payload: RuntimeNavigationPayload): boolean;
   /** Remove a single entry, if present. */
   delete(key: string): void;
   /**
@@ -94,6 +99,7 @@ function keyPathname(key: string): string {
 export function createRouterCache(options: RouterCacheOptions = {}): RouterCache {
   const now = options.now ?? (() => Date.now());
   const ttlCapMs = options.ttlCapMs ?? DEFAULT_ROUTER_CACHE_TTL_MS;
+  const privateTtlMs = options.privateTtlMs ?? DEFAULT_PRIVATE_ROUTER_CACHE_TTL_MS;
   const entries = new Map<string, RouterCacheEntry>();
   let generation: string | undefined;
 
@@ -123,6 +129,18 @@ export function createRouterCache(options: RouterCacheOptions = {}): RouterCache
       if (nextGeneration) generation = nextGeneration;
       const storedAt = now();
       entries.set(key, { payload, storedAt, expiresAt: storedAt + ttl });
+      return true;
+    },
+    setPrivate(key, payload) {
+      if (privateTtlMs <= 0 || payload.result.kind !== "ok") {
+        entries.delete(key);
+        return false;
+      }
+      const nextGeneration = payload.result.cacheGeneration;
+      if (nextGeneration && generation && nextGeneration !== generation) entries.clear();
+      if (nextGeneration) generation = nextGeneration;
+      const storedAt = now();
+      entries.set(key, { payload, storedAt, expiresAt: storedAt + privateTtlMs });
       return true;
     },
     delete(key) {

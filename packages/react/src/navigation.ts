@@ -15,6 +15,7 @@ import {
   type ActiveNavigationState,
 } from "./active-navigation.js";
 import { normalizeComparablePath, pathsIncludePathname } from "./path-utils.js";
+import { imageSrc } from "./helpers.js";
 import { createRouterCache, type RouterCache, type RouterCacheOptions } from "./router-cache.js";
 import type {
   AlternateLanguage,
@@ -45,6 +46,8 @@ export interface BrowserRoute {
   page?: ComponentType<any>;
   layouts?: readonly ComponentType<any>[];
   pattern: string;
+  prefetch?: 'code' | 'data' | 'off';
+  prefetchImages?: readonly PrefetchImageHint[];
 }
 
 export type BrowserRouteModule =
@@ -58,6 +61,15 @@ export type BrowserRouteModule =
 export interface LazyBrowserRoute {
   load: () => Promise<BrowserRouteModule>;
   pattern: string;
+  prefetch?: 'code' | 'data' | 'off';
+  prefetchImages?: readonly PrefetchImageHint[];
+}
+
+export interface PrefetchImageHint {
+  path: string;
+  w: number;
+  q?: number;
+  f?: 'jpeg' | 'png' | 'auto';
 }
 
 export type BrowserRouteRegistration =
@@ -183,6 +195,8 @@ export interface MatchedBrowserRoute {
   pattern: string;
   component?: ComponentType<any>;
   load?: LazyBrowserRoute["load"];
+  prefetch: 'code' | 'data' | 'off';
+  prefetchImages: readonly PrefetchImageHint[];
 }
 
 export type NavigationHistoryMode = "push" | "replace" | "pop";
@@ -588,10 +602,13 @@ function routeDefinition(
       | ComponentType<any>
       | undefined;
     if (typeof component !== "function") return undefined;
+    const options = registration as Partial<BrowserRoute>;
     return {
       routeId,
       component,
       pattern: registration.pattern,
+      prefetch: prefetchMode(options.prefetch),
+      prefetchImages: prefetchImages(options.prefetchImages),
     };
   }
   if (
@@ -600,13 +617,24 @@ function routeDefinition(
     typeof registration.load === "function" &&
     typeof registration.pattern === "string"
   ) {
+    const options = registration as Partial<LazyBrowserRoute>;
     return {
       routeId,
       load: registration.load as LazyBrowserRoute["load"],
       pattern: registration.pattern,
+      prefetch: prefetchMode(options.prefetch),
+      prefetchImages: prefetchImages(options.prefetchImages),
     };
   }
   return undefined;
+}
+
+function prefetchMode(value: unknown): 'code' | 'data' | 'off' {
+  return value === 'data' || value === 'off' ? value : 'code';
+}
+
+function prefetchImages(value: unknown): readonly PrefetchImageHint[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function asLayouts(
@@ -1185,7 +1213,7 @@ export function createSoftNavigation(
   let destroyed = false;
   const listeners = new Set<NavigationLifecycleListener>();
   const routerCache = options.routerCache ?? createRouterCache(options.routerCacheOptions);
-  const pendingWarms = new Map<string, Promise<void>>();
+  const pendingWarms = new Map<string, Promise<RuntimeNavigationPayload | undefined>>();
 
   // Seed active-nav from the current URL so usePathname/useRoute match Go
   // before the first soft navigation.
@@ -1260,6 +1288,21 @@ export function createSoftNavigation(
           cached,
           startComponentResolve(route),
         );
+      }
+      const pending = pendingWarms.get(routerCache.keyFor(url));
+      if (pending && route.prefetch === 'data') {
+        const warmed = await pending;
+        if (warmed && active === controller) {
+          return await renderNavigationResult(
+            url,
+            href,
+            route,
+            controller,
+            navigationOptions,
+            warmed,
+            startComponentResolve(route),
+          );
+        }
       }
       return await performNavigation(
         url,
@@ -1546,9 +1589,10 @@ export function createSoftNavigation(
    * private/no-store - `routerCache.set` already enforces the latter, this
    * just avoids doing the fetch's error handling twice.
    */
-  function warmRouterCache(url: URL, route: MatchedBrowserRoute): Promise<void> {
+  function warmRouterCache(url: URL, route: MatchedBrowserRoute): Promise<RuntimeNavigationPayload | undefined> {
     const key = routerCache.keyFor(url);
-    if (routerCache.get(key)) return Promise.resolve();
+    const cached = routerCache.get(key);
+    if (cached) return Promise.resolve(cached);
     const pending = pendingWarms.get(key);
     if (pending) return pending;
 
@@ -1559,15 +1603,15 @@ export function createSoftNavigation(
     runtimeURL.searchParams.set("path", url.pathname + url.search);
     const request = options.fetch ?? targetWindow.fetch.bind(targetWindow);
 
-    const warm = (async () => {
+    const warm = (async (): Promise<RuntimeNavigationPayload | undefined> => {
       const response = await request(runtimeURL, {
         method: "GET",
         headers: { accept: "application/json", [BUILD_ID_HEADER]: options.buildId },
         redirect: "manual",
       });
-      if (!response.ok) return;
+      if (!response.ok) return undefined;
       if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-        return;
+        return undefined;
       }
       const payload = parseRuntimeNavigationPayload(await response.text());
       if (
@@ -1575,11 +1619,14 @@ export function createSoftNavigation(
         payload.routeId !== route.routeId ||
         payload.result.kind !== "ok"
       ) {
-        return;
+        return undefined;
       }
-      routerCache.set(key, payload);
+      routerCache.setPrivate(key, payload);
+      warmPriorityImages(route, payload);
+      return payload;
     })().catch(() => {
       // Prefetch data-warming is opportunistic; a real navigation retries.
+      return undefined;
     });
     pendingWarms.set(key, warm);
     void warm.finally(() => {
@@ -1588,16 +1635,35 @@ export function createSoftNavigation(
     return warm;
   }
 
+  function propAtPath(value: unknown, path: string): unknown {
+    return path.split('.').filter(Boolean).reduce<unknown>((current, segment) => {
+      if (!isRecord(current)) return undefined;
+      return current[segment];
+    }, value);
+  }
+
+  function warmPriorityImages(route: MatchedBrowserRoute, payload: RuntimeNavigationPayload): void {
+    if (route.prefetchImages.length === 0) return;
+    for (const hint of route.prefetchImages) {
+      const source = propAtPath(payload.result.props, hint.path);
+      if (typeof source !== 'string' || source.length === 0) continue;
+      const image = new targetWindow.Image();
+      image.decoding = 'async';
+      image.src = imageSrc(source, { w: hint.w, ...(hint.q === undefined ? {} : { q: hint.q }), ...(hint.f === undefined ? {} : { f: hint.f }) });
+    }
+  }
+
   async function prefetch(target: string | URL): Promise<void> {
     if (destroyed) return;
     const url = new URL(target, targetWindow.location.href);
     if (url.origin !== targetWindow.location.origin) return;
     const route = matchBrowserRoute(url.pathname, options.routes);
     if (!route) return;
-    await Promise.all([
-      resolveBrowserRoute(options.routes[route.routeId]),
-      warmRouterCache(url, route),
-    ]);
+    const code = route.prefetch === 'off'
+      ? Promise.resolve(undefined)
+      : resolveBrowserRoute(options.routes[route.routeId]);
+    const data = route.prefetch === 'data' ? warmRouterCache(url, route) : Promise.resolve(undefined);
+    await Promise.all([code, data]);
   }
 
   function onClick(event: MouseEvent): void {
