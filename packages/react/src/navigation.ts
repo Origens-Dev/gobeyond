@@ -1771,12 +1771,20 @@ export function createSoftNavigation(
     if (typeof MutationObserverConstructor === "function" && mutationRoot) {
       linkMutationObserver = new MutationObserverConstructor((records) => {
         for (const record of records) {
+          if (record.type === "attributes" && record.target instanceof targetWindow.Element) {
+            scanViewportLinks(record.target);
+          }
           for (const node of record.addedNodes) {
             if (node instanceof targetWindow.Element) scanViewportLinks(node);
           }
         }
       });
-      linkMutationObserver.observe(mutationRoot, { childList: true, subtree: true });
+      linkMutationObserver.observe(mutationRoot, {
+        attributes: true,
+        attributeFilter: ["data-gobeyond-link", "data-gobeyond-prefetch", "href", "download", "target"],
+        childList: true,
+        subtree: true,
+      });
     }
   }
 

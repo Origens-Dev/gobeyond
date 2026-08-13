@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.45 - 2026-08-13
+
+- observe Link marker attributes when client-only content upgrades a server anchor;
+- keep viewport prefetch working across hydration and dynamically updated links.
+
 ## 0.1.0-alpha.44 - 2026-08-13
 
 - add the progressive `Link` component with viewport, hover, and focus code prefetch;
