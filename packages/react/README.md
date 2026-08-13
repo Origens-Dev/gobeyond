@@ -19,8 +19,10 @@ diverging segments plus the page.
 Eager registrations may use `{ page, layouts, pattern }` (or legacy
 `{ component, pattern }` with an empty layout chain).
 
-Routes default to code-only intent prefetch. Generated routes can opt into
-data and image warming with a page contract:
+Routes default to code-only intent prefetch. Use `Link` for production
+navigation; it renders a normal anchor and prefetches visible links plus
+hover/focus targets. Generated routes can opt into data and image warming with
+a page contract:
 
 ```ts
 export const page = definePage({
@@ -31,6 +33,12 @@ export const page = definePage({
   },
 });
 ```
+
+`Link` accepts `prefetch="auto"` (the default), `prefetch="code"`,
+`prefetch="data"`, or `prefetch={false}`. The automatic viewport behavior is
+limited to `Link` elements; existing anchors keep hover/focus code prefetch
+behavior while consumers migrate. External, modified, download, hash, and
+new-window links retain native browser behavior.
 
 Data warming is kept in the current tab's in-memory cache for up to 60 seconds
 and is never promoted to a shared HTTP or CDN cache. Repeated prefetches and a

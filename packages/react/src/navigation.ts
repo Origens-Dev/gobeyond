@@ -1060,14 +1060,23 @@ function targetAnchor(
   const target = event.target;
   if (!(target instanceof targetWindow.Element)) return undefined;
   const anchor = target.closest<HTMLAnchorElement>("a[href]");
-  if (
-    !anchor ||
-    anchor.hasAttribute("download") ||
-    (anchor.target !== "" && anchor.target.toLowerCase() !== "_self")
-  ) {
-    return undefined;
-  }
-  return anchor;
+  return anchor && isPrefetchableAnchor(anchor) ? anchor : undefined;
+}
+
+function isPrefetchableAnchor(anchor: HTMLAnchorElement): boolean {
+  return (
+    !anchor.hasAttribute("download") &&
+    (anchor.target === "" || anchor.target.toLowerCase() === "_self")
+  );
+}
+
+type AnchorPrefetchOverride = "code" | "data" | "off" | undefined;
+
+function anchorPrefetchOverride(anchor: HTMLAnchorElement): AnchorPrefetchOverride {
+  if (!anchor.hasAttribute("data-gobeyond-link")) return undefined;
+  const value = anchor.getAttribute("data-gobeyond-prefetch");
+  if (value === "code" || value === "data" || value === "off") return value;
+  return undefined;
 }
 
 function eventAnchor(
@@ -1214,6 +1223,9 @@ export function createSoftNavigation(
   const listeners = new Set<NavigationLifecycleListener>();
   const routerCache = options.routerCache ?? createRouterCache(options.routerCacheOptions);
   const pendingWarms = new Map<string, Promise<RuntimeNavigationPayload | undefined>>();
+  const observedViewportLinks = new WeakSet<HTMLAnchorElement>();
+  let viewportObserver: IntersectionObserver | undefined;
+  let linkMutationObserver: MutationObserver | undefined;
 
   // Seed active-nav from the current URL so usePathname/useRoute match Go
   // before the first soft navigation.
@@ -1653,16 +1665,27 @@ export function createSoftNavigation(
     }
   }
 
-  async function prefetch(target: string | URL): Promise<void> {
+  async function prefetch(
+    target: string | URL,
+    override?: AnchorPrefetchOverride,
+  ): Promise<void> {
     if (destroyed) return;
     const url = new URL(target, targetWindow.location.href);
-    if (url.origin !== targetWindow.location.origin) return;
+    if (
+      url.origin !== targetWindow.location.origin ||
+      (url.pathname === targetWindow.location.pathname &&
+        url.search === targetWindow.location.search &&
+        url.hash.length > 0)
+    ) {
+      return;
+    }
     const route = matchBrowserRoute(url.pathname, options.routes);
     if (!route) return;
-    const code = route.prefetch === 'off'
+    const mode = override ?? route.prefetch;
+    const code = mode === 'off'
       ? Promise.resolve(undefined)
       : resolveBrowserRoute(options.routes[route.routeId]);
-    const data = route.prefetch === 'data' ? warmRouterCache(url, route) : Promise.resolve(undefined);
+    const data = mode === 'data' ? warmRouterCache(url, route) : Promise.resolve(undefined);
     await Promise.all([code, data]);
   }
 
@@ -1704,9 +1727,57 @@ export function createSoftNavigation(
   function onPrefetch(event: Event): void {
     const anchor = targetAnchor(event, targetWindow);
     if (!anchor) return;
-    void prefetch(anchor.href).catch(() => {
+    void prefetch(anchor.href, anchorPrefetchOverride(anchor)).catch(() => {
       // Prefetch is opportunistic. A later navigation retries failed imports.
     });
+  }
+
+  function scanViewportLinks(root: ParentNode): void {
+    if (!viewportObserver) return;
+    const links: HTMLAnchorElement[] = [];
+    if (
+      root instanceof targetWindow.HTMLAnchorElement &&
+      root.matches("a[data-gobeyond-link][href]")
+    ) {
+      links.push(root);
+    }
+    links.push(...root.querySelectorAll<HTMLAnchorElement>("a[data-gobeyond-link][href]"));
+    for (const anchor of links) {
+      if (observedViewportLinks.has(anchor) || !isPrefetchableAnchor(anchor)) {
+        continue;
+      }
+      observedViewportLinks.add(anchor);
+      viewportObserver.observe(anchor);
+    }
+  }
+
+  const ViewportObserver = targetWindow.IntersectionObserver;
+  if (typeof ViewportObserver === "function") {
+    viewportObserver = new ViewportObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const anchor = entry.target;
+        if (!(anchor instanceof targetWindow.HTMLAnchorElement)) continue;
+        viewportObserver?.unobserve(anchor);
+        void prefetch(anchor.href, anchorPrefetchOverride(anchor)).catch(() => {
+          // Viewport prefetch is opportunistic; navigation retries on failure.
+        });
+      }
+    });
+    scanViewportLinks(options.document);
+
+    const MutationObserverConstructor = targetWindow.MutationObserver;
+    const mutationRoot = options.document.body ?? options.document.documentElement;
+    if (typeof MutationObserverConstructor === "function" && mutationRoot) {
+      linkMutationObserver = new MutationObserverConstructor((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node instanceof targetWindow.Element) scanViewportLinks(node);
+          }
+        }
+      });
+      linkMutationObserver.observe(mutationRoot, { childList: true, subtree: true });
+    }
   }
 
   options.document.addEventListener("click", onClick);
@@ -1734,6 +1805,8 @@ export function createSoftNavigation(
       listeners.clear();
       routerCache.clear();
       pendingWarms.clear();
+      linkMutationObserver?.disconnect();
+      viewportObserver?.disconnect();
       options.document.removeEventListener("click", onClick);
       options.document.removeEventListener("pointerover", onPrefetch);
       options.document.removeEventListener("focusin", onPrefetch);

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.44 - 2026-08-13
+
+- add the progressive `Link` component with viewport, hover, and focus code prefetch;
+- keep route data and priority image warming opt-in and private to the current tab;
+- coalesce Link prefetches with navigation and observe links added after hydration.
+
 ## 0.1.0-alpha.43 - 2026-08-12
 
 - Make navigation prefetch code-only by default, with explicit private data
