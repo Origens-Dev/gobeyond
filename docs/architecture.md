@@ -273,8 +273,10 @@ history change), which only re-renders the mounted route if it matches one of
 those paths. Either way, `refresh` invalidates the client Router Cache
 (`packages/react/src/router-cache.ts`): matching entries when `paths` is
 given, the whole cache otherwise. That cache is in-memory, keyed by
-path+search. Ordinary link intent prefetch is code-only; a page contract must
-explicitly opt into data prefetch. Public payloads use the response's
+path+search. `Link` elements prefetch route code when they enter the viewport
+and on hover/focus; ordinary anchors retain hover/focus code prefetch while
+consumers migrate. A page contract must explicitly opt into data prefetch.
+Public payloads use the response's
 `CachePolicy` (`maxAge`/`sharedMaxAge`) capped at 30s. Explicit data prefetches
 may also retain a private/no-store payload in the current tab for 60s; this is
 not an HTTP, CDN, or shared server cache. Prefetch and navigation share one

@@ -428,6 +428,109 @@ test("default prefetch is code-only, so navigation performs the first data reque
   }
 });
 
+test("viewport-visible Link prefetches once and observes links added later", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let requests = 0;
+  let imports = 0;
+  type ObserverEntry = { isIntersecting: boolean; target: Element };
+  class FakeIntersectionObserver {
+    static current: FakeIntersectionObserver | undefined;
+    readonly targets = new Set<Element>();
+    private readonly callback: (entries: ObserverEntry[]) => void;
+    constructor(callback: (entries: ObserverEntry[]) => void) {
+      this.callback = callback;
+      FakeIntersectionObserver.current = this;
+    }
+    observe(target: Element) {
+      this.targets.add(target);
+    }
+    unobserve(target: Element) {
+      this.targets.delete(target);
+    }
+    disconnect() {
+      this.targets.clear();
+    }
+    trigger(target: Element) {
+      this.callback([{ isIntersecting: true, target }]);
+    }
+  }
+  class FakeMutationObserver {
+    static current: FakeMutationObserver | undefined;
+    private readonly callback: (records: MutationRecord[]) => void;
+    constructor(callback: (records: MutationRecord[]) => void) {
+      this.callback = callback;
+      FakeMutationObserver.current = this;
+    }
+    observe() {}
+    disconnect() {}
+    trigger(node: Node) {
+      this.callback([{ addedNodes: [node] } as unknown as MutationRecord]);
+    }
+  }
+
+  try {
+    Object.assign(dom.window, {
+      IntersectionObserver: FakeIntersectionObserver,
+      MutationObserver: FakeMutationObserver,
+    });
+    const initialLink = dom.window.document.createElement("a");
+    initialLink.href = "/products/trail?view=full";
+    dom.window.document.body.append(initialLink);
+    initialLink.setAttribute("data-gobeyond-link", "");
+    initialLink.setAttribute("data-gobeyond-prefetch", "data");
+    let app: ReturnType<typeof bootstrap> | undefined;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: {
+            pattern: "/products/[slug]",
+            prefetch: "data",
+            load: async () => {
+              imports += 1;
+              return { default: Product };
+            },
+          },
+        },
+        document: dom.window.document,
+        fetch: async () => {
+          requests += 1;
+          return new Response(
+            JSON.stringify(payload("product", { name: "Trail" }, "Trail", { mode: "private_no_store" })),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        },
+        scrollTo() {},
+      });
+    });
+
+    const observer = FakeIntersectionObserver.current;
+    assert.ok(observer);
+    assert.equal(observer.targets.has(initialLink), true);
+    observer.trigger(initialLink);
+    await waitFor(() => imports === 1);
+    await waitFor(() => requests === 1);
+
+    const dynamicLink = dom.window.document.createElement("a");
+    dynamicLink.href = "/products/second";
+    dynamicLink.dataset.gobeyondLink = "";
+    dynamicLink.dataset.gobeyondPrefetch = "code";
+    dom.window.document.body.append(dynamicLink);
+    FakeMutationObserver.current?.trigger(dynamicLink);
+    assert.equal(observer.targets.has(dynamicLink), true);
+    observer.trigger(dynamicLink);
+    await waitFor(() => imports === 1);
+    assert.equal(requests, 1, "code-only dynamic Link does not fetch route data");
+
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
 test("intercepts a same-origin anchor and updates route metadata and accessibility", async () => {
   const dom = documentFor();
   const restore = installDOM(dom);

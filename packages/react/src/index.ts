@@ -3,6 +3,7 @@ export {
   deferClientRender,
   type ClientOnlyProps,
 } from "./client-only.js";
+export { Link, type LinkPrefetch, type LinkProps } from "./link.js";
 export { Columns, type ColumnsProps } from "./columns.js";
 export { SafeHTML, type SafeHTMLProps } from "./safe-html.js";
 export { useId, createUseIdSequence } from "./use-id.js";
