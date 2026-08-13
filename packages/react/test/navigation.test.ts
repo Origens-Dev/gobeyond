@@ -467,6 +467,9 @@ test("viewport-visible Link prefetches once and observes links added later", asy
     trigger(node: Node) {
       this.callback([{ addedNodes: [node] } as unknown as MutationRecord]);
     }
+    triggerAttributes(target: Element) {
+      this.callback([{ type: "attributes", target, addedNodes: [] } as unknown as MutationRecord]);
+    }
   }
 
   try {
@@ -522,6 +525,14 @@ test("viewport-visible Link prefetches once and observes links added later", asy
     observer.trigger(dynamicLink);
     await waitFor(() => imports === 1);
     assert.equal(requests, 1, "code-only dynamic Link does not fetch route data");
+
+    const hydratedLink = dom.window.document.createElement("a");
+    hydratedLink.href = "/products/hydrated";
+    dom.window.document.body.append(hydratedLink);
+    hydratedLink.dataset.gobeyondLink = "";
+    hydratedLink.dataset.gobeyondPrefetch = "code";
+    FakeMutationObserver.current?.triggerAttributes(hydratedLink);
+    assert.equal(observer.targets.has(hydratedLink), true);
 
     app?.destroy();
     await act(async () => app?.root.unmount());

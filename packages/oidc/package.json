@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/oidc",
-  "version": "0.1.0-alpha.44",
+  "version": "0.1.0-alpha.45",
   "description": "GoBeyond workload identity token helpers",
   "license": "MIT",
   "type": "module",
