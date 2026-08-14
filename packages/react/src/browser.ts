@@ -100,6 +100,13 @@ export {
   type RouterCache,
   type RouterCacheOptions,
 } from "./router-cache.js";
+export {
+  TRACEPARENT_META_NAME,
+  TRACESTATE_META_NAME,
+  documentTraceHeaders,
+  getDocumentTraceContext,
+  type DocumentTraceContext,
+} from "./trace-context.js";
 export { PINNED_REACT_VERSION, assertPinnedReactVersions } from "./version.js";
 
 export const BROWSER_PROTOCOL_VERSION = "gobeyond.render/v1alpha1" as const;

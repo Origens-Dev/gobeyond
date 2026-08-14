@@ -101,6 +101,45 @@ func TestPrivateDocumentForcesNoIndex(t *testing.T) {
 	}
 }
 
+func TestRenderExposesValidDocumentTraceContext(t *testing.T) {
+	var output bytes.Buffer
+	err := Render(&output, Input{
+		PublicOrigin: "https://example.com",
+		Metadata:     gb.Metadata{Lang: "en", Title: "Applications"},
+		Hydration:    HydrationData{BuildID: "build-1", RouteID: "applications", Props: map[string]any{}},
+		TraceParent:  "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		TraceState:   "vendor=opaque",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := output.String()
+	if !strings.Contains(document, `name="traceparent" content="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`) {
+		t.Fatalf("expected traceparent meta: %s", document)
+	}
+	if !strings.Contains(document, `name="tracestate" content="vendor=opaque"`) {
+		t.Fatalf("expected tracestate meta: %s", document)
+	}
+}
+
+func TestRenderDropsInvalidDocumentTraceContext(t *testing.T) {
+	var output bytes.Buffer
+	err := Render(&output, Input{
+		PublicOrigin: "https://example.com",
+		Metadata:     gb.Metadata{Lang: "en", Title: "Applications"},
+		Hydration:    HydrationData{BuildID: "build-1", RouteID: "applications", Props: map[string]any{}},
+		TraceParent:  `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"><script>alert(1)</script>`,
+		TraceState:   `vendor="><script>alert(1)</script>`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := output.String()
+	if strings.Contains(document, `name="traceparent"`) || strings.Contains(document, `name="tracestate"`) || strings.Contains(document, "<script>alert") {
+		t.Fatalf("invalid trace context must not be copied: %s", document)
+	}
+}
+
 func TestRenderDefaultsFaviconWhenIconsOmitted(t *testing.T) {
 	var output bytes.Buffer
 	err := Render(&output, Input{

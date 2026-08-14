@@ -127,6 +127,43 @@ func TestDynamicDocumentIsSEOComplete(t *testing.T) {
 	}
 }
 
+func TestDocumentExposesInboundW3CTraceContext(t *testing.T) {
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		Pages: []PageRoute{{
+			Route: router.Route{ID: "product", Pattern: "/products/[slug]", Mode: router.ModeDynamic},
+			Plan:  productPlan(),
+			Load: func(ctx *gb.PageContext) (LoadedPage, error) {
+				return LoadedPage{
+					Kind:     gb.ResultOK,
+					Props:    map[string]any{"name": "Applications", "available": true},
+					Status:   http.StatusOK,
+					Metadata: gb.Metadata{Lang: "en", Title: "Applications"},
+				}, nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://example.com/products/widget", nil)
+	request.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	request.Header.Set("tracestate", "vendor=opaque")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `name="traceparent" content="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`) {
+		t.Fatalf("document missing inbound traceparent: %s", body)
+	}
+	if !strings.Contains(body, `name="tracestate" content="vendor=opaque"`) {
+		t.Fatalf("document missing inbound tracestate: %s", body)
+	}
+}
+
 func TestDocumentUsesRouteAwareBrowserAssets(t *testing.T) {
 	manifest := &browserassets.Manifest{
 		APIVersion: browserassets.APIVersionV1Alpha1,
