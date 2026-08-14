@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/oidc-aws-credentials-provider",
-  "version": "0.1.0-alpha.45",
+  "version": "0.1.0-alpha.46",
   "description": "AWS SDK credentials provider for GoBeyond OIDC federation",
   "license": "MIT",
   "type": "module",

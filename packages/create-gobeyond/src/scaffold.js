@@ -5,7 +5,7 @@ export class CreateProjectError extends Error {}
 
 // Keep the Go module and every published JavaScript package on the exact same
 // release line in a starter.
-const GOBEYOND_VERSION = '0.1.0-alpha.45'
+const GOBEYOND_VERSION = '0.1.0-alpha.46'
 const REACT_VERSION = '19.2.8'
 
 /**

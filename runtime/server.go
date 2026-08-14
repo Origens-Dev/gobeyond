@@ -741,6 +741,8 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 		Styles:         styles,
 		ModulePreloads: modulePreloads,
 		Scripts:        scripts,
+		TraceParent:    ctx.Request.Header.Get(document.TraceParentHeader),
+		TraceState:     ctx.Request.Header.Get(document.TraceStateHeader),
 	}); err != nil {
 		return gb.Response{}, err
 	}

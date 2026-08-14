@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.46 - 2026-08-14
+
+- expose the HTML document's W3C `traceparent` and `tracestate` to JavaScript
+  so same-origin fetches can continue the page request instead of starting a
+  new root.
+
 ## 0.1.0-alpha.45 - 2026-08-13
 
 - observe Link marker attributes when client-only content upgrades a server anchor;

@@ -47,6 +47,11 @@ type Input struct {
 	ModulePreloads []Asset
 	Scripts        []Asset
 	Nonce          string
+	// TraceParent and TraceState are the document request's W3C context.
+	// When valid they are copied into <meta> tags so browser fetches can
+	// continue the page request instead of opening a new root.
+	TraceParent string
+	TraceState  string
 }
 
 func Render(writer io.Writer, input Input) error {
@@ -71,6 +76,12 @@ func Render(writer io.Writer, input Input) error {
 	output.WriteString("<!doctype html><html lang=\"")
 	output.WriteString(attribute(input.Metadata.Lang))
 	output.WriteString("\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
+	if traceparent := NormalizeTraceParent(input.TraceParent); traceparent != "" {
+		writeNamedMeta(&output, TraceParentMeta, traceparent)
+		if tracestate := NormalizeTraceState(input.TraceState); tracestate != "" {
+			writeNamedMeta(&output, TraceStateMeta, tracestate)
+		}
+	}
 	writeTitle(&output, input.Metadata.Title)
 	writeNamedMeta(&output, "description", input.Metadata.Description)
 	writeNamedMeta(&output, "robots", input.Metadata.Robots)
