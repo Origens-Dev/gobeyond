@@ -1,0 +1,5 @@
+{
+  "apiVersion": "gobeyond.proxy-policy/v1alpha1",
+  "redirects": [],
+  "rewrites": []
+}

@@ -10,7 +10,8 @@ GoBeyond has three compiler-visible application surfaces:
 
 ```text
 app/             -> site registry, rendering plans, browser assets, Go server
-middleware.ts/js -> optional CDN/edge request module
+middleware.go    -> optional in-process Go request handler
+gobeyond.json    -> optional edge/origin redirects and rewrites
 workflows/       -> workflow/activity registry, queue-grouped Temporal workers
 agents/          -> direct site registrations and optional durable agent workers
 internal/        -> ordinary Go packages shared by every surface
@@ -42,9 +43,13 @@ remain fatal.
   `app/api/**/route.go` stay beside the route they serve.
 - `internal/`: reusable Go services, policy, and integrations that are not
   owned by one route.
-- `middleware.ts` or `middleware.js`: one optional root Fetch-style request
-  function that executes before cache and origin routing. Both files may not
-  exist in the same application.
+- `middleware.go`: one optional root Go request hook with package `middleware`
+  and `func Middleware(next gb.Handler) gb.Handler`. It executes in the same
+  application process and slot as pages, APIs, actions, and runtime payloads;
+  it is not a second customer process.
+- `gobeyond.json`: optional edge-safe redirect/rewrite policy. The immutable
+  policy artifact is evaluated by the platform edge when available and again
+  by the Go origin for direct-origin/bypass parity.
 - `agents/`: compiler-visible agent definitions. An `agents/<id>/agent.go`
   package exports `var Agent = agents.Define(...)` for a typed handler or
   `agents.DefineAI(...)` plus `instructions.md` for a framework-owned model/tool
@@ -54,7 +59,7 @@ remain fatal.
 - `generated/`: gobeyond-owned contracts, registries, process mains, and
   ignored safe Go projection packages. The runtime imports projections, never
   authored route or definition directories. Authors write `app/`, `agents/`,
-  `workflows/`, `internal/`, and optional root middleware only.
+  `workflows/`, `internal/`, and optional root Go middleware only.
 - `render-plans/`: versioned language-neutral render artifacts packaged with
   the server.
 
@@ -110,10 +115,11 @@ effect mounts the original component after hydration. The build ID fingerprints 
 source tree and finalized plans, contracts, route modules, static props, and
 pinned React version.
 
-At request time, optional JavaScript/TypeScript middleware executes before the
-cache and origin boundary. Requests that reach the Go runtime resolve a typed
-loader, render metadata and body HTML, embed the exact hydration props, and
-reference immutable browser assets. No JavaScript executes in the Go server.
+At request time, the edge evaluates the build-scoped policy artifact before
+cache/origin selection when the platform path is available. The Go runtime
+re-applies that policy for direct-origin/bypass parity, then invokes the one
+authored Go middleware handler and resolves the typed loader, metadata, and
+body HTML. No JavaScript executes in the Go server.
 
 In development, one stable public listener proxies to a generated Go server.
 The watcher records content digests for build inputs and classifies their
@@ -129,10 +135,9 @@ After either candidate passes `readyz`, the proxy atomically changes targets,
 emits a browser reload event, and gracefully shuts down the prior process. A
 failed candidate never replaces the last working server.
 
-When a root middleware entry exists, complete builds also emit its standalone
-module. Development and preview start that exact bundle in a local Fetch
-runtime before the candidate Go server; readiness must pass through both
-processes before traffic switches.
+When a root Go middleware entry exists, complete builds wire it into the
+generated registry and server. Development and preview start one Go server;
+there is no middleware companion process or readiness hop.
 
 ## Workflow runtime
 
@@ -162,36 +167,46 @@ cancellation, and SSE HTTP contract. Session persistence and cross-process
 protocol-v2 delivery remain hosting-adapter concerns rather than hidden
 in-process shortcuts.
 
-## Middleware boundaries
+## Middleware and edge policy boundaries
 
-GoBeyond accepts exactly one optional root `middleware.ts` or `middleware.js`.
-The file default-exports a function that receives a standard Fetch `Request`
-and returns a `Response` (or promise of one). Returning `fetch(request)`
-continues to the application. Matchers are ordinary code in that function;
-middleware currently runs for every request.
+GoBeyond accepts one optional root `middleware.go` with package `middleware`:
 
-Build wraps the authored function in a module-worker `export default { fetch }`
-entry and emits `dist/edge-middleware/worker.mjs`. `dev` and `preview` execute
-the same module before the Go server. Production deployment adapters install
-that artifact in a compatible CDN or edge runtime; it is deliberately separate
-from the Node-free Go server artifact.
+```go
+package middleware
 
-Middleware must not receive origin credentials or call a private origin
-directly. Same-origin `fetch(request)` is a platform-controlled subrequest:
-the hosting adapter owns cache/origin selection, tenant admission, and trusted
-identity headers. A CDN that cannot provide that outbound boundary must not run
-the middleware artifact as though it can safely reach a shared origin.
+import gb "github.com/Origens-Dev/gobeyond"
+
+func Middleware(next gb.Handler) gb.Handler {
+	return func(ctx *gb.RequestContext) (gb.Response, error) {
+		return next(ctx)
+	}
+}
+```
+
+The hook is part of the application binary and slot. It applies to documents,
+APIs, actions, and runtime payloads. Health, static-file, and image dispatch
+remain platform/runtime concerns. There is no Node middleware process in dev,
+preview, or production.
+
+`gobeyond.json` carries the intentionally smaller edge policy surface:
+redirects, same-origin rewrites, and request conditions. Builds emit
+`dist/deploy/proxy-policy.json` with a build ID and digest. The platform may
+evaluate it before cache/origin routing; the origin evaluates the same artifact
+again when traffic bypasses the edge. Access/firewall rules remain platform
+configuration rather than application middleware.
 
 ## Production web request flow
 
 ```text
 CDN or edge document request
-  -> optional middleware.ts/js module
+  -> optional platform proxy policy
   -> static HTML from a static origin, when a route has build props only
   -> Go runtime, when a route has page.go or another dynamic boundary
 
 Go runtime
   -> strip reserved headers and validate host
+  -> re-apply proxy policy for origin-bypass parity
+  -> invoke the one authored Go middleware handler in the same slot
   -> resolve route, status, cache policy, metadata, and typed props
   -> interpret the packaged rendering plan
   -> emit one complete non-streamed HTML document

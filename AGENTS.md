@@ -3,9 +3,11 @@
 GoBeyond is application-first, with three equal authored surfaces: React and Go
 web routes under `app/`, durable definitions under `workflows/`, and direct or
 durable agents under `agents/`. Optional request middleware is one root
-`middleware.ts` or `middleware.js`. Ordinary Go services and policy under
-`internal/` can be shared by all three without mixing framework-generated
-plumbing into application logic.
+`middleware.go` Go handler that runs in the same application process and slot.
+Route rewrites and redirects may be declared in `gobeyond.json`; the build
+emits them as a validated policy artifact for both edge and origin evaluation.
+Ordinary Go services and policy under `internal/` can be shared by all three
+without mixing framework-generated plumbing into application logic.
 
 ## Always-on guardrails
 
@@ -14,9 +16,13 @@ plumbing into application logic.
 - Keep route-specific mutations in a sibling `actions.go` and HTTP endpoints in
   `app/api/**/route.go`. Put reusable Go services and policy in ordinary
   `internal/` packages, never in a second route tree.
-- Keep at most one root `middleware.ts` or `middleware.js`; never both. It must
-  default-export a Fetch-style request function and return `fetch(request)` to
-  continue through the platform-controlled path to the application.
+- Keep at most one root `middleware.go`. It must use `package middleware` and
+  export exactly `func Middleware(next gb.Handler) gb.Handler`. The hook is
+  compiled into the application server; it is not a separate middleware slot,
+  process, socket, or deployment artifact.
+- Keep edge-safe rewrites, redirects, and access conditions in `gobeyond.json`.
+  They are platform policy, not a second authored middleware runtime, and the
+  same artifact is applied again by the origin when the edge is bypassed.
 - Keep durable definitions in `workflows/<id>/workflow.go` or a standalone
   `workflows/<id>/activity.go`. Workflow-owned activities live under
   `activities/<id>/activity.go`; owned subworkflows live under
@@ -31,7 +37,7 @@ plumbing into application logic.
   schedule, and channel slots must remain compiler-visible literals. Direct is
   the zero-value execution mode; durable agents opt in with `Durable: true`.
 - Authors write `app/`, `agents/`, `workflows/`, `internal/`, and optional root
-  middleware only. Generated projections, contracts, registries, and process
+  Go middleware only. Generated projections, contracts, registries, and process
   mains live under `generated/`.
 - Do not move React component composition into Go handlers.
 - Initial Go-rendered markup must stay inside the documented portable profile.

@@ -5,17 +5,17 @@ import (
 	"testing"
 )
 
-func TestRenderRegistryImportsGoBeyondOnlyForServerLoadedPages(t *testing.T) {
+func TestRenderRegistryAlwaysImportsGoBeyondRuntimeContracts(t *testing.T) {
 	const gbImport = `gb "github.com/Origens-Dev/gobeyond"`
 
 	staticRegistry, err := renderRegistry("example.com/site", []pageWire{{
 		Route: Route{ID: "home", Pattern: "/"},
-	}}, nil, nil, nil)
+	}}, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("render static registry: %v", err)
 	}
-	if strings.Contains(string(staticRegistry), gbImport) {
-		t.Fatalf("static-only registry contains unused GoBeyond import")
+	if !strings.Contains(string(staticRegistry), gbImport) {
+		t.Fatalf("registry is missing GoBeyond runtime contract import")
 	}
 
 	dynamicRegistry, err := renderRegistry("example.com/site", []pageWire{{
@@ -23,7 +23,7 @@ func TestRenderRegistryImportsGoBeyondOnlyForServerLoadedPages(t *testing.T) {
 		Alias:      "page0",
 		ImportPath: "example.com/site/generated/routes/home",
 		HasPage:    true,
-	}}, nil, nil, nil)
+	}}, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("render dynamic registry: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestRenderRegistryImportsGoBeyondOnlyForServerLoadedPages(t *testing.T) {
 		Alias:      "api0",
 		ImportPath: "example.com/site/generated/api/status",
 		Methods:    []string{"GET"},
-	}}, nil, nil)
+	}}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("render API registry: %v", err)
 	}

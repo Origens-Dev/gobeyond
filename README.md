@@ -15,15 +15,17 @@ is an optional durability layer for the definitions that need it.
 > user—without shipping a Node production runtime.
 
 Node is used for development and builds. The site and workflow runtimes are Go
-executables; an optional root `middleware.ts` or `middleware.js` compiles to a
-separate Fetch-compatible module for a CDN or edge runtime. Browser JavaScript,
-CSS, images, and fonts can also be served from a CDN.
+executables; an optional root `middleware.go` runs in the same Go process and
+slot as the application. Simple redirects and same-origin rewrites live in
+`gobeyond.json`, which can be evaluated by the platform edge and by the Go
+origin when the edge is bypassed. Browser JavaScript, CSS, images, and fonts
+can also be served from a CDN.
 
 ## One project, three primitives
 
 | Primitive | Author in | Use it for | Runtime |
 | --- | --- | --- | --- |
-| Web | `app/`, optional root middleware | React pages, typed actions, HTTP APIs, middleware, and request-time data | Optional CDN/edge module, Go site server, and browser assets |
+| Web | `app/`, optional `middleware.go`, `gobeyond.json` | React pages, typed actions, HTTP APIs, middleware, redirects, rewrites, and request-time data | Go site server, optional platform policy evaluation, and browser assets |
 | Workflows | `workflows/` | Durable orchestration and reusable standalone activities | Temporal queue workers |
 | Agents | `agents/` | Typed handlers or AI agents with tools and streaming | Direct in the site process, or durable through Temporal |
 
@@ -31,7 +33,8 @@ All three surfaces share ordinary application code under `internal/`:
 
 ```text
 app/                         web routes, actions, and APIs
-middleware.ts                optional request middleware (`.js` also supported)
+middleware.go                optional authored Go middleware in the app slot
+gobeyond.json                optional edge/origin redirects and rewrites
 agents/<id>/                 one typed or AI agent definition
 workflows/<id>/              one workflow or standalone activity definition
 internal/                    shared services, integrations, and policy
@@ -49,9 +52,11 @@ registration by hand.
 sibling `page.go` opts a route into request-time Go data; `actions.go` adds
 typed mutations and `app/api/**/route.go` adds Go HTTP endpoints.
 
-An optional root `middleware.ts` or `middleware.js` default-exports one
-Fetch-style request function. It runs before cache/origin routing in the built
-application; returning `fetch(request)` continues to the Go application.
+An optional root `middleware.go` defines exactly one `Middleware(next
+gb.Handler) gb.Handler` hook. It runs in the same Go process and slot as the
+application handlers. `gobeyond.json` carries the smaller redirect/rewrite
+policy that the platform edge may evaluate before cache/origin routing and the
+Go runtime evaluates again when the edge is bypassed.
 
 ```text
 app/products/[slug]/page.tsx        React content and interaction
@@ -141,11 +146,10 @@ of the root module graph. A build emits:
 
 ```text
 dist/
-  edge-middleware/  optional Fetch-compatible CDN/edge module
   static/    CDN documents and browser assets
   server/    Go site executable, rendering plans, and runtime manifest
   workers/   Go Temporal poller binaries grouped by logical task queue
-  deploy/    route, worker, and artifact manifests
+  deploy/    route, worker, policy, and artifact manifests
 ```
 
 Preview serves the complete built application and supervises its built queue
@@ -167,8 +171,9 @@ go run ./cmd/gobeyond preview --no-workflows
 - **Agents:** typed and AI definitions expose one session/streaming contract;
   direct execution favors latency while durable execution uses granular model
   and tool activities with exact build-revision fencing.
-- **Production:** site and worker runtimes are Go binaries; optional request
-  middleware is a separate CDN/edge module. The server artifact audit rejects
+- **Production:** site and worker runtimes are Go binaries; authored request
+  middleware is compiled into the site process, while the small policy artifact
+  may also be evaluated by the platform edge. The server artifact audit rejects
   Node/npm executables and dependency trees under `dist/server`.
 
 The web conformance gate renders the same portable fixture with Go, hydrates it

@@ -26,6 +26,12 @@ import (
 	"github.com/Origens-Dev/gobeyond/router"
 )
 
+func testMiddleware(rules []gbmiddleware.Rule) gb.Middleware {
+	return func(next gb.Handler) gb.Handler {
+		return gbmiddleware.MustChain(rules, next)
+	}
+}
+
 func TestImageOptimizerIsSiblingRuntimeRoute(t *testing.T) {
 	staticDirectory := t.TempDir()
 	file, err := os.Create(filepath.Join(staticDirectory, "brand.png"))
@@ -97,13 +103,13 @@ func TestDynamicDocumentIsSEOComplete(t *testing.T) {
 			Indexable:    true,
 			ClientScript: "https://cdn.example.com/product.js",
 		}},
-		Middleware: []gbmiddleware.Rule{{Name: "consume-session", Middleware: func(next gb.Handler) gb.Handler {
+		Middleware: testMiddleware([]gbmiddleware.Rule{{Name: "consume-session", Middleware: func(next gb.Handler) gb.Handler {
 			return func(ctx *gb.RequestContext) (gb.Response, error) {
 				_ = ctx.Request.Header.Get("Cookie")
 				ctx.Request.Header.Del("Cookie")
 				return next(ctx)
 			}
-		}}},
+		}}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -421,7 +427,7 @@ func TestMiddlewareRewrite(t *testing.T) {
 			Plan:   plan,
 			Static: &LoadedPage{Kind: gb.ResultOK, Props: map[string]any{}, Status: http.StatusOK, Metadata: gb.Metadata{Lang: "en", Title: "New"}},
 		}},
-		Middleware: []gbmiddleware.Rule{{
+		Middleware: testMiddleware([]gbmiddleware.Rule{{
 			Name:   "legacy",
 			Config: gb.MiddlewareConfig{Patterns: []string{"/legacy"}},
 			Middleware: func(next gb.Handler) gb.Handler {
@@ -429,7 +435,7 @@ func TestMiddlewareRewrite(t *testing.T) {
 					return gb.Rewrite("/new"), nil
 				}
 			},
-		}},
+		}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -458,7 +464,7 @@ func TestMiddlewareAppliesToAPIsAndActions(t *testing.T) {
 			actionCalls.Add(1)
 			return map[string]bool{"saved": true}, nil
 		})},
-		Middleware: []gbmiddleware.Rule{{
+		Middleware: testMiddleware([]gbmiddleware.Rule{{
 			Name:   "auth",
 			Config: gb.MiddlewareConfig{Patterns: []string{"/api/[...path]", "/_gobeyond/builds/[buildId]/actions/[...path]"}},
 			Middleware: func(next gb.Handler) gb.Handler {
@@ -469,7 +475,7 @@ func TestMiddlewareAppliesToAPIsAndActions(t *testing.T) {
 					return next(ctx)
 				}
 			},
-		}},
+		}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -504,7 +510,7 @@ func TestRuntimeDataAppliesMiddlewareToThePublicPath(t *testing.T) {
 				return LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}}, nil
 			},
 		}},
-		Middleware: []gbmiddleware.Rule{{
+		Middleware: testMiddleware([]gbmiddleware.Rule{{
 			Name:   "protect-private-pages",
 			Config: gb.MiddlewareConfig{Patterns: []string{"/private/[slug]"}},
 			Middleware: func(gb.Handler) gb.Handler {
@@ -515,7 +521,7 @@ func TestRuntimeDataAppliesMiddlewareToThePublicPath(t *testing.T) {
 					return gb.Response{Status: http.StatusUnauthorized}, nil
 				}
 			},
-		}},
+		}}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -846,7 +852,7 @@ func TestDocumentMiddlewareParamsAndValuesReachLoader(t *testing.T) {
 				return LoadedPage{Kind: gb.ResultRedirect, Status: http.StatusTemporaryRedirect, RedirectTo: "/signed-in"}, nil
 			},
 		}},
-		Middleware: []gbmiddleware.Rule{{
+		Middleware: testMiddleware([]gbmiddleware.Rule{{
 			Name:   "tenant-context",
 			Config: gb.MiddlewareConfig{Patterns: []string{"/tenants/[slug]"}},
 			Middleware: func(next gb.Handler) gb.Handler {
@@ -858,7 +864,7 @@ func TestDocumentMiddlewareParamsAndValuesReachLoader(t *testing.T) {
 					return next(ctx)
 				}
 			},
-		}},
+		}}),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Origens-Dev/gobeyond/policy"
 )
 
 const RenderAPIVersion = "gobeyond.render/v1alpha1"
@@ -337,17 +339,20 @@ func Rewrite(path string) Response {
 
 type Handler func(*RequestContext) (Response, error)
 
-// Middleware is the legacy low-level Go runtime hook.
-//
-// Deprecated: application request middleware is authored as exactly one root
-// middleware.ts or middleware.js default export. This type remains only for
-// runtime compatibility during the alpha line.
+// Middleware is the one application request hook. A root middleware.go
+// exports a function with this shape; the generated server invokes the
+// resulting handler in the same process and execution slot as the application.
 type Middleware func(Handler) Handler
 
-// MiddlewareConfig configures the legacy low-level Go runtime hook.
+// ProxyPolicy is the validated build-scoped policy shared by the origin
+// runtime and the platform edge. It is an alias so generated applications can
+// expose the policy without importing an implementation package in their
+// authored middleware contract.
+type ProxyPolicy = policy.Policy
+
+// MiddlewareConfig configures the retained low-level rule adapter.
 //
-// Deprecated: application request middleware is authored as exactly one root
-// middleware.ts or middleware.js default export.
+// Deprecated: new applications should compose one root Go Middleware handler.
 type MiddlewareConfig struct {
 	Patterns []string
 	Methods  []string

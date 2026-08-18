@@ -37,9 +37,14 @@ const AssetLayoutV2 = "gobeyond.builds/v2"
 // worker binary per task queue).
 const AssetLayoutV3 = "gobeyond.builds/v3"
 
-// AssetLayoutV4 adds an optional CDN/edge middleware module at
-// dist/edge-middleware/worker.mjs.
+// AssetLayoutV4 is the retained legacy layout for builds that emitted an
+// optional CDN/edge middleware module at dist/edge-middleware/worker.mjs.
 const AssetLayoutV4 = "gobeyond.builds/v4"
+
+// AssetLayoutV5 runs authored Go middleware inside the application process
+// and emits the immutable proxy policy artifact instead of a customer edge
+// worker or middleware companion process.
+const AssetLayoutV5 = "gobeyond.builds/v5"
 
 // Retired Go middleware artifact locations under AssetLayoutV2. New builds do
 // not emit these paths.
@@ -49,7 +54,7 @@ const (
 	MiddlewareManifestName = "middleware.json"
 )
 
-// Edge middleware artifact locations inside dist/ under AssetLayoutV4.
+// Legacy edge middleware artifact locations inside dist/ under AssetLayoutV4.
 const (
 	EdgeMiddlewareDir        = "edge-middleware"
 	EdgeMiddlewareEntryName  = "worker.mjs"

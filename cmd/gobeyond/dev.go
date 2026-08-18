@@ -393,11 +393,6 @@ func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin str
 	if err := json.Unmarshal(manifestData, &manifest); err != nil || manifest.BuildID == "" {
 		return nil, errors.New("development runtime manifest is invalid")
 	}
-	middlewareEntry, hasMiddleware, err := edgeMiddlewareBundle(buildDirectory)
-	if err != nil {
-		return nil, err
-	}
-
 	address, err := availableLoopbackAddress()
 	if err != nil {
 		return nil, err
@@ -416,13 +411,7 @@ func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin str
 		"GOBEYOND_STATIC_DIR=" + filepath.Join(buildDirectory, "static"),
 		"GOBEYOND_AGENT_DEV_LOOPBACK=1",
 	}
-	if hasMiddleware {
-		// The Go server is reachable only through the loopback middleware
-		// bridge, which has already admitted the public request. Node's Fetch
-		// implementation owns the upstream Host header, so disable the direct-
-		// internet single-host fallback for this internal hop.
-		runtimeEnvironment = append(runtimeEnvironment, "GOBEYOND_HOSTED_RUNTIME=1")
-	}
+	runtimeEnvironment = append(runtimeEnvironment, "GOBEYOND_PROXY_POLICY="+filepath.Join(buildDirectory, "deploy", "proxy-policy.json"))
 	command.Env = withEnvironment(environment, runtimeEnvironment...)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	site, err := startDevProcess("Go server", command)
@@ -439,26 +428,6 @@ func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin str
 		return nil, err
 	}
 
-	if hasMiddleware {
-		middlewareAddress, addressErr := availableLoopbackAddress()
-		if addressErr != nil {
-			backend.stop()
-			return nil, addressErr
-		}
-		middlewareTarget, _ := url.Parse("http://" + middlewareAddress)
-		middlewareCommand := edgeMiddlewareCommand(ctx, root, middlewareEntry, middlewareAddress, siteTarget.String(), publicOrigin, environment)
-		middleware, startErr := startDevProcess("middleware", middlewareCommand)
-		if startErr != nil {
-			backend.stop()
-			return nil, startErr
-		}
-		backend.processes = append(backend.processes, middleware)
-		backend.target = middlewareTarget
-		if readyErr := waitForDevProcess(middleware, middlewareTarget, publicOrigin); readyErr != nil {
-			backend.stop()
-			return nil, readyErr
-		}
-	}
 	return backend, nil
 }
 
