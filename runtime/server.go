@@ -28,7 +28,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/document"
 	"github.com/Origens-Dev/gobeyond/imageopt"
 	"github.com/Origens-Dev/gobeyond/internal/jsvalue"
-	gbmiddleware "github.com/Origens-Dev/gobeyond/middleware"
+	"github.com/Origens-Dev/gobeyond/policy"
 	"github.com/Origens-Dev/gobeyond/renderer"
 	"github.com/Origens-Dev/gobeyond/renderplan"
 	"github.com/Origens-Dev/gobeyond/router"
@@ -162,10 +162,14 @@ type Config struct {
 	Pages               []PageRoute
 	Actions             []Action
 	APIs                []APIRoute
-	// Deprecated: authored application middleware now uses one root
-	// middleware.ts or middleware.js. This low-level hook remains for alpha
-	// runtime compatibility and is not compiler-discovered.
-	Middleware    []gbmiddleware.Rule
+	// Middleware is the one authored Go request hook discovered from the
+	// application's root middleware.go. It is applied to documents, APIs,
+	// actions, and runtime payloads, but not health, static, or image routes.
+	Middleware gb.Middleware
+	// ProxyPolicy is the validated build artifact shared by the origin and the
+	// platform edge. It runs before route classification, including static and
+	// image dispatch, while reserved GoBeyond paths remain outside it.
+	ProxyPolicy   *gb.ProxyPolicy
 	CSRF          *security.CSRF
 	Logger        *slog.Logger
 	Deadlines     gb.DeadlinePolicy
@@ -367,12 +371,21 @@ func New(config Config) (*Server, error) {
 		imageHandler: imageopt.Handler(config.ImageLoader),
 		cache:        cacheRuntime,
 	}
-	pipe, err := gbmiddleware.Chain(config.Middleware, server.documentHandler)
-	if err != nil {
-		return nil, err
+	server.documentPipe = server.documentHandler
+	if config.Middleware != nil {
+		server.documentPipe = config.Middleware(server.documentPipe)
+		if server.documentPipe == nil {
+			return nil, errors.New("application middleware returned a nil handler")
+		}
 	}
-	server.documentPipe = pipe
 	return server, nil
+}
+
+// LoadProxyPolicy loads the immutable deployment artifact emitted by the
+// GoBeyond build. Missing artifacts are allowed only for legacy/custom local
+// runtimes during the transition; new builds always emit one.
+func LoadProxyPolicy(filename, buildID string) (*gb.ProxyPolicy, error) {
+	return policy.LoadFile(filename, buildID)
 }
 
 func hostedRuntime() bool {
@@ -514,6 +527,10 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	request = request.WithContext(context.WithValue(request.Context(), publicOriginContextKey{}, publicOrigin))
 	writer.Header().Set("X-GoBeyond-Request-ID", requestID)
+	request, handled := s.applyProxyPolicy(writer, request, requestID)
+	if handled {
+		return
+	}
 
 	switch {
 	case request.URL.Path == imageopt.Route:
@@ -536,6 +553,26 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	default:
 		s.serveDocument(writer, request, requestID)
 	}
+}
+
+func (s *Server) applyProxyPolicy(writer http.ResponseWriter, request *http.Request, requestID string) (*http.Request, bool) {
+	result, err := evaluateProxyPolicy(s.config.ProxyPolicy, request)
+	if err != nil {
+		writer.Header().Set("Cache-Control", "no-store")
+		if strings.Contains(err.Error(), "loop") || strings.Contains(err.Error(), "limit") {
+			s.writeError(writer, http.StatusLoopDetected, "proxy_policy_loop", requestID)
+		} else {
+			s.writeError(writer, http.StatusServiceUnavailable, "proxy_policy_error", requestID)
+		}
+		return nil, true
+	}
+	if result.location != "" {
+		writer.Header().Set("Location", result.location)
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.WriteHeader(result.status)
+		return nil, true
+	}
+	return result.request, false
 }
 
 type imageDiagnosticWriter struct {
@@ -954,12 +991,15 @@ func (s *Server) serveAPI(writer http.ResponseWriter, request *http.Request, req
 }
 
 func (s *Server) applyMiddleware(request *http.Request, requestID string, params map[string]string, final gb.Handler) (gb.Response, error) {
-	pipe, err := gbmiddleware.Chain(s.config.Middleware, final)
-	if err != nil {
-		return gb.Response{}, err
-	}
 	privateRequest := cache.IsPrivateRequest(request.Header)
 	request = request.WithContext(cache.WithRequestScope(request.Context(), s.newRequestScope(privateRequest)))
+	pipe := final
+	if s.config.Middleware != nil {
+		pipe = s.config.Middleware(final)
+		if pipe == nil {
+			return gb.Response{}, errors.New("application middleware returned a nil handler")
+		}
+	}
 	return pipe(&gb.RequestContext{
 		Context:      request.Context(),
 		Request:      request,

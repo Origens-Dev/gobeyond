@@ -1,66 +1,65 @@
-# Add request middleware
+# Add Go request middleware
 
 > [!WARNING]
 > Middleware is an alpha surface. Its API and deployment contract can change
 > before GoBeyond reaches a stable release.
 
-Create exactly one file at the application root: `middleware.ts` or
-`middleware.js`. Do not add both.
+Create exactly one file at the application root: `middleware.go`.
 
-```ts
-export default function middleware(
-  request: Request,
-): Response | Promise<Response> {
-  const url = new URL(request.url)
+```go
+package middleware
 
-  if (url.pathname === '/docs/old') {
-    return Response.redirect(new URL('/docs', request.url), 308)
-  }
+import gb "github.com/Origens-Dev/gobeyond"
 
-  return fetch(request)
+func Middleware(next gb.Handler) gb.Handler {
+	return func(ctx *gb.RequestContext) (gb.Response, error) {
+		// Inspect ctx.Request, set ctx.Values, or return a response.
+		return next(ctx)
+	}
 }
 ```
 
-The default export receives a standard Fetch `Request`. Return a `Response`
-directly to redirect, reject, or answer the request. Return `fetch(request)` to
-continue through the platform-controlled path to the application.
+The handler runs in the same Go process and execution slot as the rest of the
+application. It is applied to documents, APIs, actions, and runtime payloads;
+it is not a separate worker, relay, socket, or edge deployment.
 
-Middleware currently runs for every request. Branch on `request.method`, the
-URL, or headers when behavior applies only to part of the application. There
-is no separate matcher configuration in the current alpha.
+## Edge/origin policy
+
+Put small, edge-safe redirects and same-origin rewrites in `gobeyond.json`:
+
+```json
+{
+  "redirects": [
+    { "source": "/docs/old", "destination": "/docs", "status": 308 }
+  ],
+  "rewrites": [
+    { "source": "/legacy/[slug]", "destination": "/docs/[slug]" }
+  ]
+}
+```
+
+The build emits `dist/deploy/proxy-policy.json` with the finalized build ID
+and digest. The platform can evaluate this policy before cache/origin routing;
+the Go origin evaluates the same artifact again for direct-origin/bypass
+parity. Platform access/firewall rules remain platform-owned configuration,
+not authored middleware.
 
 ## Build and local execution
 
-`gobeyond build` bundles the entry and its imports into one module-worker
-artifact:
+`gobeyond build` compiles `middleware.go` into the application server and
+publishes the policy artifact path in `dist/deploy/artifacts.json`.
 
-```text
-dist/edge-middleware/worker.mjs
-```
-
-The artifact uses `export default { fetch }`, which deployment adapters can
-install in a compatible CDN or edge runtime. `dist/deploy/artifacts.json`
-publishes its path.
-
-`gobeyond dev` and `gobeyond preview` execute that same built module in front
-of the Go site server. A middleware edit takes the complete replacement-build
-path, and development switches traffic only after both the middleware and Go
-server pass readiness. Node is used for this local Fetch runtime; it is not
-added to `dist/server` or the production Go server image.
+`gobeyond dev` and `gobeyond preview` run one Go site server with the root hook
+inside it. A middleware edit takes the normal replacement-build path and
+readiness is checked once for the Go server. Node is not added to `dist/server`
+or the production Go server image.
 
 ## Hosting boundary
 
-Middleware is allowed to decide how a request proceeds, but it is not an
-origin credential holder. Do not embed private-origin URLs, mTLS material,
-workload tokens, signing keys, or trusted viewer claims in middleware source.
+Middleware is application code, but it is not an origin credential holder. Do
+not embed private-origin URLs, mTLS material, workload tokens, signing keys, or
+trusted viewer claims in the source.
 
-In a hosted deployment, same-origin `fetch(request)` must be intercepted by the
-platform so tenant admission, cache/static selection, and origin authentication
-remain outside customer code. Emitting `worker.mjs` does not imply that every
-CDN provides this isolation; the selected deployment adapter must implement
-the boundary.
-
-The framework rejects the former `middleware.go`, `server/cmd/middleware`,
-`edge-middleware.ts`, and `edge-middleware/` authoring layouts with migration
-guidance. This keeps one middleware contract across generate, build, dev,
-preview, and hosting.
+The framework rejects the former TypeScript/JavaScript edge middleware and
+paired middleware-process layouts. This keeps one Go middleware contract across
+generate, build, dev, preview, and hosting.

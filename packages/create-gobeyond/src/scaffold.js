@@ -5,7 +5,7 @@ export class CreateProjectError extends Error {}
 
 // Keep the Go module and every published JavaScript package on the exact same
 // release line in a starter.
-const GOBEYOND_VERSION = '0.1.0-alpha.46'
+const GOBEYOND_VERSION = '0.1.0-alpha.47'
 const REACT_VERSION = '19.2.8'
 
 /**
@@ -91,7 +91,7 @@ function projectFiles(projectName, { tailwind }) {
         noUncheckedIndexedAccess: true, exactOptionalPropertyTypes: true,
         verbatimModuleSyntax: true, skipLibCheck: true,
       },
-      include: ['app/**/*.ts', 'app/**/*.tsx', 'components/**/*.ts', 'components/**/*.tsx', 'client.tsx', 'middleware.ts'],
+      include: ['app/**/*.ts', 'app/**/*.tsx', 'components/**/*.ts', 'components/**/*.tsx', 'client.tsx'],
     }),
     'AGENTS.md': managedAgentsBlock(),
     'README.md': starterReadme(projectName),
@@ -126,7 +126,8 @@ function projectFiles(projectName, { tailwind }) {
       .replace('return gb.ActionResult[contract.Output]{}, errors.New', 'return contract.Output{}, errors.New')
       .replace('return gb.ActionResult[contract.Output]{Data: contract.Output{Added: true}}, nil', 'return contract.Output{Added: true}, nil'),
     'app/api/products/route.go': apiHandler(),
-    'middleware.ts': siteMiddleware(),
+    'gobeyond.json': proxyPolicy(),
+    'middleware.go': siteMiddleware(),
   }
 }
 
@@ -137,7 +138,8 @@ function managedAgentsBlock() {
     '- Start with `app/`: React owns content, layout, and component composition.',
     '- `page.tsx` alone is static; add its sibling `page.go` only for request-time data, status, metadata, or cache policy.',
     '- Keep route-specific actions in `actions.go` and APIs in `app/api/**/route.go`; keep reusable Go code in ordinary `internal/` packages.',
-    '- Use exactly one root `middleware.ts` or `middleware.js` default export for request middleware; return `fetch(request)` to continue to the application.',
+    '- Use exactly one root `middleware.go` package for authored request middleware; it runs in the same Go process and slot as the application.',
+    '- Put simple redirects and same-origin rewrites in `gobeyond.json`; the policy is shared by the platform edge and the Go origin.',
     '- The runtime imports generated-safe route projections, never `app/` source directories directly.',
     '- Do not build React fragments or duplicate templates in Go.',
     '- Values crossing TypeScript and Go must use a schema-generated contract.',
@@ -190,7 +192,7 @@ function starterReadme(projectName) {
     'pnpm install',
     'pnpm dev',
     '```', '',
-    'Open `http://localhost:3000/` or `http://localhost:3000/products/portable-react`. `pnpm dev` watches the project, builds each replacement Go server and middleware bundle, switches traffic only after readiness succeeds, and reloads the browser. Use `pnpm dev --port 4000` to select another public port. `pnpm serve` previews an existing production build on port 8080.', '',
+    'Open `http://localhost:3000/` or `http://localhost:3000/products/portable-react`. `pnpm dev` watches the project, builds each replacement Go server, switches traffic only after readiness succeeds, and reloads the browser. Use `pnpm dev --port 4000` to select another public port. `pnpm serve` previews an existing production build on port 8080.', '',
     '## Environment variables', '',
     '`gobeyond dev` reads `.env`, `.env.development`, `.env.local`, and `.env.development.local`; `gobeyond build` uses the corresponding `production` files. Later files override earlier files, while variables already present in the shell always win. The values are available to the Go build and runtime and to Vite. Only Vite variables whose names start with `VITE_` are included in browser code—keep Contentful tokens and other secrets unprefixed.', '',
     'Tailwind is optional. Start a new Tailwind v4 project with `create-gobeyond --tailwind my-site`; it adds `tailwindcss`, `@tailwindcss/postcss`, a project-owned `postcss.config.mjs`, and the CSS import. Existing projects can opt in by adding those same dependencies and PostCSS config. GoBeyond does not add a Tailwind runtime layer.', '',
@@ -202,14 +204,15 @@ function starterReadme(projectName) {
     '- `app/products/[slug]/actions.go`: typed Go mutation handler beside its browser contract.',
     '- `app/api/products/route.go`: Go HTTP API.',
     '- `internal/`: reusable Go for your app (not a gobeyond hook surface).',
-    '- `middleware.ts` (optional): request middleware that runs before cache/origin routing.',
+    '- `middleware.go` (optional): the one authored Go request hook, running in the application process and slot.',
+    '- `gobeyond.json` (optional): edge-safe redirects and same-origin rewrites shared by the platform and origin.',
     '- `app/robots.ts`, `app/sitemap.ts`, `app/icon.png`, ...: Next-compatible Metadata files.',
     '- `public/`: generic static files (not the Metadata conventions above).',
     '- `generated/`: gobeyond-owned projections, contracts, registry, and process mains.', '',
     'Run `pnpm generate` after changing schemas/routes. It commits the route registry and Go contracts under `generated/`; check them with `pnpm generate:check`.', '',
     'Generation also creates ignored, managed `go.mod` sidecars in route folders so `gopls` can type-check names such as `[slug]`. The production server imports only the safe generated packages.', '',
     '## Production', '',
-    'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, and manifests—never Node, npm, TypeScript, or browser assets. Upload `dist/static` to your CDN and install `dist/edge-middleware/worker.mjs` through a compatible deployment adapter; the middleware module is deliberately separate from the origin image.', '',
+    'The Dockerfile uses Node and Go only in its build stage. The final scratch image contains only the compiled Go server, the render-plan and static-entry packs, contracts, policy artifact, and manifests—never Node, npm, TypeScript, or browser assets. The root Go middleware is compiled into the application server; `gobeyond.json` is emitted as `dist/deploy/proxy-policy.json` for the platform edge and origin fallback.', '',
     'Add Metadata files under `app/` (`icon.png`, `robots.ts`, `sitemap.ts`, `opengraph-image.png`, ...). `public/` is for other static assets; use absolute HTTPS URLs in social metadata.', '',
     'GoBeyond generates the browser page/layout registry and safe Go route projections during `pnpm build`. The runtime imports those generated projections rather than source directories in `app/`. See `AGENTS.md` for the cross-language rules.', '',
   ].join('\n')
@@ -316,15 +319,24 @@ export function metadata(_props: Props): DocumentMetadata {
 
 
 function siteMiddleware() {
-  return `// Optional request middleware. Omit this file when it is not needed.
-export default function middleware(request: Request): Response | Promise<Response> {
-  const url = new URL(request.url)
-  if (url.pathname === '/products/old-portable-react') {
-    return Response.redirect(new URL('/products/portable-react', request.url), 308)
-  }
-  return fetch(request)
+  return `package middleware
+
+import gb "github.com/Origens-Dev/gobeyond"
+
+// Middleware is the one authored Go request hook. It runs in the same process
+// and slot as the rest of the application.
+func Middleware(next gb.Handler) gb.Handler {
+  return next
 }
 `
+}
+
+function proxyPolicy() {
+  return `${JSON.stringify({
+    apiVersion: 'gobeyond.proxy-policy/v1alpha1',
+    redirects: [{ source: '/products/old-portable-react', destination: '/products/portable-react', status: 308 }],
+    rewrites: [],
+  }, null, 2)}\n`
 }
 
 function dockerfile() {

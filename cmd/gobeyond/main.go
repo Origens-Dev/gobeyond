@@ -31,6 +31,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/imageopt"
 	"github.com/Origens-Dev/gobeyond/internal/project"
 	"github.com/Origens-Dev/gobeyond/pack"
+	"github.com/Origens-Dev/gobeyond/policy"
 	"github.com/Origens-Dev/gobeyond/renderer"
 	"github.com/Origens-Dev/gobeyond/renderplan"
 )
@@ -123,6 +124,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
+	hasGoMiddleware := middlewareSource != ""
 	imageConfig, hasImageConfig, err := imageopt.LoadDeploymentConfig(projectRoot)
 	if err != nil {
 		return err
@@ -185,6 +187,14 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
+	proxyConfig, err := policy.LoadConfig(filepath.Join(projectRoot, "gobeyond.json"))
+	if err != nil {
+		return err
+	}
+	proxyPolicyBytes, _, err := policy.Compile(proxyConfig, manifest.BuildID)
+	if err != nil {
+		return err
+	}
 	if err := project.Write(projectRoot, routes, manifest.BuildID, false); err != nil {
 		return err
 	}
@@ -242,14 +252,6 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 			},
 		},
 	}
-	if middlewareSource != "" {
-		tasks = append(tasks, buildTask{
-			name: "build edge middleware",
-			run: func() error {
-				return buildEdgeMiddleware(root, projectRoot, dist, middlewareSource, environment, browserMode)
-			},
-		})
-	}
 	for _, workerTarget := range workerTargets {
 		wt := workerTarget
 		workerOutput := filepath.Join(dist, buildpaths.WorkersDir, wt.ID, buildpaths.WorkerEntryName)
@@ -267,9 +269,8 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		return err
 	}
 	publicAssets = mergeAssetPaths(publicAssets, generatedIconAssets, generatedMetadataAssets)
-	assetLayout := buildpaths.AssetLayout
+	assetLayout := buildpaths.AssetLayoutV5
 	if len(workerTargets) > 0 {
-		assetLayout = buildpaths.AssetLayoutV3
 		workerEntries := make([]map[string]any, 0, len(workerTargets))
 		for _, workerTarget := range workerTargets {
 			queue, queueErr := gb.TaskQueueName(workerTarget.ID, gb.LocalEnvironment)
@@ -286,9 +287,6 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.WorkersManifest), workersDeployManifest(workerEntries)); err != nil {
 			return err
 		}
-	}
-	if middlewareSource != "" {
-		assetLayout = buildpaths.AssetLayoutV4
 	}
 	agentsManifest, err := project.LoadAgentsManifest(projectRoot)
 	if err != nil {
@@ -351,9 +349,11 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		"staticPack":    staticPackFile,
 		"browserAssets": browserAssets,
 		"publicAssets":  publicAssets,
+		"proxyPolicy":   "deploy/proxy-policy.json",
+		"goMiddleware":  hasGoMiddleware,
 	}
-	if middlewareSource != "" {
-		artifacts["edgeMiddleware"] = path.Join(buildpaths.EdgeMiddlewareDir, buildpaths.EdgeMiddlewareEntryName)
+	if err := os.WriteFile(filepath.Join(dist, "deploy", "proxy-policy.json"), proxyPolicyBytes, 0o644); err != nil {
+		return err
 	}
 	if err := writeJSONFile(filepath.Join(dist, "deploy", "artifacts.json"), artifacts); err != nil {
 		return err
@@ -390,9 +390,8 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		"planPack":          pack.PlanPackCapability,
 		"staticPack":        pack.StaticPackCapability,
 	}
-	if middlewareSource != "" {
-		compatibility["edgeMiddleware"] = buildpaths.EdgeMiddlewareCapability
-	}
+	compatibility["proxyPolicy"] = policy.APIVersion
+	compatibility["goMiddleware"] = hasGoMiddleware
 	if err := writeJSONFile(filepath.Join(dist, "deploy", "compatibility.json"), compatibility); err != nil {
 		return err
 	}
@@ -1761,26 +1760,6 @@ func preview(root string, args []string) error {
 		host = "localhost:" + strings.TrimPrefix(host, "0.0.0.0:")
 	}
 	publicOrigin := "http://" + host
-	_, hasMiddleware, err := edgeMiddlewareBundle(filepath.Join(root, "dist"))
-	if err != nil {
-		return err
-	}
-	if hasMiddleware {
-		ctx, cancel := interruptContext()
-		defer cancel()
-		if !*noWorkflows {
-			workflowSupervisor := newDevWorkflowSupervisor(ctx, root, environment, gb.PreviewEnvironment)
-			workflowSupervisor.replace(filepath.Join(root, "dist"))
-			defer workflowSupervisor.close()
-		}
-		backend, startErr := startDevBackend(ctx, root, filepath.Join(root, "dist"), publicOrigin, environment, gb.PreviewEnvironment)
-		if startErr != nil {
-			return startErr
-		}
-		defer backend.stop()
-		fmt.Println("GoBeyond preview listening on", *address)
-		return servePreviewTarget(ctx, *address, backend.target)
-	}
 	if !*noWorkflows {
 		workflowContext, cancelWorkflows := context.WithCancel(context.Background())
 		defer cancelWorkflows()
@@ -1800,6 +1779,7 @@ func preview(root string, args []string) error {
 		"GOBEYOND_STATIC_PACK="+filepath.Join(root, "dist", "server", "runtime-data", "static-build"+pack.ExtStatic),
 		"GOBEYOND_RUNTIME_DATA_DIR="+filepath.Join(root, "dist", "server", "runtime-data"),
 		"GOBEYOND_STATIC_DIR="+filepath.Join(root, "dist", "static"),
+		"GOBEYOND_PROXY_POLICY="+filepath.Join(root, "dist", "deploy", "proxy-policy.json"),
 	)
 	command.Stdout, command.Stderr, command.Stdin = os.Stdout, os.Stderr, os.Stdin
 	fmt.Println("GoBeyond preview listening on", *address)

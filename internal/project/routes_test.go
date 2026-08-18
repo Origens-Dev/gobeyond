@@ -163,7 +163,7 @@ func writeTestModule(t *testing.T, root string) {
 func TestOptionalMiddlewareDoesNotForceStaticRoutesDynamic(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "app", "page.tsx"))
-	writeTestFile(t, filepath.Join(root, "middleware.ts"))
+	writeTestFile(t, filepath.Join(root, "middleware.go"))
 	routes, err := Discover(root)
 	if err != nil {
 		t.Fatal(err)

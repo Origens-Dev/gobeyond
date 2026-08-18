@@ -107,8 +107,12 @@ func generateSiteArtifacts(root, websiteImport string, routes []Route) (map[stri
 	if err != nil {
 		return nil, err
 	}
+	middlewareSource, err := DiscoverGoMiddleware(root)
+	if err != nil {
+		return nil, err
+	}
 
-	registry, err := renderRegistry(websiteImport, pages, apis, actions, agents)
+	registry, err := renderRegistry(websiteImport, pages, apis, actions, agents, middlewareSource != "")
 	if err != nil {
 		return nil, err
 	}
@@ -449,8 +453,8 @@ func httpMethodFuncs(file string) ([]string, error) {
 	return methods, nil
 }
 
-func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, agents []AgentDefinition) ([]byte, error) {
-	needsGB := len(apis) > 0
+func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, agents []AgentDefinition, hasMiddleware bool) ([]byte, error) {
+	needsGB := true
 	for _, page := range pages {
 		if page.HasPage {
 			needsGB = true
@@ -477,6 +481,9 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 		for index, definition := range agents {
 			imports = append(imports, fmt.Sprintf(`agent%d "%s"`, index, path.Join(websiteImport, GeneratedDir, "agents", definition.Key)))
 		}
+	}
+	if hasMiddleware {
+		imports = append(imports, `middleware "`+websiteImport+`"`)
 	}
 	for _, page := range pages {
 		if page.HasPage {
@@ -506,6 +513,8 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 	b.WriteString(`type Options struct {
 	BuildID       string
 	PublicOrigin  string
+	Middleware    gb.Middleware
+	ProxyPolicy   *gb.ProxyPolicy
 	BrowserAssets *browserassets.Manifest
 	PlanStore     gbruntime.PlanStore
 	Static        gbruntime.StaticEntries
@@ -592,15 +601,23 @@ func New(opts Options) (*gbruntime.Server, func() error, error) {
 	b.WriteString(`	cfg := gbruntime.Config{
 		BuildID:       opts.BuildID,
 		PublicOrigin:  opts.PublicOrigin,
+		Middleware:    opts.Middleware,
+		ProxyPolicy:   opts.ProxyPolicy,
 		BrowserAssets: opts.BrowserAssets,
 		PlanStore:     opts.PlanStore,
 		Static:        opts.Static,
 		Pages:         pages,
 		Actions:       actions,
 		APIs:          apis,
+	}
 `)
-	b.WriteString(`	}
-	var closeFn func() error
+	if hasMiddleware {
+		b.WriteString(`	if cfg.Middleware == nil {
+		cfg.Middleware = middleware.Middleware
+	}
+`)
+	}
+	b.WriteString(`	var closeFn func() error
 	if opts.Static != nil {
 		cacheConfig, cacheClose, err := openfromenv.OpenFromEnv()
 		if err != nil {
@@ -763,6 +780,14 @@ func main() {
 	if buildID == "" {
 		buildID = routes.BuildID
 	}
+	proxyPolicyPath := os.Getenv("GOBEYOND_PROXY_POLICY")
+	if proxyPolicyPath == "" {
+		proxyPolicyPath = filepath.Join("dist", "deploy", "proxy-policy.json")
+	}
+	proxyPolicy, err := gbruntime.LoadProxyPolicy(proxyPolicyPath, buildID)
+	if err != nil {
+		log.Fatal(err)
+	}
 	assets, err := loadBrowserAssets(filepath.Join(filepath.Dir(planPack), "runtime-manifest.json"), buildID)
 	if err != nil {
 		log.Fatal(err)
@@ -770,6 +795,7 @@ func main() {
 	handler, closeFn, err := registry.Handler(registry.Options{
 		BuildID:       buildID,
 		PublicOrigin:  origin,
+		ProxyPolicy:   proxyPolicy,
 		BrowserAssets: assets,
 		PlanStore:     planStore,
 		Static:        staticStore,
@@ -786,6 +812,7 @@ func main() {
 		staticDirectory = "dist/static"
 	}
 	handler = gbruntime.StaticFiles(staticDirectory, handler)
+	handler = gbruntime.ProxyPolicyHandler(proxyPolicy, handler)
 	if err := gblisten.Serve(handler); err != nil {
 		log.Fatal(err)
 	}

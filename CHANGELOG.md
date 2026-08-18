@@ -10,6 +10,14 @@
   process-local unmetered BYOK bypass; do not copy it into the agents manifest
   or Temporal input.
 
+## 0.1.0-alpha.47 - 2026-08-18
+
+- Move authored request middleware into the Go application process and slot;
+  add the edge-safe `gobeyond.json` redirect/rewrite policy artifact with
+  origin fallback evaluation.
+- Replace the former standalone middleware/edge build path in the current V5
+  artifact layout while retaining bounded legacy readers for older releases.
+
 ## 0.1.0-alpha.46 - 2026-08-14
 
 - expose the HTML document's W3C `traceparent` and `tracestate` to JavaScript

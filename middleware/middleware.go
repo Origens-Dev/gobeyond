@@ -1,8 +1,7 @@
-// Package middleware composes the legacy low-level Go runtime middleware hook.
+// Package middleware composes GoBeyond's low-level Go runtime middleware hook.
 //
-// Deprecated: GoBeyond applications author exactly one root middleware.ts or
-// middleware.js default export. This package remains for runtime compatibility
-// during the alpha line and is no longer compiler-discovered.
+// Rule and Chain remain useful for applications that want to compose named,
+// matcher-aware functions inside the one compiler-discovered root hook.
 package middleware
 
 import (
@@ -48,6 +47,18 @@ func Chain(rules []Rule, final gb.Handler) (gb.Handler, error) {
 		}
 		return handler(ctx)
 	}, nil
+}
+
+// MustChain is the startup-time form of Chain for authored middleware. The
+// matcher configuration is compile-time application code, so an invalid rule
+// is a programmer error and should stop the process rather than become a
+// request-time authorization bypass.
+func MustChain(rules []Rule, final gb.Handler) gb.Handler {
+	chain, err := Chain(rules, final)
+	if err != nil {
+		panic(err)
+	}
+	return chain
 }
 
 type compiledRule struct {

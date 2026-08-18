@@ -7,65 +7,78 @@ import (
 	"testing"
 )
 
-func TestDiscoverMiddlewareSource(t *testing.T) {
+func TestDiscoverGoMiddleware(t *testing.T) {
 	root := t.TempDir()
-	if source, err := DiscoverMiddlewareSource(root); err != nil || source != "" {
-		t.Fatalf("empty middleware source = %q, %v", source, err)
+	if source, err := DiscoverGoMiddleware(root); err != nil || source != "" {
+		t.Fatalf("missing middleware: source=%q err=%v", source, err)
 	}
+	writeMiddlewareTestFile(t, root, `package middleware
 
-	typescript := filepath.Join(root, "middleware.ts")
-	if err := os.WriteFile(typescript, []byte("export default () => new Response()\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if source, err := DiscoverMiddlewareSource(root); err != nil || source != typescript {
-		t.Fatalf("TypeScript middleware source = %q, %v", source, err)
-	}
+import gb "github.com/Origens-Dev/gobeyond"
 
-	javascript := filepath.Join(root, "middleware.js")
-	if err := os.WriteFile(javascript, []byte("export default () => new Response()\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := DiscoverMiddlewareSource(root); err == nil || !strings.Contains(err.Error(), "cannot both exist") {
-		t.Fatalf("expected duplicate middleware error, got %v", err)
-	}
-	if err := os.Remove(typescript); err != nil {
-		t.Fatal(err)
-	}
-	if source, err := DiscoverMiddlewareSource(root); err != nil || source != javascript {
-		t.Fatalf("JavaScript middleware source = %q, %v", source, err)
+func Middleware(next gb.Handler) gb.Handler { return next }
+`)
+	source, err := DiscoverGoMiddleware(root)
+	if err != nil || source != filepath.Join(root, "middleware.go") {
+		t.Fatalf("valid middleware: source=%q err=%v", source, err)
 	}
 }
 
-func TestDiscoverMiddlewareSourceRejectsLegacyLayouts(t *testing.T) {
+func TestDiscoverGoMiddlewareRejectsInvalidContracts(t *testing.T) {
 	tests := []struct {
 		name string
-		path string
+		body string
 		want string
 	}{
-		{name: "Go root", path: "middleware.go", want: "middleware.go is no longer supported"},
-		{name: "Go process", path: filepath.Join("server", "cmd", "middleware"), want: "server/cmd/middleware is no longer supported"},
-		{name: "flat edge", path: "edge-middleware.ts", want: "rename it to middleware.ts"},
-		{name: "edge directory", path: "edge-middleware", want: "no longer a supported authored layout"},
+		{
+			name: "wrong package",
+			body: `package main
+import gb "github.com/Origens-Dev/gobeyond"
+func Middleware(next gb.Handler) gb.Handler { return next }
+`,
+			want: "package middleware",
+		},
+		{
+			name: "wrong signature",
+			body: `package middleware
+import gb "github.com/Origens-Dev/gobeyond"
+func Middleware(next gb.Handler) error { return nil }
+`,
+			want: "signature",
+		},
+		{
+			name: "missing function",
+			body: `package middleware
+import gb "github.com/Origens-Dev/gobeyond"
+var _ gb.Handler
+`,
+			want: "must declare Middleware",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			path := filepath.Join(root, test.path)
-			if filepath.Ext(path) == "" {
-				if err := os.MkdirAll(path, 0o755); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte("legacy"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := DiscoverMiddlewareSource(root); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("expected %q error, got %v", test.want, err)
+			writeMiddlewareTestFile(t, root, test.body)
+			if _, err := DiscoverGoMiddleware(root); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v, want substring %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestDiscoverMiddlewareSourceRejectsJavaScriptContracts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "middleware.ts"), []byte("export default () => fetch(request)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DiscoverMiddlewareSource(root); err == nil || !strings.Contains(err.Error(), "middleware.go") {
+		t.Fatalf("error=%v, want migration error", err)
+	}
+}
+
+func writeMiddlewareTestFile(t *testing.T, root, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "middleware.go"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

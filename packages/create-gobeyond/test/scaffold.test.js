@@ -30,7 +30,8 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
     'app/products/[slug]/page.go',
     'app/products/[slug]/actions.go',
     'app/api/products/route.go',
-    'middleware.ts',
+    'gobeyond.json',
+    'middleware.go',
     'public/portable-react.svg',
     'public/social/home.svg',
     'Dockerfile',
@@ -90,17 +91,19 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
   assert.match(vite, /dedupe: \['react', 'react-dom'\]/)
   assert.match(vite, /sourcemap: false/)
   const tsconfig = JSON.parse(await readFile(join(destination, 'tsconfig.json'), 'utf8'))
-  assert.ok(tsconfig.include.includes('middleware.ts'))
+  assert.ok(!tsconfig.include.includes('middleware.ts'))
   const loader = await readFile(join(destination, 'app/products/[slug]/page.go'), 'utf8')
   assert.match(loader, /type Props struct/)
   assert.match(loader, /var Config = gb\.PageConfig/)
   assert.match(loader, /func Page\(ctx \*gb\.PageContext\)/)
   const action = await readFile(join(destination, 'app/products/[slug]/actions.go'), 'utf8')
   assert.match(action, /contracts\/actions\/r_products_slug_3e2e8eb9_add_to_cart/)
-  const middleware = await readFile(join(destination, 'middleware.ts'), 'utf8')
-  assert.match(middleware, /export default function middleware/)
-  assert.match(middleware, /Response\.redirect/)
-  assert.match(middleware, /return fetch\(request\)/)
+  const middleware = await readFile(join(destination, 'middleware.go'), 'utf8')
+  assert.match(middleware, /package middleware/)
+  assert.match(middleware, /func Middleware\(next gb\.Handler\) gb\.Handler/)
+  const proxyPolicy = JSON.parse(await readFile(join(destination, 'gobeyond.json'), 'utf8'))
+  assert.equal(proxyPolicy.apiVersion, 'gobeyond.proxy-policy/v1alpha1')
+  assert.equal(proxyPolicy.redirects[0].status, 308)
   const gitignoreFull = await readFile(join(destination, '.gitignore'), 'utf8')
   assert.match(gitignoreFull, /generated\/cmd\//)
 

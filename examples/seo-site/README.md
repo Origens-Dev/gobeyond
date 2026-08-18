@@ -22,7 +22,9 @@ robots.txt, and sitemap.xml.
 Its route source is co-located: a static route has `page.tsx` only, while each
 request-time route adds a sibling `page.go`; the product mutation lives beside
 its declaration in `app/products/[slug]/actions.go`. Shared Go helpers live in
-`internal/site`; optional request middleware is website-root `middleware.ts`.
+`internal/site`; redirects and same-origin rewrites are declared in the
+website-root `gobeyond.json`, while authored Go middleware belongs in the
+application process rather than a separate edge slot.
 `robots.txt` / `sitemap.xml` come from `app/robots.ts` and `app/sitemap.ts` (build-time Metadata files). The runtime imports
 generated-safe projections of route files, never the `app/` source directories
 directly.
