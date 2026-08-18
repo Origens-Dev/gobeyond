@@ -1,6 +1,7 @@
 package project
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -74,6 +75,32 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true}, Run)
 	}
 	if research := byID["research"]; research.TaskQueue != "assist" {
 		t.Fatalf("subagent did not inherit root queue: %#v", research)
+	}
+}
+
+func TestDiscoverAIAgentAllowsInferenceWithoutManifestingIt(t *testing.T) {
+	root := t.TempDir()
+	writeSourceTestFile(t, filepath.Join(root, "agents", "assistant", "agent.go"), `package assistant
+import gbagents "github.com/Origens-Dev/gobeyond/agents"
+var Agent = gbagents.DefineAI(gbagents.AIConfig{
+  Model: "openai/gpt-4o-mini", Inference: "openrouter", Durable: true,
+})
+`)
+	writeSourceTestFile(t, filepath.Join(root, "agents", "assistant", "instructions.md"), "You are a concise assistant.\n")
+	definitions, err := DiscoverAgentDefinitions(root)
+	if err != nil || len(definitions) != 1 {
+		t.Fatalf("definitions = %#v, err = %v", definitions, err)
+	}
+	definition := definitions[0]
+	if definition.Model != "openai/gpt-4o-mini" || definition.Kind != AgentKindAI {
+		t.Fatalf("AI definition = %#v", definition)
+	}
+	encoded, err := json.Marshal(portableAgentsManifest(definitions, "build-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(encoded)), "inference") {
+		t.Fatalf("Inference leaked into compiler manifest: %s", encoded)
 	}
 }
 
@@ -221,6 +248,14 @@ var Agent = gbagents.DefineAI(gbagents.AIConfig{Model: "anthropic/test"})
 import gbagents "github.com/Origens-Dev/gobeyond/agents"
 var Agent = gbagents.DefineAI(gbagents.AIConfig{})
 `, "Model is required"},
+		{"ai-inference-grok", "agents/support/agent.go", `package support
+import gbagents "github.com/Origens-Dev/gobeyond/agents"
+var Agent = gbagents.DefineAI(gbagents.AIConfig{Model: "x-ai/grok-4.6", Inference: "grok"})
+`, "Inference \"grok\" is not supported"},
+		{"ai-inference-openai", "agents/support/agent.go", `package support
+import gbagents "github.com/Origens-Dev/gobeyond/agents"
+var Agent = gbagents.DefineAI(gbagents.AIConfig{Model: "openai/gpt-4o-mini", Inference: "openai"})
+`, "Inference \"openai\" is not supported"},
 		{"bad-handler", "agents/support/agent.go", `package support
 import gbagents "github.com/Origens-Dev/gobeyond/agents"
 func Run(_ gbagents.Actor, input string) (string, error) { return input, nil }

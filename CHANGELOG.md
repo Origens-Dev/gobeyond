@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Resolve AI catalog ids (`openai/gpt-4o-mini`, `google/gemini-2.5-flash`,
+  `x-ai/grok-4.6`) through the host-report UDS `POST /v1/ai-proxy` with an
+  explicit dummy key so ambient `OPENROUTER_API_KEY` cannot leak onto the
+  gateway path.
+- Allow `AIConfig.Inference` (`openrouter|vertex|anthropic|bedrock` only) as a
+  process-local unmetered BYOK bypass; do not copy it into the agents manifest
+  or Temporal input.
+
 ## 0.1.0-alpha.46 - 2026-08-14
 
 - expose the HTML document's W3C `traceparent` and `tracestate` to JavaScript
@@ -28,8 +38,6 @@
 GoBeyond follows semantic versioning. The portable React, render-plan, value
 contract, browser payload, and deployment manifests are versioned compatibility
 surfaces; alpha releases may revise them with explicit changelog entries.
-
-## Unreleased
 
 ## 0.1.0-alpha.42 - 2026-08-11
 

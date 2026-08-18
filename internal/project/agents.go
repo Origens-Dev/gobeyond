@@ -301,6 +301,17 @@ func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable b
 			if err != nil {
 				return "", false, false, false, "", 0, err
 			}
+		case "Inference":
+			if kind != AgentKindAI {
+				return "", false, false, false, "", 0, errors.New("agent config field Inference is only supported by DefineAI")
+			}
+			inference, err := staticString(field.Value, "Inference")
+			if err != nil {
+				return "", false, false, false, "", 0, err
+			}
+			if err := validateAIInference(inference); err != nil {
+				return "", false, false, false, "", 0, err
+			}
 		case "Tools", "Provider", "DurableUpdates", "OnReviewPublicationFailure":
 			if kind != AgentKindAI {
 				return "", false, false, false, "", 0, fmt.Errorf("agent config field %s is only supported by DefineAI", key.Name)
@@ -574,6 +585,15 @@ func realtimeAgentQueueID(id string) string {
 	}
 	digest := sha256.Sum256([]byte("realtime-agent-queue:" + id))
 	return "realtime-" + hex.EncodeToString(digest[:8])
+}
+
+func validateAIInference(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "openrouter", "vertex", "anthropic", "bedrock":
+		return nil
+	default:
+		return fmt.Errorf("AI agent Inference %q is not supported; use openrouter, vertex, anthropic, or bedrock", value)
+	}
 }
 
 func containsString(values []string, expected string) bool {

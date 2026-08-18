@@ -84,19 +84,40 @@ var lookupOrder = gbagents.DefineTool(
 )
 
 var Agent = gbagents.DefineAI(gbagents.AIConfig{
-  Model: "openrouter/openai/gpt-4o-mini",
+  Model: "openai/gpt-4o-mini",
   Tools: map[string]gbagents.AITool{"lookup-order": lookupOrder},
 })
 ```
 
-Built-in model references use `anthropic/...`, `openrouter/...`, `bedrock/...`,
-or `vertex/...` and read the provider package's normal environment credentials.
-`AIConfig.Provider` accepts a custom Go AI SDK provider without copying it or
-its credentials into the generated manifest or Temporal input. In the current
-alpha, the authored package is linked into both the site registration and durable
-worker binaries, so custom provider construction must remain lazy and free of
-secret-loading side effects; splitting transport metadata from worker-only
-executors belongs to the hosted integration.
+Hosted agents should author OpenRouter catalog ids, not an `origens/` prefix
+and not a first-segment `openrouter/` bypass:
+
+```go
+var Agent = gbagents.DefineAI(gbagents.AIConfig{
+  Model: "google/gemini-2.5-flash",
+})
+```
+
+`openai/gpt-4o-mini`, `google/gemini-2.5-flash`, and `x-ai/grok-4.6` are catalog
+ids. On a hosted worker they resolve through the slot-private host-report
+socket (`POST /v1/ai-proxy`). Do not add `openai`, `google`, `x-ai`, or `grok`
+as built-in first-segment providers.
+
+`AIConfig.Inference` is a process-local unmetered bypass for customer BYOK. The
+compiler allowlists `openrouter`, `vertex`, `anthropic`, and `bedrock` only
+(`grok` is not available until go-ai owns xai). Inference is not copied into
+`.gobeyond/agents.json`, `dist/deploy/agents.json`, or Temporal workflow input.
+A missing customer key fails closed and does not fall through to the gateway.
+Dogfood default agents must omit Inference so hosted traffic stays metered.
+
+A first-segment `openrouter/...`, `anthropic/...`, `bedrock/...`, or
+`vertex/...` model still selects that SDK (legacy BYOK). `Provider` accepts a
+custom Go AI SDK provider without copying it or its credentials into the
+generated manifest or Temporal input. In the current alpha, the authored
+package is linked into both the site registration and durable worker binaries,
+so custom provider construction must remain lazy and free of secret-loading
+side effects; splitting transport metadata from worker-only executors belongs
+to the hosted integration.
 
 Direct AI agents stream `agent.text.delta` events and finish with one
 `agent.output`. Set `Durable: true` to use the stable
@@ -111,7 +132,7 @@ hosting service or platform credentials:
 
 ```go
 var Agent = gbagents.DefineAI(gbagents.AIConfig{
-  Model:          "openrouter/openai/gpt-4o-mini",
+  Model:          "openai/gpt-4o-mini",
   Durable:        true,
   DurableUpdates: customerDynamoConnector,
   OnReviewPublicationFailure: func(ctx context.Context, event updates.UpdateEvent, err error) {

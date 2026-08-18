@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -15,7 +16,23 @@ import (
 	"github.com/Origens-Dev/go-temporal-ai-sdk/updates"
 )
 
-const defaultAIMaxSteps = 8
+const (
+	defaultAIMaxSteps = 8
+
+	// EnvHostReportSocket is the slot-private host-report UDS. LanguageModel
+	// stats this path at resolve time and must not dial Cloud Map.
+	EnvHostReportSocket = "GOBEYOND_HOST_REPORT_SOCKET"
+	// EnvHostedRuntime marks a hosted app or worker slot. Catalog model ids
+	// then require the host-report socket instead of falling through to an
+	// ambient OPENROUTER_API_KEY.
+	EnvHostedRuntime = "GOBEYOND_HOSTED_RUNTIME"
+
+	languageModelViaProvider  = "provider"
+	languageModelViaInference = "inference"
+	languageModelViaLegacy    = "legacy"
+	languageModelViaGateway   = "gateway"
+	languageModelViaLocalEnv  = "local-env"
+)
 
 // AITool is the Go AI SDK tool definition used by a filesystem agent. Keeping
 // the alias here lets authored agents define tools without importing framework
@@ -31,10 +48,15 @@ type DurableUpdateStore interface {
 	updates.RecordStore
 }
 
-// AIConfig declares a framework-owned model/tool loop. Model uses
-// provider/model syntax for the built-in providers (anthropic, openrouter,
-// bedrock, and vertex). Provider may be supplied for a custom provider; its
-// credentials and mutable configuration remain runtime-only.
+// AIConfig declares a framework-owned model/tool loop. Model is an OpenRouter
+// catalog id (for example openai/gpt-4o-mini or google/gemini-2.5-flash).
+// Known first-segment providers stay {openrouter, anthropic, bedrock, vertex};
+// do not author openai/, google/, x-ai/, or grok/ as built-in providers.
+//
+// Inference selects a process-local BYOK provider (openrouter, vertex,
+// anthropic, or bedrock) and is an unmetered hosted bypass. It is not copied
+// into the agents manifest or Temporal workflow input. Provider may be
+// supplied for a custom provider; credentials stay runtime-only.
 type AIConfig struct {
 	TaskQueue string
 	Durable   bool
@@ -42,6 +64,7 @@ type AIConfig struct {
 	Public    bool
 
 	Model        string
+	Inference    string
 	MaxSteps     int
 	Tools        map[string]ai.Tool
 	Provider     ai.Provider
@@ -243,41 +266,98 @@ func (input AIInput) aiMessages() ([]ai.Message, error) {
 
 // LanguageModel resolves the authored model reference. Built-in providers read
 // their normal environment credentials; no secret is copied into manifests or
-// Temporal workflow input.
+// Temporal workflow input. Hosted catalog ids use the host-report socket
+// client; RegisterAI may call this at worker start and must only stat that
+// UDS, never dial Cloud Map.
 func (definition AIDefinition) LanguageModel() (ai.LanguageModel, error) {
+	model, _, err := definition.resolveLanguageModel()
+	return model, err
+}
+
+func (definition AIDefinition) resolveLanguageModel() (ai.LanguageModel, string, error) {
 	modelRef := strings.TrimSpace(definition.AI.Model)
 	if modelRef == "" {
-		return nil, errors.New("AI agent model is required")
+		return nil, "", errors.New("AI agent model is required")
 	}
 	if definition.AI.Provider != nil {
 		model := definition.AI.Provider.LanguageModel(modelRef)
 		if model == nil {
-			return nil, fmt.Errorf("AI agent model %q was not found by its custom provider", modelRef)
+			return nil, "", fmt.Errorf("AI agent model %q was not found by its custom provider", modelRef)
 		}
-		return model, nil
+		return model, languageModelViaProvider, nil
+	}
+	if inference := strings.TrimSpace(definition.AI.Inference); inference != "" {
+		provider, err := builtInProvider(inference)
+		if err != nil {
+			return nil, "", err
+		}
+		model := provider.LanguageModel(modelRef)
+		if model == nil {
+			return nil, "", fmt.Errorf("AI agent model %q was not found", modelRef)
+		}
+		return model, languageModelViaInference, nil
 	}
 	providerName, modelID, found := strings.Cut(modelRef, "/")
+	if found && strings.TrimSpace(modelID) != "" && isBuiltInProvider(providerName) {
+		provider, err := builtInProvider(providerName)
+		if err != nil {
+			return nil, "", err
+		}
+		model := provider.LanguageModel(modelID)
+		if model == nil {
+			return nil, "", fmt.Errorf("AI agent model %q was not found", modelRef)
+		}
+		return model, languageModelViaLegacy, nil
+	}
+	if socketPath, ok := hostReportSocketPath(); ok {
+		model := gatewayLanguageModel(socketPath, modelRef)
+		if model == nil {
+			return nil, "", fmt.Errorf("AI agent model %q was not found", modelRef)
+		}
+		return model, languageModelViaGateway, nil
+	}
+	if hostedRuntime() {
+		return nil, "", fmt.Errorf("AI agent model %q requires the Origens AI gateway host-report socket", modelRef)
+	}
+	if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "" {
+		model := openrouter.New(openrouter.Settings{}).LanguageModel(modelRef)
+		if model == nil {
+			return nil, "", fmt.Errorf("AI agent model %q was not found", modelRef)
+		}
+		return model, languageModelViaLocalEnv, nil
+	}
 	if !found || strings.TrimSpace(modelID) == "" {
-		return nil, fmt.Errorf("AI agent model %q must use provider/model syntax", modelRef)
+		return nil, "", fmt.Errorf("AI agent model %q must use provider/model syntax", modelRef)
 	}
-	var provider ai.Provider
-	switch strings.ToLower(strings.TrimSpace(providerName)) {
-	case "anthropic":
-		provider = anthropic.New(anthropic.Settings{})
-	case "openrouter":
-		provider = openrouter.New(openrouter.Settings{})
-	case "bedrock":
-		provider = bedrock.New(bedrock.Settings{})
-	case "vertex":
-		provider = vertex.New(vertex.Settings{})
+	return nil, "", fmt.Errorf("AI agent model provider %q is not built in; set AIConfig.Provider for a custom provider, or use a catalog id with the Origens AI gateway or OPENROUTER_API_KEY", providerName)
+}
+
+func isBuiltInProvider(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "anthropic", "openrouter", "bedrock", "vertex":
+		return true
 	default:
-		return nil, fmt.Errorf("AI agent model provider %q is not built in; set AIConfig.Provider for a custom provider", providerName)
+		return false
 	}
-	model := provider.LanguageModel(modelID)
-	if model == nil {
-		return nil, fmt.Errorf("AI agent model %q was not found", modelRef)
+}
+
+func builtInProvider(name string) (ai.Provider, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "anthropic":
+		return anthropic.New(anthropic.Settings{}), nil
+	case "openrouter":
+		return openrouter.New(openrouter.Settings{}), nil
+	case "bedrock":
+		return bedrock.New(bedrock.Settings{}), nil
+	case "vertex":
+		return vertex.New(vertex.Settings{}), nil
+	default:
+		return nil, fmt.Errorf("AI agent Inference %q is not supported; use openrouter, vertex, anthropic, or bedrock", name)
 	}
-	return model, nil
+}
+
+func hostedRuntime() bool {
+	return strings.TrimSpace(os.Getenv(EnvHostedRuntime)) == "1"
 }
 
 // RuntimeProvider binds Temporal activity lookups to this process-local
