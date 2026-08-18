@@ -317,7 +317,7 @@ func (definition AIDefinition) resolveLanguageModel() (ai.LanguageModel, string,
 		return model, languageModelViaGateway, nil
 	}
 	if hostedRuntime() {
-		return nil, "", fmt.Errorf("AI agent model %q requires the Origens AI gateway host-report socket", modelRef)
+		return nil, "", fmt.Errorf("AI agent model %q requires the hosted model gateway host-report socket", modelRef)
 	}
 	if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "" {
 		model := openrouter.New(openrouter.Settings{}).LanguageModel(modelRef)
@@ -329,7 +329,7 @@ func (definition AIDefinition) resolveLanguageModel() (ai.LanguageModel, string,
 	if !found || strings.TrimSpace(modelID) == "" {
 		return nil, "", fmt.Errorf("AI agent model %q must use provider/model syntax", modelRef)
 	}
-	return nil, "", fmt.Errorf("AI agent model provider %q is not built in; set AIConfig.Provider for a custom provider, or use a catalog id with the Origens AI gateway or OPENROUTER_API_KEY", providerName)
+	return nil, "", fmt.Errorf("AI agent model provider %q is not built in; set AIConfig.Provider for a custom provider, or use a catalog id with the hosted model gateway or OPENROUTER_API_KEY", providerName)
 }
 
 func isBuiltInProvider(name string) bool {
