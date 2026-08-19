@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +15,20 @@ type proxyPolicyResult struct {
 	request  *http.Request
 	location string
 	status   int
+}
+
+type proxyPolicyAppliedContextKey struct{}
+
+func withProxyPolicyApplied(ctx context.Context) context.Context {
+	return context.WithValue(ctx, proxyPolicyAppliedContextKey{}, true)
+}
+
+func proxyPolicyApplied(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	applied, _ := ctx.Value(proxyPolicyAppliedContextKey{}).(bool)
+	return applied
 }
 
 // ProxyPolicyHandler applies the immutable build policy before the wrapped
@@ -36,7 +51,7 @@ func ProxyPolicyHandler(proxyPolicy *gb.ProxyPolicy, next http.Handler) http.Han
 			writer.WriteHeader(result.status)
 			return
 		}
-		next.ServeHTTP(writer, result.request)
+		next.ServeHTTP(writer, result.request.WithContext(withProxyPolicyApplied(result.request.Context())))
 	})
 }
 

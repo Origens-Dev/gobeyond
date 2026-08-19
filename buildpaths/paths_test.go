@@ -9,7 +9,7 @@ func TestURLConstruction(t *testing.T) {
 		AssetURL("b_1", "app.js"):         "/_gobeyond/builds/b_1/assets/app.js",
 		AssetURL("b_1", "/app.js"):        "/_gobeyond/builds/b_1/assets/app.js",
 		ManifestURL("b_1"):                "/_gobeyond/builds/b_1/manifest.json",
-		StaticRouteURL("b_1", "home"):     "/_gobeyond/builds/b_1/static/home",
+		StaticRouteURL("b_1", "home"):    "/_gobeyond/builds/b_1/static/home",
 		RuntimeURL("b_1", "home"):         "/_gobeyond/builds/b_1/runtime/home",
 		ActionURL("b_1", "home:addToCart"): "/_gobeyond/builds/b_1/actions/home:addToCart",
 	}

@@ -24,42 +24,14 @@ import (
 	"strings"
 )
 
-// AssetLayout identifies the on-disk/URL layout implemented by this package.
-// It is published in build metadata (compatibility.json) so tooling and
-// deployment references can detect the layout a build was produced with.
-const AssetLayout = "gobeyond.builds/v1"
-
-// AssetLayoutV2 is the retired optional Go middleware-process layout. It
-// remains named so older manifests can still be identified.
-const AssetLayoutV2 = "gobeyond.builds/v2"
-
-// AssetLayoutV3 adds optional dist/workers/<id>/ artifacts (one Temporal
-// worker binary per task queue).
-const AssetLayoutV3 = "gobeyond.builds/v3"
-
-// AssetLayoutV4 is the retained legacy layout for builds that emitted an
-// optional CDN/edge middleware module at dist/edge-middleware/worker.mjs.
-const AssetLayoutV4 = "gobeyond.builds/v4"
-
 // AssetLayoutV5 runs authored Go middleware inside the application process
-// and emits the immutable proxy policy artifact instead of a customer edge
-// worker or middleware companion process.
+// and emits the immutable proxy policy artifact.
 const AssetLayoutV5 = "gobeyond.builds/v5"
 
-// Retired Go middleware artifact locations under AssetLayoutV2. New builds do
-// not emit these paths.
-const (
-	MiddlewareDir          = "middleware"
-	MiddlewareEntryName    = "gobeyond-middleware"
-	MiddlewareManifestName = "middleware.json"
-)
-
-// Legacy edge middleware artifact locations inside dist/ under AssetLayoutV4.
-const (
-	EdgeMiddlewareDir        = "edge-middleware"
-	EdgeMiddlewareEntryName  = "worker.mjs"
-	EdgeMiddlewareCapability = "gobeyond.edge-middleware/v1alpha1"
-)
+// AssetLayout identifies the current on-disk/URL layout implemented by this package.
+// It is published in build metadata so tooling and deployment references can
+// detect the layout a build was produced with.
+const AssetLayout = AssetLayoutV5
 
 // Worker artifact locations inside dist/ under AssetLayoutV3.
 const (

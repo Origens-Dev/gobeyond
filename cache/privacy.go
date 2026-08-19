@@ -2,15 +2,14 @@ package cache
 
 import "net/http"
 
-// Header names shared with the middleware/proxy contract. AuthContextHeader is
-// asserted exclusively by the middleware hop and represents viewer identity.
+// Header names shared with the hosted request pipeline. AuthContextHeader is
+// asserted exclusively by application middleware and represents viewer identity.
 // WorkloadIdentityHeader carries a platform-issued credential for the deployed
 // application itself; it does not identify the viewer and therefore must not
 // make otherwise-public content private.
 //
-// This package does not import middleware/proxy to avoid pulling its
-// reverse-proxy dependency into every cache consumer; the header names are a
-// stable wire contract, not an implementation detail of that package.
+// The header names are a stable wire contract, not an implementation detail of
+// any transport package.
 const (
 	AuthContextHeader      = "X-Gobeyond-Auth-Context"
 	WorkloadIdentityHeader = "X-Origens-Oidc-Token"
