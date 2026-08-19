@@ -169,7 +169,12 @@ type Config struct {
 	// ProxyPolicy is the validated build artifact shared by the origin and the
 	// platform edge. It runs before route classification, including static and
 	// image dispatch, while reserved GoBeyond paths remain outside it.
-	ProxyPolicy   *gb.ProxyPolicy
+	ProxyPolicy *gb.ProxyPolicy
+	// FetchOrigin is the trusted platform-origin fallback used by gb.Fetch
+	// when the current build has no matching local route. It is intentionally
+	// injected by hosted adapters; application code never selects the fallback
+	// transport.
+	FetchOrigin   gb.Fetcher
 	CSRF          *security.CSRF
 	Logger        *slog.Logger
 	Deadlines     gb.DeadlinePolicy
@@ -251,6 +256,13 @@ func New(config Config) (*Server, error) {
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
+	}
+	if config.FetchOrigin == nil {
+		fetchOrigin, err := FetchOriginFromEnv()
+		if err != nil {
+			return nil, err
+		}
+		config.FetchOrigin = fetchOrigin
 	}
 	if config.ImageLoader == nil {
 		loader, err := imageopt.NewLoaderFromEnvironment(context.Background(), "")
@@ -493,6 +505,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	if requestID == "" {
 		requestID = randomID()
 	}
+	request = request.WithContext(gb.WithFetcher(request.Context(), gb.FetcherFunc(s.fetch)))
 	security.StripReservedHeaders(request.Header)
 	// Load balancers probe the task by its private address or generated DNS
 	// name. Health endpoints disclose no application data and must remain
@@ -509,7 +522,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			s.logger.Error("request panic", "request_id", requestID)
+			s.logger.Error("request panic", "request_id", requestID, "panic", recovered)
 			s.writeError(writer, http.StatusInternalServerError, "internal_error", requestID)
 		}
 		s.logger.Info("request complete", "request_id", requestID, "method", request.Method, "path", request.URL.Path, "duration_ms", time.Since(started).Milliseconds())
@@ -527,9 +540,12 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	request = request.WithContext(context.WithValue(request.Context(), publicOriginContextKey{}, publicOrigin))
 	writer.Header().Set("X-GoBeyond-Request-ID", requestID)
-	request, handled := s.applyProxyPolicy(writer, request, requestID)
-	if handled {
-		return
+	if !proxyPolicyApplied(request.Context()) {
+		var handled bool
+		request, handled = s.applyProxyPolicy(writer, request, requestID)
+		if handled {
+			return
+		}
 	}
 
 	switch {

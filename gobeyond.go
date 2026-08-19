@@ -333,6 +333,51 @@ type Response struct {
 	RewriteTo string
 }
 
+// Fetcher is the runtime-bound implementation used by Fetch. Hosted
+// runtimes install one on the request context; application code only calls
+// Fetch and does not need to know whether the target is handled in-process or
+// by the platform origin.
+type Fetcher interface {
+	Fetch(context.Context, *http.Request) (*http.Response, error)
+}
+
+// FetcherFunc adapts a function to Fetcher.
+type FetcherFunc func(context.Context, *http.Request) (*http.Response, error)
+
+func (f FetcherFunc) Fetch(ctx context.Context, request *http.Request) (*http.Response, error) {
+	return f(ctx, request)
+}
+
+type fetcherContextKey struct{}
+
+// WithFetcher binds the framework fetch implementation to a request context.
+// It is intended for runtime and adapter integrations; application code
+// should call Fetch instead of installing its own transport.
+func WithFetcher(ctx context.Context, fetcher Fetcher) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, fetcherContextKey{}, fetcher)
+}
+
+// Fetch dispatches a GoBeyond application request. The runtime first attempts
+// same-slot dispatch and transparently uses the trusted platform-origin path
+// only when the current build has no matching route. Application responses and
+// errors are never replayed through the fallback.
+func Fetch(ctx context.Context, request *http.Request) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if request == nil {
+		return nil, errors.New("gobeyond fetch: request is nil")
+	}
+	fetcher, ok := ctx.Value(fetcherContextKey{}).(Fetcher)
+	if !ok || fetcher == nil {
+		return nil, errors.New("gobeyond fetch: no runtime fetcher is bound to the context")
+	}
+	return fetcher.Fetch(ctx, request)
+}
+
 func Rewrite(path string) Response {
 	return Response{RewriteTo: path}
 }

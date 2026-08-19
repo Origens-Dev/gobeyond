@@ -515,6 +515,7 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 	PublicOrigin  string
 	Middleware    gb.Middleware
 	ProxyPolicy   *gb.ProxyPolicy
+	FetchOrigin   gb.Fetcher
 	BrowserAssets *browserassets.Manifest
 	PlanStore     gbruntime.PlanStore
 	Static        gbruntime.StaticEntries
@@ -603,12 +604,21 @@ func New(opts Options) (*gbruntime.Server, func() error, error) {
 		PublicOrigin:  opts.PublicOrigin,
 		Middleware:    opts.Middleware,
 		ProxyPolicy:   opts.ProxyPolicy,
+		FetchOrigin:   opts.FetchOrigin,
 		BrowserAssets: opts.BrowserAssets,
 		PlanStore:     opts.PlanStore,
 		Static:        opts.Static,
 		Pages:         pages,
 		Actions:       actions,
 		APIs:          apis,
+	}
+`)
+	b.WriteString(`	if opts.FetchOrigin == nil {
+		fetchOrigin, err := gbruntime.FetchOriginFromEnv()
+		if err != nil {
+			return nil, nil, err
+		}
+		cfg.FetchOrigin = fetchOrigin
 	}
 `)
 	if hasMiddleware {
