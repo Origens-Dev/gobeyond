@@ -774,7 +774,7 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	if clientScript != "" {
 		scripts = append(scripts, document.Asset{URL: clientScript})
 	}
-	indexable := page.Indexable && loaded.Kind != gb.ResultNotFound
+	indexable := page.Indexable && loaded.Kind != gb.ResultNotFound && !loaded.Metadata.IsNoIndex()
 	renderLocale := loaded.Metadata.Lang
 	if renderLocale == "" {
 		renderLocale = "en"

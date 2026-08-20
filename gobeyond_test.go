@@ -52,6 +52,26 @@ func TestMetadataValidationRequiresHTTPSForPrivateSocialImages(t *testing.T) {
 	}
 }
 
+func TestMetadataValidationTreatsNoIndexAsNonIndexable(t *testing.T) {
+	metadata := Metadata{
+		Lang:      "en",
+		Title:     "Preview",
+		Canonical: "https://ahpstaffing.com/",
+		Robots:    "NOINDEX, nofollow",
+	}
+	if !metadata.IsNoIndex() {
+		t.Fatal("expected noindex metadata to be recognized")
+	}
+	if err := metadata.Validate("https://preview.origens.page", true); err != nil {
+		t.Fatalf("noindex metadata should not require a preview canonical origin: %v", err)
+	}
+
+	metadata.Robots = "none"
+	if !metadata.IsNoIndex() {
+		t.Fatal("expected the none robots directive to be recognized")
+	}
+}
+
 func TestCachePolicy(t *testing.T) {
 	if got := (CachePolicy{}).HeaderValue(); got != "private, no-store" {
 		t.Fatalf("unexpected private policy: %s", got)

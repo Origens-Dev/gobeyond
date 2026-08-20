@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Origens-Dev/gobeyond/policy"
 )
@@ -158,6 +159,21 @@ type Metadata struct {
 	JSONLD      []JSONLD    `json:"jsonLd,omitempty"`
 }
 
+// IsNoIndex reports whether the robots directives explicitly prevent this
+// document from being indexed. A route's generated indexability flag can be
+// conservative for static TypeScript-only routes, so an explicit robots
+// directive is authoritative at document-render time.
+func (m Metadata) IsNoIndex() bool {
+	for _, directive := range strings.FieldsFunc(strings.ToLower(m.Robots), func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	}) {
+		if directive == "noindex" || directive == "none" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m Metadata) Validate(publicOrigin string, indexable bool) error {
 	if strings.TrimSpace(m.Lang) == "" {
 		return errors.New("metadata lang is required")
@@ -175,7 +191,7 @@ func (m Metadata) Validate(publicOrigin string, indexable bool) error {
 			return errors.New("social image dimensions must be non-negative")
 		}
 	}
-	if !indexable {
+	if !indexable || m.IsNoIndex() {
 		return nil
 	}
 	if m.Canonical == "" {
