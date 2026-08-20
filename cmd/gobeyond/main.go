@@ -882,6 +882,7 @@ func renderStaticDocuments(staticDir, planDir, buildID string, routes []project.
 				if err := json.Unmarshal(entry.Metadata, &metadata); err != nil {
 					return fmt.Errorf("decode static metadata for %s: %w", staticRoute.RouteID, err)
 				}
+				indexable = !metadata.IsNoIndex()
 			}
 			publicOrigin := "https://invalid.gobeyond.local"
 			if canonical, parseErr := url.Parse(metadata.Canonical); parseErr == nil && canonical.Scheme != "" && canonical.Host != "" {

@@ -133,6 +133,46 @@ func TestDynamicDocumentIsSEOComplete(t *testing.T) {
 	}
 }
 
+func TestNoIndexMetadataOverridesConservativeRouteIndexability(t *testing.T) {
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://preview.origens.page",
+		Pages: []PageRoute{{
+			Route: router.Route{ID: "home", Pattern: "/", Mode: router.ModeStatic},
+			Plan:  &renderplan.Plan{APIVersion: gb.RenderAPIVersion, RouteID: "home", Root: &renderplan.Element{Kind: "element", Tag: "main"}},
+			Static: &LoadedPage{
+				Kind:   gb.ResultOK,
+				Status: http.StatusOK,
+				Props:  map[string]any{},
+				Metadata: gb.Metadata{
+					Lang:      "en",
+					Title:     "AHP Staffing",
+					Canonical: "https://ahpstaffing.com/",
+					Robots:    "noindex, nofollow",
+				},
+			},
+			Indexable: true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://preview.origens.page/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("noindex document status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	for _, expected := range []string{
+		`name="robots" content="noindex, nofollow"`,
+		`rel="canonical" href="https://ahpstaffing.com/"`,
+	} {
+		if !strings.Contains(recorder.Body.String(), expected) {
+			t.Fatalf("noindex document missing %q: %s", expected, recorder.Body.String())
+		}
+	}
+}
+
 func TestDocumentExposesInboundW3CTraceContext(t *testing.T) {
 	server, err := New(Config{
 		BuildID:      "build-1",

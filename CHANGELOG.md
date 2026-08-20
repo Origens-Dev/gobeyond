@@ -10,6 +10,12 @@
   process-local unmetered BYOK bypass; do not copy it into the agents manifest
   or Temporal input.
 
+## 0.1.0-alpha.49 - 2026-08-19
+
+- Treat explicit `noindex` and `none` robots directives as authoritative
+  non-indexable metadata during document validation, including hosted static
+  routes whose conservative generated indexability flag is true.
+
 ## 0.1.0-alpha.47 - 2026-08-18
 
 - Move authored request middleware into the Go application process and slot;
