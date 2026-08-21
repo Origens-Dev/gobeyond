@@ -90,6 +90,7 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
   const vite = await readFile(join(destination, 'vite.config.ts'), 'utf8')
   assert.match(vite, /dedupe: \['react', 'react-dom'\]/)
   assert.match(vite, /sourcemap: false/)
+  assert.match(vite, /chunkFileNames: 'chunks\/\[hash\]\.js'/)
   const tsconfig = JSON.parse(await readFile(join(destination, 'tsconfig.json'), 'utf8'))
   assert.ok(!tsconfig.include.includes('middleware.ts'))
   const loader = await readFile(join(destination, 'app/products/[slug]/page.go'), 'utf8')

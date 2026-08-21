@@ -10,6 +10,12 @@
   process-local unmetered BYOK bypass; do not copy it into the agents manifest
   or Temporal input.
 
+## 0.1.0-alpha.50 - 2026-08-20
+
+- Make generated production browser chunk names content-hash-only so route and
+  component names are not repeated in public asset URLs.
+- Keep public browser source maps disabled in the starter and example builds.
+
 ## 0.1.0-alpha.49 - 2026-08-19
 
 - Treat explicit `noindex` and `none` robots directives as authoritative

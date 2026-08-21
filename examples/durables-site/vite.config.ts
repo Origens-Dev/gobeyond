@@ -13,12 +13,12 @@ export default defineConfig({
   build: {
     outDir,
     emptyOutDir: false,
-    sourcemap: true,
+    sourcemap: false,
     rollupOptions: {
       input: clientEntry,
       output: {
         entryFileNames: "app.js",
-        chunkFileNames: "chunks/[name]-[hash].js",
+        chunkFileNames: "chunks/[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",
       },
     },
