@@ -52,9 +52,52 @@ func (s *sorWorkflowInbound) ExecuteWorkflow(
 	ctx workflow.Context,
 	in *interceptor.ExecuteWorkflowInput,
 ) (any, error) {
+	// The start gateway writes the WF# row immediately after Temporal accepts
+	// the start, but that write is deliberately best-effort. Report the same
+	// identity from the worker as a fallback before user code runs so a cold
+	// slot, direct Temporal starter, or transient gateway failure cannot leave
+	// the app execution without a product-level run header.
+	reportWorkflowStarted(ctx)
 	ret, err := s.Next.ExecuteWorkflow(ctx, in)
 	reportWorkflowTerminal(ctx, err)
 	return ret, err
+}
+
+func reportWorkflowStarted(ctx workflow.Context) {
+	info := workflow.GetInfo(ctx)
+	if info == nil || strings.TrimSpace(info.WorkflowExecution.RunID) == "" {
+		return
+	}
+	payload := map[string]string{
+		"workflow_name":  info.WorkflowType.Name,
+		"execution_kind": "workflow",
+		"task_queue":     info.TaskQueueName,
+		"namespace":      info.Namespace,
+		"status":         "RUNNING",
+		"visibility":     "root",
+	}
+	if parent := info.ParentWorkflowExecution; parent != nil {
+		payload["visibility"] = "internal"
+		payload["parent_workflow_id"] = parent.ID
+		payload["parent_run_id"] = parent.RunID
+		if info.ParentWorkflowNamespace != "" {
+			payload["parent_namespace"] = info.ParentWorkflowNamespace
+		}
+	}
+	in := ReportSorEventInput{
+		WorkflowID: info.WorkflowExecution.ID,
+		RunID:      info.WorkflowExecution.RunID,
+		DedupeKey:  "wf-started-" + info.WorkflowExecution.RunID,
+		Type:       "workflow.started",
+		Kind:       "run",
+		Status:     "RUNNING",
+		Payload:    payload,
+	}
+	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+	})
+	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
 
 // sorWorkflowOutbound emits SoR timer / child / retry-policy header stamps
