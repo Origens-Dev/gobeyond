@@ -1,10 +1,18 @@
 package temporal
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 )
 
 func TestShouldReportTimer(t *testing.T) {
@@ -52,5 +60,62 @@ func TestIsNonRetryableActivityErr(t *testing.T) {
 	}
 	if !isNonRetryableActivityErr(temporal.NewNonRetryableApplicationError("x", "t", nil)) {
 		t.Fatal("NonRetryableApplicationError must mark non_retryable")
+	}
+}
+
+func TestWorkflowInterceptorReportsStartAndTerminalEvents(t *testing.T) {
+	testSorWorkflowEvents(t, func(workflow.Context) error { return nil }, "workflow.completed", "COMPLETED")
+}
+
+func TestWorkflowInterceptorReportsFailedTerminalEvent(t *testing.T) {
+	testSorWorkflowEvents(t, func(workflow.Context) error { return errors.New("boom") }, "workflow.failed", "FAILED")
+}
+
+func testSorWorkflowEvents(t *testing.T, workflowFn interface{}, terminalType, terminalStatus string) {
+	t.Helper()
+	t.Setenv(envHostReportSocket, t.TempDir()+"/missing.sock")
+	t.Setenv(envEnvironmentID, "env-1")
+	t.Setenv(envWorkerID, "worker-1")
+	events := make(chan ReportSorEventInput, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var event ReportSorEventInput
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		events <- event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	t.Setenv(envAPIURL, server.URL)
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&sorWorkerInterceptor{}}})
+	env.RegisterActivity(ReportSorEvent)
+	env.ExecuteWorkflow(workflowFn)
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if terminalErr := env.GetWorkflowError(); terminalType == "workflow.completed" && terminalErr != nil {
+		t.Fatalf("workflow error = %v", terminalErr)
+	}
+
+	got := make(map[string]ReportSorEventInput, 2)
+	for len(got) < 2 {
+		select {
+		case event := <-events:
+			got[event.Type] = event
+		default:
+			t.Fatalf("reported events = %#v", got)
+		}
+	}
+	started, ok := got["workflow.started"]
+	if !ok || started.Status != "RUNNING" || started.RunID == "" {
+		t.Fatalf("workflow.started = %#v", started)
+	}
+	terminal, ok := got[terminalType]
+	if !ok || terminal.Status != terminalStatus || terminal.RunID != started.RunID {
+		t.Fatalf("%s = %#v, started = %#v", terminalType, terminal, started)
 	}
 }

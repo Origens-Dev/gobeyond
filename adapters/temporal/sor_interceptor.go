@@ -58,7 +58,23 @@ func (s *sorWorkflowInbound) ExecuteWorkflow(
 	// slot, direct Temporal starter, or transient gateway failure cannot leave
 	// the app execution without a product-level run header.
 	reportWorkflowStarted(ctx)
-	ret, err := s.Next.ExecuteWorkflow(ctx, in)
+
+	// The wrapped workflow must finish before the terminal event can be
+	// classified, but scheduling a local activity after ExecuteWorkflow returns
+	// is too late: the SDK is already serializing the completion of the current
+	// workflow task. Run the wrapped workflow in a deterministic coroutine and
+	// keep this interceptor's coroutine alive while the terminal report is
+	// committed.
+	done := workflow.NewChannel(ctx)
+	var (
+		ret any
+		err error
+	)
+	workflow.Go(ctx, func(ctx workflow.Context) {
+		ret, err = s.Next.ExecuteWorkflow(ctx, in)
+		done.Send(ctx, struct{}{})
+	})
+	done.Receive(ctx, nil)
 	reportWorkflowTerminal(ctx, err)
 	return ret, err
 }
@@ -242,16 +258,20 @@ func reportWorkflowTerminal(ctx workflow.Context, runErr error) {
 	}
 	info := workflow.GetInfo(ctx)
 	eventType := "workflow.completed"
+	status := "COMPLETED"
 	payload := map[string]string{}
 	if runErr != nil {
 		switch {
 		case temporal.IsCanceledError(runErr):
 			eventType = "workflow.canceled"
+			status = "CANCELED"
 		case temporal.IsTimeoutError(runErr):
 			eventType = "workflow.timed_out"
+			status = "FAILED"
 			payload["error"] = "timed_out"
 		default:
 			eventType = "workflow.failed"
+			status = "FAILED"
 			payload["error"] = truncateErr(runErr)
 		}
 	}
@@ -269,6 +289,7 @@ func reportWorkflowTerminal(ctx workflow.Context, runErr error) {
 		DedupeKey:  fmt.Sprintf("wf-terminal-%s-%s", info.WorkflowExecution.RunID, eventType),
 		Type:       eventType,
 		Kind:       "event",
+		Status:     status,
 		Payload:    payload,
 	}
 	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
