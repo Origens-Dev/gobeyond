@@ -298,6 +298,23 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.AgentsManifest), agentsManifest); err != nil {
 		return err
 	}
+	workflowDefinitions, wakeDiscoverErr := project.DiscoverWorkflowDefinitions(projectRoot)
+	if wakeDiscoverErr != nil {
+		return wakeDiscoverErr
+	}
+	if len(workflowDefinitions) > 0 {
+		wakeBytes, wakeErr := project.MarshalWakeManifest(projectRoot, workflowDefinitions)
+		if wakeErr != nil {
+			return fmt.Errorf("write wake manifest: %w", wakeErr)
+		}
+		wakePath := filepath.Join(dist, "deploy", buildpaths.WakeManifest)
+		if err := os.MkdirAll(filepath.Dir(wakePath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(wakePath, wakeBytes, 0o644); err != nil {
+			return err
+		}
+	}
 	browserAssets, err := collectBrowserAssets(staticDir, manifest.BuildID, clientEntry)
 	if err != nil {
 		return err
