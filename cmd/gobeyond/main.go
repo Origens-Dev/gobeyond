@@ -99,7 +99,7 @@ func build(root string) error {
 }
 
 func buildTo(root, dist string) error {
-	return buildToMode(root, dist, true)
+	return buildToMode(root, dist, false)
 }
 
 func buildToMode(root, dist string, checkContracts bool) error {
@@ -120,6 +120,9 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 
 func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string, browserMode string) error {
 	projectRoot := websiteRoot(root)
+	if err := syncRouteSchemaFiles(projectRoot, false); err != nil {
+		return err
+	}
 	middlewareSource, err := project.DiscoverMiddlewareSource(projectRoot)
 	if err != nil {
 		return err
@@ -177,7 +180,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		return fmt.Errorf("write client-boundary manifest: %w", err)
 	}
 	if err := syncContractFiles(projectRoot, compiled.Contracts, checkContracts); err != nil {
-		return fmt.Errorf("generated contracts are stale; run gobeyond generate: %w", err)
+		return fmt.Errorf("sync generated contracts during build: %w", err)
 	}
 	contractDocument, err := codegen.Parse(compiled.Contracts)
 	if err != nil {
@@ -867,16 +870,29 @@ func renderStaticDocuments(staticDir, planDir, buildID string, routes []project.
 	for _, route := range routes {
 		patterns[route.ID] = route.Pattern
 	}
+	tasks := make([]buildTask, 0, len(artifact.Routes))
 	for _, staticRoute := range artifact.Routes {
-		planData, err := os.ReadFile(filepath.Join(planDir, staticRoute.RouteID+".json"))
-		if err != nil {
-			return err
-		}
-		plan, err := renderplan.Parse(planData)
-		if err != nil {
-			return err
-		}
-		for _, entry := range staticRoute.Entries {
+		staticRoute := staticRoute
+		tasks = append(tasks, buildTask{
+			name: "render static route " + staticRoute.RouteID,
+			run: func() error {
+				return renderStaticRouteDocuments(staticDir, planDir, buildID, patterns, staticRoute, contracts, assets)
+			},
+		})
+	}
+	return runBuildTasks(tasks...)
+}
+
+func renderStaticRouteDocuments(staticDir, planDir, buildID string, patterns map[string]string, staticRoute compilerStaticRoute, contracts codegen.Document, assets browserBuildAssets) error {
+	planData, err := os.ReadFile(filepath.Join(planDir, staticRoute.RouteID+".json"))
+	if err != nil {
+		return err
+	}
+	plan, err := renderplan.Parse(planData)
+	if err != nil {
+		return err
+	}
+	for _, entry := range staticRoute.Entries {
 			routeAssets, err := assets.ForRoute(staticRoute.RouteID)
 			if err != nil {
 				return fmt.Errorf("resolve browser assets for %s: %w", staticRoute.RouteID, err)
@@ -951,15 +967,11 @@ func renderStaticDocuments(staticDir, planDir, buildID string, routes []project.
 			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 				return err
 			}
-			if err := os.WriteFile(destination, output.Bytes(), 0o644); err != nil {
-				return err
-			}
-		}
-		if err := writeJSONFile(buildpaths.StaticRoutePath(staticDir, buildID, staticRoute.RouteID), staticRoute); err != nil {
+		if err := os.WriteFile(destination, output.Bytes(), 0o644); err != nil {
 			return err
 		}
 	}
-	return nil
+	return writeJSONFile(buildpaths.StaticRoutePath(staticDir, buildID, staticRoute.RouteID), staticRoute)
 }
 
 func trustStaticSafeHTML(document codegen.Document, routeID string, props any) (any, error) {
