@@ -188,6 +188,11 @@ func syncGoSources(root string, routes []Route, buildID string, check bool) erro
 			return referencesErr
 		}
 		outputs[filepath.Join(workflowTree, "references", "references_gen.go")] = references
+		wakeSource, wakeErr := generatedWakeSource(root, workflowDefinitions)
+		if wakeErr != nil {
+			return wakeErr
+		}
+		outputs[filepath.Join(workflowTree, "wake", "wake_gen.go")] = wakeSource
 	}
 	agentDefinitions, err := DiscoverAgentDefinitions(root)
 	if err != nil {
