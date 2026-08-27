@@ -113,7 +113,9 @@ func reportWorkflowStarted(ctx workflow.Context) {
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
-	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
+	if err := workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("GoBeyond SoR workflow-start report failed", "error", err)
+	}
 }
 
 // sorWorkflowOutbound emits SoR timer / child / retry-policy header stamps
@@ -206,7 +208,9 @@ func reportTimerEvent(ctx workflow.Context, seq int, eventType string, d time.Du
 			MaximumAttempts: 3,
 		},
 	})
-	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
+	if err := workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("GoBeyond SoR timer report failed", "error", err)
+	}
 }
 
 func reportChildStarted(ctx workflow.Context, seq int, parent *workflow.Info, child workflow.Execution) {
@@ -236,7 +240,9 @@ func reportChildStarted(ctx workflow.Context, seq int, parent *workflow.Info, ch
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
-	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
+	if err := workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("GoBeyond SoR child report failed", "error", err)
+	}
 }
 
 func stampParentHint(payload map[string]string, info *workflow.Info) {
@@ -298,7 +304,9 @@ func reportWorkflowTerminal(ctx workflow.Context, runErr error) {
 			MaximumAttempts: 3,
 		},
 	})
-	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
+	if err := workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("GoBeyond SoR workflow-terminal report failed", "error", err)
+	}
 }
 
 type sorActivityInbound struct {
@@ -313,7 +321,7 @@ func (s *sorActivityInbound) ExecuteActivity(
 	if info.ActivityType.Name == ReportSorEventName {
 		return s.Next.ExecuteActivity(ctx, in)
 	}
-	_ = postSorIngest(ctx, ReportSorEventInput{
+	if reportErr := postSorIngest(ctx, ReportSorEventInput{
 		WorkflowID:   info.WorkflowExecution.ID,
 		RunID:        info.WorkflowExecution.RunID,
 		DedupeKey:    fmt.Sprintf("act-%s-%d-started", info.ActivityID, info.Attempt),
@@ -327,7 +335,9 @@ func (s *sorActivityInbound) ExecuteActivity(
 			"task_queue": info.TaskQueue,
 			"attempt":    strconv.FormatInt(int64(info.Attempt), 10),
 		},
-	})
+	}); reportErr != nil {
+		activity.GetLogger(ctx).Error("GoBeyond SoR activity-start report failed", "error", reportErr)
+	}
 	ret, err := s.Next.ExecuteActivity(ctx, in)
 	status := "COMPLETED"
 	eventType := "activity.completed"
@@ -358,7 +368,7 @@ func (s *sorActivityInbound) ExecuteActivity(
 			}
 		}
 	}
-	_ = postSorIngest(ctx, ReportSorEventInput{
+	if reportErr := postSorIngest(ctx, ReportSorEventInput{
 		WorkflowID:   info.WorkflowExecution.ID,
 		RunID:        info.WorkflowExecution.RunID,
 		DedupeKey:    fmt.Sprintf("act-%s-%d-%s", info.ActivityID, info.Attempt, strings.ToLower(status)),
@@ -369,7 +379,9 @@ func (s *sorActivityInbound) ExecuteActivity(
 		Status:       status,
 		Attempt:      info.Attempt,
 		Payload:      payload,
-	})
+	}); reportErr != nil {
+		activity.GetLogger(ctx).Error("GoBeyond SoR activity-terminal report failed", "error", reportErr)
+	}
 	return ret, err
 }
 

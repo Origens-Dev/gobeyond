@@ -16,6 +16,7 @@ import (
 const (
 	envAPIURL           = "GOBEYOND_API_URL"
 	envInternalAPIToken = "GOBEYOND_INTERNAL_API_TOKEN"
+	envPlatformEnv      = "GOBEYOND_PLATFORM_ENV"
 	envOrganizationID   = "GOBEYOND_ORGANIZATION_ID"
 	envProjectID        = "GOBEYOND_PROJECT_ID"
 	sorIngestPath       = "/internal/workflows/sor/ingest"
@@ -43,8 +44,10 @@ type ReportSorEventInput struct {
 	Attempt        int32             `json:"attempt,omitempty"`
 }
 
-// ReportSorEvent is the registered local activity. Best-effort: missing API
-// URL (local Docker) is a no-op success so SoR never fails the workflow task.
+// ReportSorEvent is the registered local activity. Local development may
+// intentionally omit a SoR transport; hosted slots must surface a missing or
+// broken transport so operators do not mistake an unreported run for a clean
+// run.
 func ReportSorEvent(ctx context.Context, in ReportSorEventInput) error {
 	return postSorIngest(ctx, in)
 }
@@ -52,9 +55,15 @@ func ReportSorEvent(ctx context.Context, in ReportSorEventInput) error {
 func postSorIngest(ctx context.Context, in ReportSorEventInput) error {
 	in = fillSorIdentity(in)
 	if strings.TrimSpace(in.EnvironmentID) == "" || strings.TrimSpace(in.WorkerID) == "" {
+		if sorReportingRequired() {
+			return fmt.Errorf("sor identity is incomplete")
+		}
 		return nil
 	}
 	if strings.TrimSpace(in.WorkflowID) == "" || strings.TrimSpace(in.RunID) == "" {
+		if sorReportingRequired() {
+			return fmt.Errorf("sor workflow identity is incomplete")
+		}
 		return nil
 	}
 	if strings.TrimSpace(in.Kind) == "" {
@@ -75,6 +84,9 @@ func postSorIngest(ctx context.Context, in ReportSorEventInput) error {
 
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv(envAPIURL)), "/")
 	if base == "" {
+		if sorReportingRequired() {
+			return fmt.Errorf("%w: hosted slot has no host-report or API transport", errSorAPIUnconfigured)
+		}
 		return nil
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -96,6 +108,12 @@ func postSorIngest(ctx context.Context, in ReportSorEventInput) error {
 		return fmt.Errorf("sor ingest: status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+var errSorAPIUnconfigured = fmt.Errorf("sor API unconfigured")
+
+func sorReportingRequired() bool {
+	return strings.TrimSpace(os.Getenv(envPlatformEnv)) != ""
 }
 
 func postSorViaHostReport(ctx context.Context, body []byte) error {

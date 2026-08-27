@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestPostSorIngestNoopWithoutURL(t *testing.T) {
 	t.Setenv(envAPIURL, "")
+	t.Setenv(envPlatformEnv, "")
 	t.Setenv(envHostReportSocket, filepath.Join(t.TempDir(), "missing.sock"))
 	t.Setenv(envEnvironmentID, "env-1")
 	t.Setenv(envWorkerID, "default")
@@ -22,6 +24,20 @@ func TestPostSorIngestNoopWithoutURL(t *testing.T) {
 		WorkflowID: "wf", RunID: "run", DedupeKey: "d", Type: "workflow.completed", Kind: "event",
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPostSorIngestHostedFailsWithoutTransport(t *testing.T) {
+	t.Setenv(envAPIURL, "")
+	t.Setenv(envPlatformEnv, "staging")
+	t.Setenv(envHostReportSocket, filepath.Join(t.TempDir(), "missing.sock"))
+	t.Setenv(envEnvironmentID, "env-1")
+	t.Setenv(envWorkerID, "default")
+	err := postSorIngest(context.Background(), ReportSorEventInput{
+		WorkflowID: "wf", RunID: "run", DedupeKey: "d", Type: "workflow.completed", Kind: "event",
+	})
+	if err == nil || !strings.Contains(err.Error(), "sor API unconfigured") {
+		t.Fatalf("err=%v, want hosted missing-transport error", err)
 	}
 }
 
@@ -43,6 +59,7 @@ func TestPostSorIngestHTTPS(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv(envAPIURL, srv.URL)
+	t.Setenv(envPlatformEnv, "")
 	t.Setenv(envInternalAPIToken, "secret")
 	t.Setenv(envHostReportSocket, filepath.Join(t.TempDir(), "missing.sock"))
 	t.Setenv(envEnvironmentID, "env-1")
@@ -91,6 +108,7 @@ func TestPostSorIngestHostReport(t *testing.T) {
 
 	t.Setenv(envHostReportSocket, sock)
 	t.Setenv(envAPIURL, "") // force UDS path
+	t.Setenv(envPlatformEnv, "")
 	t.Setenv(envEnvironmentID, "env-1")
 	t.Setenv(envWorkerID, "default")
 	if err := postSorIngest(context.Background(), ReportSorEventInput{
