@@ -178,6 +178,23 @@ var SIP = gbsip.Handlers{
 	if !strings.Contains(text, `"sipHandlers":["ACK","INVITE"]`) {
 		t.Fatalf("manifest missing sipHandlers: %s", text)
 	}
+	writeTestModule(t, root)
+	if err := Write(root, nil, "b_sip_fixture", false); err != nil {
+		t.Fatal(err)
+	}
+	assertSourceTestContains(t,
+		filepath.Join(root, GeneratedDir, "agents", definitions[0].Key, "gobeyond_register_gen.go"),
+		"func GobeyondRegisterSIP(registry gbsip.Registerer) error",
+		`return registry.Register("support", SIP)`,
+	)
+	assertSourceTestContains(t,
+		filepath.Join(root, GeneratedDir, "agents", definitions[0].Key, "sip.go"),
+		"var SIP = gbsip.Handlers",
+	)
+	assertSourceTestContains(t, filepath.Join(root, GeneratedDir, "registry", "site.go"),
+		"agent0.GobeyondRegisterSIP(sipRegistry)",
+		`mux.Handle("/internal/sip/", sipRegistry.Handler(token))`,
+	)
 }
 
 func TestDiscoverAgentDefinitionsRejectsUnknownChannelField(t *testing.T) {

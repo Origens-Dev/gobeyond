@@ -12,6 +12,7 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 	source.WriteString("\npackage ")
 	source.WriteString(definition.PackageName)
 	source.WriteString("\n\nimport httpruntime \"github.com/Origens-Dev/gobeyond/agents/httpruntime\"\n")
+	source.WriteString("import gbsip \"github.com/Origens-Dev/gobeyond/sip\"\n")
 	if definition.Durable {
 		source.WriteString("import temporalruntime \"github.com/Origens-Dev/gobeyond/agents/temporalruntime\"\n")
 		source.WriteString("import \"go.temporal.io/sdk/worker\"\n")
@@ -26,6 +27,13 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 		source.WriteString(fmt.Sprintf("\treturn httpruntime.RegisterAI(registry, %q, definition)\n", definition.ID))
 	} else {
 		source.WriteString(fmt.Sprintf("\treturn registry.Register(%q, httpruntime.Adapt(definition))\n", definition.ID))
+	}
+	source.WriteString("}\n")
+	source.WriteString("\nfunc GobeyondRegisterSIP(registry gbsip.Registerer) error {\n")
+	if len(definition.SIPHandlers) > 0 {
+		source.WriteString(fmt.Sprintf("\treturn registry.Register(%q, SIP)\n", definition.ID))
+	} else {
+		source.WriteString("\treturn nil\n")
 	}
 	source.WriteString("}\n")
 	if definition.Durable {

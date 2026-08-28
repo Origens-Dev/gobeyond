@@ -286,6 +286,7 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true, Public: true}, Run, g
 	assertSourceTestContains(t,
 		filepath.Join(root, GeneratedDir, "agents", definition.Key, "gobeyond_register_gen.go"),
 		"func GobeyondRegister(registry httpruntime.Registerer) error",
+		"func GobeyondRegisterSIP(registry gbsip.Registerer) error",
 		`definition.Config.TaskQueue = "default"`,
 		`registry.Register("support", httpruntime.Adapt(definition))`,
 		"func GobeyondRegisterTemporal(registry worker.Registry) error",
@@ -301,6 +302,10 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true, Public: true}, Run, g
 	assertSourceTestContains(t, filepath.Join(root, GeneratedDir, "registry", "site.go"),
 		`agent0 "example.com/site/generated/agents/`+definition.Key+`"`,
 		"agent0.GobeyondRegister(agentRegistry)",
+		"agent0.GobeyondRegisterSIP(sipRegistry)",
+		`gbsip.NewRegistry()`,
+		`os.Getenv("GOBEYOND_SIP_DECISION_TOKEN")`,
+		`mux.Handle("/internal/sip/", sipRegistry.Handler(token))`,
 		`agentRuntime.Mount(mux, "/api/agents")`,
 	)
 	assertSourceTestContains(t, filepath.Join(root, GeneratedDir, "cmd", "site", "main.go"),
