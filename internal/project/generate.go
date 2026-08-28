@@ -48,19 +48,20 @@ type AgentsManifest struct {
 }
 
 type AgentManifestDefinition struct {
-	ID         string              `json:"id"`
-	Kind       string              `json:"kind"`
-	Mode       string              `json:"mode"`
-	TaskQueue  string              `json:"taskQueue,omitempty"`
-	TaskQueues []string            `json:"taskQueues,omitempty"`
-	Durable    bool                `json:"durable"`
-	Realtime   bool                `json:"realtime"`
-	Public     bool                `json:"public"`
-	Model      string              `json:"model,omitempty"`
-	MaxSteps   int                 `json:"maxSteps,omitempty"`
-	Revision   string              `json:"revision,omitempty"`
-	Slots      AgentSlots          `json:"slots"`
-	Tools      []AgentManifestTool `json:"tools"`
+	ID          string              `json:"id"`
+	Kind        string              `json:"kind"`
+	Mode        string              `json:"mode"`
+	TaskQueue   string              `json:"taskQueue,omitempty"`
+	TaskQueues  []string            `json:"taskQueues,omitempty"`
+	Durable     bool                `json:"durable"`
+	Realtime    bool                `json:"realtime"`
+	Public      bool                `json:"public"`
+	Model       string              `json:"model,omitempty"`
+	MaxSteps    int                 `json:"maxSteps,omitempty"`
+	Revision    string              `json:"revision,omitempty"`
+	Slots       AgentSlots          `json:"slots"`
+	Tools       []AgentManifestTool `json:"tools"`
+	SIPHandlers []string            `json:"sipHandlers,omitempty"`
 }
 
 type AgentManifestTool struct {
@@ -156,14 +157,14 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 }
 
 func portableAgentsManifest(definitions []AgentDefinition, buildID string) AgentsManifest {
-	manifest := AgentsManifest{APIVersion: "gobeyond.agents/v1alpha2", BuildID: buildID}
+	manifest := AgentsManifest{APIVersion: "gobeyond.agents/v1alpha3", BuildID: buildID}
 	for _, definition := range definitions {
 		slots := definition.Slots
 		slots.Tools = nonNilStrings(slots.Tools)
 		slots.Skills = nonNilStrings(slots.Skills)
 		slots.Subagents = nonNilStrings(slots.Subagents)
 		slots.Schedules = nonNilStrings(slots.Schedules)
-		slots.Channels = nonNilStrings(slots.Channels)
+		slots.Channels = nonNilChannels(slots.Channels)
 		tools := make([]AgentManifestTool, 0, len(definition.Tools))
 		queues := []string{}
 		if definition.TaskQueue != "" {
@@ -177,19 +178,20 @@ func portableAgentsManifest(definitions []AgentDefinition, buildID string) Agent
 		}
 		sort.Strings(queues)
 		manifest.Agents = append(manifest.Agents, AgentManifestDefinition{
-			ID:         definition.ID,
-			Kind:       definition.Kind,
-			Mode:       definition.Mode,
-			TaskQueue:  definition.TaskQueue,
-			TaskQueues: queues,
-			Durable:    definition.Durable,
-			Realtime:   definition.Realtime,
-			Public:     definition.Public,
-			Model:      definition.Model,
-			MaxSteps:   definition.MaxSteps,
-			Revision:   definition.Revision,
-			Slots:      slots,
-			Tools:      tools,
+			ID:          definition.ID,
+			Kind:        definition.Kind,
+			Mode:        definition.Mode,
+			TaskQueue:   definition.TaskQueue,
+			TaskQueues:  queues,
+			Durable:     definition.Durable,
+			Realtime:    definition.Realtime,
+			Public:      definition.Public,
+			Model:       definition.Model,
+			MaxSteps:    definition.MaxSteps,
+			Revision:    definition.Revision,
+			Slots:       slots,
+			Tools:       tools,
+			SIPHandlers: nonNilStrings(definition.SIPHandlers),
 		})
 	}
 	if manifest.Agents == nil {
@@ -207,6 +209,13 @@ func setAgentRevisions(definitions []AgentDefinition, buildID string) {
 func nonNilStrings(values []string) []string {
 	if values == nil {
 		return []string{}
+	}
+	return values
+}
+
+func nonNilChannels(values []AgentChannel) []AgentChannel {
+	if values == nil {
+		return []AgentChannel{}
 	}
 	return values
 }
@@ -288,7 +297,7 @@ func LoadAgentsManifest(root string) (AgentsManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return AgentsManifest{}, err
 	}
-	if manifest.APIVersion != "gobeyond.agents/v1alpha2" || strings.TrimSpace(manifest.BuildID) == "" {
+	if manifest.APIVersion != "gobeyond.agents/v1alpha3" || strings.TrimSpace(manifest.BuildID) == "" {
 		return AgentsManifest{}, errors.New("unsupported or incomplete agent manifest")
 	}
 	if manifest.Agents == nil {

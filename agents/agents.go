@@ -101,7 +101,8 @@ type Schedule struct {
 }
 
 type Channel struct {
-	ID string
+	ID        string
+	Connector string
 }
 
 // Slots declares every extensibility slot on an agent in one compiler-visible

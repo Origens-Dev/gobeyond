@@ -47,6 +47,10 @@ type AgentDefinition struct {
 	SourceFiles  []string
 	Slots        AgentSlots
 	Tools        []AgentToolDefinition
+	// SIPHandlers lists closed-enum method names with a site-registered
+	// sip.Handlers field in agents/<id>/sip.go (subset). Empty means
+	// edge-local defaults.
+	SIPHandlers []string
 }
 
 // AgentToolDefinition is the compiler-visible execution metadata for one
@@ -61,11 +65,18 @@ type AgentToolDefinition struct {
 
 // AgentSlots contains all author-visible extension references.
 type AgentSlots struct {
-	Tools     []string `json:"tools"`
-	Skills    []string `json:"skills"`
-	Subagents []string `json:"subagents"`
-	Schedules []string `json:"schedules"`
-	Channels  []string `json:"channels"`
+	Tools     []string       `json:"tools"`
+	Skills    []string       `json:"skills"`
+	Subagents []string       `json:"subagents"`
+	Schedules []string       `json:"schedules"`
+	Channels  []AgentChannel `json:"channels"`
+}
+
+// AgentChannel is the compiler projection of agents.Channel. Empty Connector
+// is allowed (web) and is emitted as an empty string under v1alpha3.
+type AgentChannel struct {
+	ID        string `json:"id"`
+	Connector string `json:"connector"`
 }
 
 // DiscoverAgentDefinitions validates and discovers top-level agent packages.
@@ -143,12 +154,16 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 	if err != nil {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 	}
+	sipHandlers, err := parseSIPHandlers(parsed)
+	if err != nil {
+		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, dir), err)
+	}
 	definition := AgentDefinition{
 		ID: id, Key: AgentDefinitionKey(id), Kind: call.Kind, Mode: mode, TaskQueue: taskQueue,
 		TaskQueueSet: taskQueue != "", Durable: durable, Realtime: realtime, Public: public, SourceDir: authorPath(root, dir),
 		EntryFile: authorPath(root, entryFile), PackageName: packageName,
 		Handler: call.Handler, SourceFiles: files, Slots: call.Slots,
-		Model: model, MaxSteps: maxSteps, Tools: tools,
+		Model: model, MaxSteps: maxSteps, Tools: tools, SIPHandlers: sipHandlers,
 	}
 	for _, tool := range tools {
 		if !containsString(definition.Slots.Tools, tool.ID) {
@@ -625,21 +640,28 @@ func parseAgentSlots(value ast.Expr) (AgentSlots, error) {
 			return AgentSlots{}, fmt.Errorf("agent slot %s is duplicated", key.Name)
 		}
 		seen[key.Name] = true
-		ids, err := parseSlotIDs(field.Value, key.Name)
-		if err != nil {
-			return AgentSlots{}, err
-		}
 		switch key.Name {
-		case "Tools":
-			slots.Tools = ids
-		case "Skills":
-			slots.Skills = ids
-		case "Subagents":
-			slots.Subagents = ids
-		case "Schedules":
-			slots.Schedules = ids
+		case "Tools", "Skills", "Subagents", "Schedules":
+			ids, err := parseSlotIDs(field.Value, key.Name)
+			if err != nil {
+				return AgentSlots{}, err
+			}
+			switch key.Name {
+			case "Tools":
+				slots.Tools = ids
+			case "Skills":
+				slots.Skills = ids
+			case "Subagents":
+				slots.Subagents = ids
+			case "Schedules":
+				slots.Schedules = ids
+			}
 		case "Channels":
-			slots.Channels = ids
+			channels, err := parseChannels(field.Value)
+			if err != nil {
+				return AgentSlots{}, err
+			}
+			slots.Channels = channels
 		default:
 			return AgentSlots{}, fmt.Errorf("agent slot %s is not supported", key.Name)
 		}
@@ -666,6 +688,8 @@ func parseSlotIDs(value ast.Expr, slot string) ([]string, error) {
 				return nil, fmt.Errorf("agent slot %s entries must use named fields", slot)
 			}
 			key, ok := keyValue.Key.(*ast.Ident)
+			// Non-ID fields (for example Schedule.Cron) are compiler-visible on
+			// the authored struct but are not part of the ID projection.
 			if !ok || key.Name != "ID" {
 				continue
 			}
@@ -685,6 +709,161 @@ func parseSlotIDs(value ast.Expr, slot string) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+func parseChannels(value ast.Expr) ([]AgentChannel, error) {
+	composite, ok := value.(*ast.CompositeLit)
+	if !ok {
+		return nil, errors.New("agent slot Channels must be an inline []agents.Channel literal")
+	}
+	channels := make([]AgentChannel, 0, len(composite.Elts))
+	seen := map[string]struct{}{}
+	for _, element := range composite.Elts {
+		item, ok := element.(*ast.CompositeLit)
+		if !ok {
+			return nil, errors.New("agent slot Channels entries must be inline literals with an ID")
+		}
+		var channel AgentChannel
+		for _, field := range item.Elts {
+			keyValue, ok := field.(*ast.KeyValueExpr)
+			if !ok {
+				return nil, errors.New("agent slot Channels entries must use named fields")
+			}
+			key, ok := keyValue.Key.(*ast.Ident)
+			if !ok {
+				return nil, errors.New("agent slot Channels field must be named")
+			}
+			switch key.Name {
+			case "ID":
+				id, err := staticString(keyValue.Value, "Channels ID")
+				if err != nil {
+					return nil, err
+				}
+				channel.ID = id
+			case "Connector":
+				connector, err := staticString(keyValue.Value, "Channels Connector")
+				if err != nil {
+					return nil, err
+				}
+				channel.Connector = connector
+			default:
+				return nil, fmt.Errorf("agent slot Channels field %s is not supported", key.Name)
+			}
+		}
+		if channel.ID == "" {
+			return nil, errors.New("agent slot Channels entries require a non-empty ID")
+		}
+		if _, exists := seen[channel.ID]; exists {
+			return nil, fmt.Errorf("agent slot Channels duplicates ID %q", channel.ID)
+		}
+		seen[channel.ID] = struct{}{}
+		channels = append(channels, channel)
+	}
+	return channels, nil
+}
+
+// parseSIPHandlers finds package-level sip.Handlers{...} composites and returns
+// the closed-enum method names with non-nil fields (Invite, Ack, ...).
+func parseSIPHandlers(files map[string]*ast.File) ([]string, error) {
+	methods := map[string]struct{}{}
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			general, ok := declaration.(*ast.GenDecl)
+			if !ok || general.Tok != token.VAR {
+				continue
+			}
+			for _, specification := range general.Specs {
+				value, ok := specification.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index := range value.Names {
+					if index >= len(value.Values) {
+						continue
+					}
+					composite, ok := value.Values[index].(*ast.CompositeLit)
+					if !ok || !isSIPHandlersType(composite.Type) {
+						continue
+					}
+					for _, element := range composite.Elts {
+						kv, ok := element.(*ast.KeyValueExpr)
+						if !ok {
+							return nil, errors.New("sip.Handlers entries must use named fields")
+						}
+						key, ok := kv.Key.(*ast.Ident)
+						if !ok {
+							return nil, errors.New("sip.Handlers field must be named")
+						}
+						method, ok := sipHandlerFieldMethod(key.Name)
+						if !ok {
+							return nil, fmt.Errorf("sip.Handlers field %s is not in the closed method enum", key.Name)
+						}
+						if isNilExpr(kv.Value) {
+							continue
+						}
+						methods[method] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(methods))
+	for method := range methods {
+		out = append(out, method)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func isSIPHandlersType(expr ast.Expr) bool {
+	switch typed := expr.(type) {
+	case *ast.Ident:
+		return typed.Name == "Handlers"
+	case *ast.SelectorExpr:
+		return typed.Sel.Name == "Handlers"
+	default:
+		return false
+	}
+}
+
+func sipHandlerFieldMethod(field string) (string, bool) {
+	switch field {
+	case "Invite":
+		return "INVITE", true
+	case "Ack":
+		return "ACK", true
+	case "Bye":
+		return "BYE", true
+	case "Cancel":
+		return "CANCEL", true
+	case "Register":
+		return "REGISTER", true
+	case "Options":
+		return "OPTIONS", true
+	case "Update":
+		return "UPDATE", true
+	case "Info":
+		return "INFO", true
+	case "Prack":
+		return "PRACK", true
+	case "Refer":
+		return "REFER", true
+	case "Subscribe":
+		return "SUBSCRIBE", true
+	case "Notify":
+		return "NOTIFY", true
+	case "Message":
+		return "MESSAGE", true
+	case "Publish":
+		return "PUBLISH", true
+	default:
+		return "", false
+	}
+}
+
+func isNilExpr(expr ast.Expr) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == "nil"
 }
 
 func staticString(expression ast.Expr, field string) (string, error) {

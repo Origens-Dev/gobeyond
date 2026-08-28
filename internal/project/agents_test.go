@@ -66,7 +66,7 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true}, Run)
 	if support.InputType != "Input" || support.OutputType != "Output" {
 		t.Fatalf("handler types = %q -> %q", support.InputType, support.OutputType)
 	}
-	if got := support.Slots; len(got.Tools) != 1 || got.Tools[0] != "search" || len(got.Skills) != 1 || len(got.Subagents) != 1 || len(got.Schedules) != 1 || len(got.Channels) != 1 {
+	if got := support.Slots; len(got.Tools) != 1 || got.Tools[0] != "search" || len(got.Skills) != 1 || len(got.Subagents) != 1 || len(got.Schedules) != 1 || len(got.Channels) != 1 || got.Channels[0].ID != "web" || got.Channels[0].Connector != "" {
 		t.Fatalf("slots = %#v", got)
 	}
 	draft := byID["draft"]
@@ -75,6 +75,119 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true}, Run)
 	}
 	if research := byID["research"]; research.TaskQueue != "assist" {
 		t.Fatalf("subagent did not inherit root queue: %#v", research)
+	}
+}
+
+func TestDiscoverAgentChannelConnectorAndEmitsV1Alpha3(t *testing.T) {
+	root := t.TempDir()
+	writeSourceTestFile(t, filepath.Join(root, "agents", "support", "agent.go"), `package support
+
+import (
+	"context"
+	gbagents "github.com/Origens-Dev/gobeyond/agents"
+)
+
+func Run(_ context.Context, _ gbagents.Actor, input string) (string, error) { return input, nil }
+var Agent = gbagents.Define(gbagents.Config{Durable: true}, Run, gbagents.Slots{
+	Schedules: []gbagents.Schedule{{ID: "daily", Cron: "0 9 * * *"}},
+	Channels: []gbagents.Channel{
+		{ID: "web"},
+		{ID: "voice", Connector: "support-line"},
+	},
+})
+`)
+	definitions, err := DiscoverAgentDefinitions(root)
+	if err != nil || len(definitions) != 1 {
+		t.Fatalf("definitions = %#v, err = %v", definitions, err)
+	}
+	channels := definitions[0].Slots.Channels
+	if len(channels) != 2 || channels[0].ID != "web" || channels[0].Connector != "" || channels[1].ID != "voice" || channels[1].Connector != "support-line" {
+		t.Fatalf("channels = %#v", channels)
+	}
+	if got := definitions[0].Slots.Schedules; len(got) != 1 || got[0] != "daily" {
+		t.Fatalf("schedules = %#v", definitions[0].Slots.Schedules)
+	}
+	encoded, err := json.Marshal(portableAgentsManifest(definitions, "build-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, want := range []string{
+		`"apiVersion":"gobeyond.agents/v1alpha3"`,
+		`"id":"web"`,
+		`"connector":""`,
+		`"id":"voice"`,
+		`"connector":"support-line"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("manifest missing %s: %s", want, text)
+		}
+	}
+	if strings.Contains(text, `"channels":["web"`) {
+		t.Fatalf("manifest still emits v1alpha2 channel strings: %s", text)
+	}
+}
+
+func TestDiscoverSIPHandlersProjection(t *testing.T) {
+	root := t.TempDir()
+	writeSourceTestFile(t, filepath.Join(root, "agents", "support", "agent.go"), `package support
+
+import (
+	"context"
+	gbagents "github.com/Origens-Dev/gobeyond/agents"
+	gbsip "github.com/Origens-Dev/gobeyond/sip"
+)
+
+func Run(_ context.Context, _ gbagents.Actor, input string) (string, error) { return input, nil }
+
+var Agent = gbagents.Define(gbagents.Config{}, Run, gbagents.Slots{
+	Channels: []gbagents.Channel{{ID: "voice", Connector: "support-line"}},
+})
+`)
+	writeSourceTestFile(t, filepath.Join(root, "agents", "support", "sip.go"), `package support
+
+import (
+	"context"
+	gbsip "github.com/Origens-Dev/gobeyond/sip"
+)
+
+func handleInvite(_ context.Context, _ gbsip.Request) (gbsip.Response, error) {
+	return gbsip.Accept(), nil
+}
+
+func handleAck(_ context.Context, _ gbsip.Request) error { return nil }
+
+var SIP = gbsip.Handlers{
+	Invite: handleInvite,
+	Ack:    handleAck,
+}
+`)
+	definitions, err := DiscoverAgentDefinitions(root)
+	if err != nil || len(definitions) != 1 {
+		t.Fatalf("definitions = %#v, err = %v", definitions, err)
+	}
+	got := definitions[0].SIPHandlers
+	if len(got) != 2 || got[0] != "ACK" || got[1] != "INVITE" {
+		t.Fatalf("sipHandlers = %#v", got)
+	}
+	encoded, err := json.Marshal(portableAgentsManifest(definitions, "build-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	if !strings.Contains(text, `"sipHandlers":["ACK","INVITE"]`) {
+		t.Fatalf("manifest missing sipHandlers: %s", text)
+	}
+}
+
+func TestDiscoverAgentDefinitionsRejectsUnknownChannelField(t *testing.T) {
+	root := t.TempDir()
+	writeSourceTestFile(t, filepath.Join(root, "agents", "support", "agent.go"), agentSource(
+		`gbagents.Config{}, Run, gbagents.Slots{Channels: []gbagents.Channel{{ID: "web", Prompt: "leak"}}}`,
+	))
+	_, err := DiscoverAgentDefinitions(root)
+	if err == nil || !strings.Contains(err.Error(), "Channels field Prompt") {
+		t.Fatalf("error = %v, want unknown Channel field rejection", err)
 	}
 }
 
