@@ -313,7 +313,7 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true, Public: true}, Run, g
 		"module example.com/site/internal/gobeyondroute/"+definition.Key,
 	)
 	assertSourceTestContains(t, filepath.Join(root, ".gobeyond", "agents.json"),
-		`"apiVersion": "gobeyond.agents/v1alpha2"`,
+		`"apiVersion": "gobeyond.agents/v1alpha3"`,
 		`"buildId": "b_agent_fixture"`,
 		`"mode": "durable"`,
 		`"taskQueue": "default"`,
