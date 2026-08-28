@@ -477,7 +477,11 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 		`routes "`+path.Join(websiteImport, GeneratedDir, "routes")+`"`,
 	)
 	if len(agents) > 0 {
-		imports = append(imports, `httpruntime "github.com/Origens-Dev/gobeyond/agents/httpruntime"`)
+		imports = append(imports,
+			`"os"`,
+			`httpruntime "github.com/Origens-Dev/gobeyond/agents/httpruntime"`,
+			`gbsip "github.com/Origens-Dev/gobeyond/sip"`,
+		)
 		for index, definition := range agents {
 			imports = append(imports, fmt.Sprintf(`agent%d "%s"`, index, path.Join(websiteImport, GeneratedDir, "agents", definition.Key)))
 		}
@@ -654,8 +658,11 @@ func Handler(opts Options) (http.Handler, func() error, error) {
 `)
 	if len(agents) > 0 {
 		b.WriteString("\tagentRegistry := httpruntime.NewRegistry()\n")
+		b.WriteString("\tsipRegistry := gbsip.NewRegistry()\n")
 		for index := range agents {
 			b.WriteString(fmt.Sprintf("\tif err := agent%d.GobeyondRegister(agentRegistry); err != nil {\n", index))
+			b.WriteString("\t\tif closeFn != nil { _ = closeFn() }\n\t\treturn nil, nil, err\n\t}\n")
+			b.WriteString(fmt.Sprintf("\tif err := agent%d.GobeyondRegisterSIP(sipRegistry); err != nil {\n", index))
 			b.WriteString("\t\tif closeFn != nil { _ = closeFn() }\n\t\treturn nil, nil, err\n\t}\n")
 		}
 		b.WriteString(`	agentRuntime, err := httpruntime.New(httpruntime.Options{
@@ -673,6 +680,8 @@ func Handler(opts Options) (http.Handler, func() error, error) {
 		if closeFn != nil { _ = closeFn() }
 		return nil, nil, err
 	}
+	token := os.Getenv("GOBEYOND_SIP_DECISION_TOKEN")
+	mux.Handle("/internal/sip/", sipRegistry.Handler(token))
 	mux.Handle("/", server)
 	return mux, closeFn, nil
 `)
