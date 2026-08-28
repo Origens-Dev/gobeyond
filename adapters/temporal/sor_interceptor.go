@@ -58,11 +58,12 @@ func (s *sorWorkflowInbound) ExecuteWorkflow(
 }
 
 // sorWorkflowOutbound emits SoR timer / child / retry-policy header stamps
-// (ADR 010 Dynamo-first wake).
+// (ADR 010 Dynamo-first wake) and cross-queue schedule wakes.
 type sorWorkflowOutbound struct {
 	interceptor.WorkflowOutboundInterceptorBase
-	timerSeq int
-	childSeq int
+	timerSeq    int
+	childSeq    int
+	scheduleSeq int
 }
 
 func (s *sorWorkflowOutbound) NewTimer(ctx workflow.Context, d time.Duration) workflow.Future {
@@ -99,6 +100,15 @@ func (s *sorWorkflowOutbound) ExecuteActivity(
 	args ...interface{},
 ) workflow.Future {
 	injectRetryPolicyHeader(ctx)
+	// Cross-queue schedule: stamp SoR + host-report InitWorker wake before the
+	// ScheduleActivityTask command leaves the WFT (cold-sibling gap; ADR 010).
+	// Same-queue and empty TaskQueue (inherit) skip. Local activities use a
+	// separate outbound method and are never intercepted here.
+	info := workflow.GetInfo(ctx)
+	if target, ok := siblingScheduleTarget(info.TaskQueueName, workflow.GetActivityOptions(ctx).TaskQueue); ok {
+		s.scheduleSeq++
+		reportSiblingScheduled(ctx, s.scheduleSeq, "activity.scheduled", activityType, target, info)
+	}
 	return s.Next.ExecuteActivity(ctx, activityType, args...)
 }
 
@@ -107,10 +117,15 @@ func (s *sorWorkflowOutbound) ExecuteChildWorkflow(
 	childWorkflowType string,
 	args ...interface{},
 ) workflow.ChildWorkflowFuture {
+	info := workflow.GetInfo(ctx)
+	if target, ok := siblingScheduleTarget(info.TaskQueueName, workflow.GetChildWorkflowOptions(ctx).TaskQueue); ok {
+		s.scheduleSeq++
+		reportSiblingScheduled(ctx, s.scheduleSeq, "child.scheduled", childWorkflowType, target, info)
+	}
 	fut := s.Next.ExecuteChildWorkflow(ctx, childWorkflowType, args...)
 	s.childSeq++
 	seq := s.childSeq
-	parent := workflow.GetInfo(ctx)
+	parent := info
 	workflow.Go(ctx, func(ctx workflow.Context) {
 		var childExec workflow.Execution
 		if err := fut.GetChildWorkflowExecution().Get(ctx, &childExec); err != nil {
@@ -119,6 +134,57 @@ func (s *sorWorkflowOutbound) ExecuteChildWorkflow(
 		reportChildStarted(ctx, seq, parent, childExec)
 	})
 	return fut
+}
+
+// siblingScheduleTarget returns the scheduled physical task queue when it
+// differs from the current workflow queue (a cold sibling may need InitWorker).
+// Empty scheduledTQ means Temporal inherits the workflow queue — no wake.
+func siblingScheduleTarget(workflowTQ, scheduledTQ string) (target string, ok bool) {
+	scheduledTQ = strings.TrimSpace(scheduledTQ)
+	if scheduledTQ == "" {
+		return "", false
+	}
+	workflowTQ = strings.TrimSpace(workflowTQ)
+	if scheduledTQ == workflowTQ {
+		return "", false
+	}
+	return scheduledTQ, true
+}
+
+func reportSiblingScheduled(
+	ctx workflow.Context,
+	seq int,
+	eventType, scheduledName, targetTQ string,
+	info *workflow.Info,
+) {
+	if info == nil || strings.TrimSpace(targetTQ) == "" {
+		return
+	}
+	payload := map[string]string{
+		"task_queue":          targetTQ,
+		"workflow_task_queue": info.TaskQueueName,
+		"schedule_seq":        strconv.Itoa(seq),
+	}
+	switch eventType {
+	case "activity.scheduled":
+		payload["activity_type"] = scheduledName
+	case "child.scheduled":
+		payload["child_workflow_type"] = scheduledName
+	}
+	stampParentHint(payload, info)
+	in := ReportSorEventInput{
+		WorkflowID: info.WorkflowExecution.ID,
+		RunID:      info.WorkflowExecution.RunID,
+		DedupeKey:  fmt.Sprintf("sibling-sched-%s-%d-%s", info.WorkflowExecution.RunID, seq, eventType),
+		Type:       eventType,
+		Kind:       "event",
+		Payload:    payload,
+	}
+	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+	})
+	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
 
 func reportTimerEvent(ctx workflow.Context, seq int, eventType string, d time.Duration, summary string) {

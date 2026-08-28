@@ -54,3 +54,39 @@ func TestIsNonRetryableActivityErr(t *testing.T) {
 		t.Fatal("NonRetryableApplicationError must mark non_retryable")
 	}
 }
+
+func TestSiblingScheduleTarget(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		workflowTQ  string
+		scheduledTQ string
+		wantTarget  string
+		wantOK      bool
+	}{
+		{name: "empty inherits", workflowTQ: "workflows__production", scheduledTQ: "", wantOK: false},
+		{name: "whitespace inherits", workflowTQ: "workflows__production", scheduledTQ: "  ", wantOK: false},
+		{name: "same queue", workflowTQ: "workflows__production", scheduledTQ: "workflows__production", wantOK: false},
+		{
+			name: "sibling restricted", workflowTQ: "control-plane-workflows__production",
+			scheduledTQ: "control-plane-restricted__production",
+			wantTarget:  "control-plane-restricted__production", wantOK: true,
+		},
+		{
+			name: "sibling general", workflowTQ: "portal-workflows__production",
+			scheduledTQ: "portal-general__production",
+			wantTarget:  "portal-general__production", wantOK: true,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := siblingScheduleTarget(tc.workflowTQ, tc.scheduledTQ)
+			if ok != tc.wantOK || got != tc.wantTarget {
+				t.Fatalf("siblingScheduleTarget(%q, %q)=(%q, %v) want (%q, %v)",
+					tc.workflowTQ, tc.scheduledTQ, got, ok, tc.wantTarget, tc.wantOK)
+			}
+		})
+	}
+}

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Stamp `activity.scheduled` / `child.scheduled` SoR events from the workflow
+  outbound interceptor when `ActivityOptions` / child options target a sibling
+  task queue, so gbhost can `InitWorker` the cold poller before the activity
+  sits pending with no WAIT# (ADR 010 cold-sibling schedule wake).
 - Resolve AI catalog ids (`openai/gpt-4o-mini`, `google/gemini-2.5-flash`,
   `x-ai/grok-4.6`) through the host-report UDS `POST /v1/ai-proxy` with an
   explicit dummy key so ambient `OPENROUTER_API_KEY` cannot leak onto the
