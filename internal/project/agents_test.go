@@ -213,7 +213,7 @@ func TestDiscoverAIAgentAllowsInferenceWithoutManifestingIt(t *testing.T) {
 	writeSourceTestFile(t, filepath.Join(root, "agents", "assistant", "agent.go"), `package assistant
 import gbagents "github.com/Origens-Dev/gobeyond/agents"
 var Agent = gbagents.DefineAI(gbagents.AIConfig{
-  Model: "openai/gpt-4o-mini", Inference: "openrouter", Durable: true,
+  Model: "google/gemini-2.5-flash", Inference: "google", Durable: true,
 })
 `)
 	writeSourceTestFile(t, filepath.Join(root, "agents", "assistant", "instructions.md"), "You are a concise assistant.\n")
@@ -222,7 +222,7 @@ var Agent = gbagents.DefineAI(gbagents.AIConfig{
 		t.Fatalf("definitions = %#v, err = %v", definitions, err)
 	}
 	definition := definitions[0]
-	if definition.Model != "openai/gpt-4o-mini" || definition.Kind != AgentKindAI {
+	if definition.Model != "google/gemini-2.5-flash" || definition.Kind != AgentKindAI {
 		t.Fatalf("AI definition = %#v", definition)
 	}
 	encoded, err := json.Marshal(portableAgentsManifest(definitions, "build-test"))

@@ -108,6 +108,32 @@ func TestLanguageModelHostedEnvKeyStillUsesGatewayUnlessInference(t *testing.T) 
 	}
 }
 
+func TestLanguageModelGoogleInferenceUsesDeveloperAPI(t *testing.T) {
+	socket, requests := startGatewaySocket(t)
+	t.Setenv(EnvHostReportSocket, socket)
+	t.Setenv(EnvHostedRuntime, "1")
+	t.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", "studio-key")
+
+	model, via, err := DefineAI(AIConfig{
+		Model: "google/gemini-2.5-flash", Inference: "google",
+	}).resolveLanguageModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if via != languageModelViaInference {
+		t.Fatalf("inference via = %q, want %s", via, languageModelViaInference)
+	}
+	if got := model.Provider(); got != "google.generative-ai" {
+		t.Fatalf("provider = %q", got)
+	}
+	if got := model.ModelID(); got != "gemini-2.5-flash" {
+		t.Fatalf("model id = %q", got)
+	}
+	if n := requests.count(); n != 0 {
+		t.Fatalf("Google Inference bypass dialed the gateway %d times", n)
+	}
+}
+
 func TestLanguageModelLocalEnvKeyWithoutSocket(t *testing.T) {
 	t.Setenv(EnvHostReportSocket, filepath.Join(t.TempDir(), "missing.sock"))
 	t.Setenv(EnvHostedRuntime, "")
@@ -168,7 +194,7 @@ func TestLanguageModelRejectsUnsupportedInference(t *testing.T) {
 	t.Setenv(EnvHostedRuntime, "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 
-	for _, inference := range []string{"grok", "x-ai", "openai", "google"} {
+	for _, inference := range []string{"grok", "x-ai", "openai"} {
 		_, _, err := DefineAI(AIConfig{Model: "x-ai/grok-4.6", Inference: inference}).resolveLanguageModel()
 		if err == nil || !strings.Contains(err.Error(), "Inference") {
 			t.Fatalf("inference %q err = %v", inference, err)

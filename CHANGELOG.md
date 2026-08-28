@@ -2,17 +2,22 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.57 - 2026-08-28
+
+- Added `AIConfig.Inference: "google"` for direct Gemini Developer API access
+  with `GOOGLE_GENERATIVE_AI_API_KEY`, while keeping inference-free
+  `google/...` catalog ids on the hosted model gateway.
+- Bumped `github.com/Origens-Dev/go-ai` to `v0.1.0-alpha.2` and
+  `github.com/Origens-Dev/go-temporal-ai-sdk` to `v0.1.0-alpha.9`.
+- Added public SIP handler registration and decision-runtime dispatch for
+  authored voice channels.
+
+## 0.1.0-alpha.56 - 2026-08-28
+
 - Stamp `activity.scheduled` / `child.scheduled` SoR events from the workflow
   outbound interceptor when `ActivityOptions` / child options target a sibling
   task queue, so gbhost can `InitWorker` the cold poller before the activity
   sits pending with no WAIT# (ADR 010 cold-sibling schedule wake).
-- Resolve AI catalog ids (`openai/gpt-4o-mini`, `google/gemini-2.5-flash`,
-  `x-ai/grok-4.6`) through the host-report UDS `POST /v1/ai-proxy` with an
-  explicit dummy key so ambient `OPENROUTER_API_KEY` cannot leak onto the
-  gateway path.
-- Allow `AIConfig.Inference` (`openrouter|vertex|anthropic|bedrock` only) as a
-  process-local unmetered BYOK bypass; do not copy it into the agents manifest
-  or Temporal input.
 
 ## 0.1.0-alpha.49 - 2026-08-19
 
@@ -22,6 +27,13 @@
 
 ## 0.1.0-alpha.47 - 2026-08-18
 
+- Resolve AI catalog ids (`openai/gpt-4o-mini`, `google/gemini-2.5-flash`,
+  `x-ai/grok-4.6`) through the host-report UDS `POST /v1/ai-proxy` with an
+  explicit dummy key so ambient `OPENROUTER_API_KEY` cannot leak onto the
+  gateway path.
+- Allow `AIConfig.Inference` (`openrouter|vertex|anthropic|bedrock` only) as a
+  process-local unmetered BYOK bypass; do not copy it into the agents manifest
+  or Temporal input.
 - Move authored request middleware into the Go application process and slot;
   add the edge-safe `gobeyond.json` redirect/rewrite policy artifact with
   origin fallback evaluation.

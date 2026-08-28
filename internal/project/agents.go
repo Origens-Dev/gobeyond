@@ -604,10 +604,10 @@ func realtimeAgentQueueID(id string) string {
 
 func validateAIInference(value string) error {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "openrouter", "vertex", "anthropic", "bedrock":
+	case "openrouter", "google", "vertex", "anthropic", "bedrock":
 		return nil
 	default:
-		return fmt.Errorf("AI agent Inference %q is not supported; use openrouter, vertex, anthropic, or bedrock", value)
+		return fmt.Errorf("AI agent Inference %q is not supported; use openrouter, google, vertex, anthropic, or bedrock", value)
 	}
 }
 

@@ -104,11 +104,27 @@ socket (`POST /v1/ai-proxy`). Do not add `openai`, `google`, `x-ai`, or `grok`
 as built-in first-segment providers.
 
 `AIConfig.Inference` is a process-local unmetered bypass for customer BYOK. The
-compiler allowlists `openrouter`, `vertex`, `anthropic`, and `bedrock` only
+compiler allowlists `openrouter`, `google`, `vertex`, `anthropic`, and `bedrock`
 (`grok` is not available until go-ai owns xai). Inference is not copied into
 `.gobeyond/agents.json`, `dist/deploy/agents.json`, or Temporal workflow input.
 A missing customer key fails closed and does not fall through to the gateway.
 Dogfood default agents must omit Inference so hosted traffic stays metered.
+
+For a Gemini Developer API key created in Google AI Studio, keep the normal
+catalog model id and opt into the direct Google provider:
+
+```go
+var Agent = gbagents.DefineAI(gbagents.AIConfig{
+  Model:     "google/gemini-2.5-flash",
+  Inference: "google",
+})
+```
+
+Set `GOOGLE_GENERATIVE_AI_API_KEY` in the site or worker runtime. GoBeyond
+removes the `google/` catalog prefix before calling the Gemini Developer API.
+This API-key path is distinct from the Vertex path (`Inference: "vertex"`),
+which retains Vertex AI project/location authentication. Omitting `Inference`
+keeps `google/...` on GoBeyond's hosted, metered model gateway.
 
 A first-segment `openrouter/...`, `anthropic/...`, `bedrock/...`, or
 `vertex/...` model still selects that SDK (legacy BYOK). `Provider` accepts a

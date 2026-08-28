@@ -12,6 +12,7 @@ import (
 	"github.com/Origens-Dev/go-ai/packages/anthropic"
 	"github.com/Origens-Dev/go-ai/packages/bedrock"
 	"github.com/Origens-Dev/go-ai/packages/community/openrouter"
+	"github.com/Origens-Dev/go-ai/packages/google"
 	"github.com/Origens-Dev/go-ai/packages/vertex"
 	"github.com/Origens-Dev/go-temporal-ai-sdk/updates"
 )
@@ -53,7 +54,7 @@ type DurableUpdateStore interface {
 // Known first-segment providers stay {openrouter, anthropic, bedrock, vertex};
 // do not author openai/, google/, x-ai/, or grok/ as built-in providers.
 //
-// Inference selects a process-local BYOK provider (openrouter, vertex,
+// Inference selects a process-local BYOK provider (openrouter, google, vertex,
 // anthropic, or bedrock) and is an unmetered hosted bypass. It is not copied
 // into the agents manifest or Temporal workflow input. Provider may be
 // supplied for a custom provider; credentials stay runtime-only.
@@ -291,7 +292,14 @@ func (definition AIDefinition) resolveLanguageModel() (ai.LanguageModel, string,
 		if err != nil {
 			return nil, "", err
 		}
-		model := provider.LanguageModel(modelRef)
+		modelID := modelRef
+		if providerName, catalogModelID, found := strings.Cut(modelRef, "/"); found &&
+			strings.EqualFold(strings.TrimSpace(inference), "google") &&
+			strings.EqualFold(strings.TrimSpace(providerName), "google") &&
+			strings.TrimSpace(catalogModelID) != "" {
+			modelID = strings.TrimSpace(catalogModelID)
+		}
+		model := provider.LanguageModel(modelID)
 		if model == nil {
 			return nil, "", fmt.Errorf("AI agent model %q was not found", modelRef)
 		}
@@ -349,10 +357,12 @@ func builtInProvider(name string) (ai.Provider, error) {
 		return openrouter.New(openrouter.Settings{}), nil
 	case "bedrock":
 		return bedrock.New(bedrock.Settings{}), nil
+	case "google":
+		return google.New(google.Settings{}), nil
 	case "vertex":
 		return vertex.New(vertex.Settings{}), nil
 	default:
-		return nil, fmt.Errorf("AI agent Inference %q is not supported; use openrouter, vertex, anthropic, or bedrock", name)
+		return nil, fmt.Errorf("AI agent Inference %q is not supported; use openrouter, google, vertex, anthropic, or bedrock", name)
 	}
 }
 

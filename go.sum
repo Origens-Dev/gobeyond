@@ -1,7 +1,7 @@
-github.com/Origens-Dev/go-ai v0.1.0-alpha.1 h1:7U89FlDjIb/Z8QF7kgf0rcKB8nwwyRsM+YFm8JFmt5k=
-github.com/Origens-Dev/go-ai v0.1.0-alpha.1/go.mod h1:6pyzWSO1Kzvr/RPFfZCx28yOtwwXzhjN43RZAwniLq8=
-github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.8 h1:CwZTvR/0L14zYB0uCv9JiX2YJxwCM24bvduIm0StfAA=
-github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.8/go.mod h1:GsO67KNh/ojC1zkIDcFH3cBZ13fgCFA26hExAQsydQE=
+github.com/Origens-Dev/go-ai v0.1.0-alpha.2 h1:ecXlI27ZPhl9WyQcbpIYr4oV16u5Udn2HFhvMMPlDcc=
+github.com/Origens-Dev/go-ai v0.1.0-alpha.2/go.mod h1:6pyzWSO1Kzvr/RPFfZCx28yOtwwXzhjN43RZAwniLq8=
+github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.9 h1:U3v+UOwYcNCkkin0BVfSaIMs5VBscFjzB9Ug3wZAcwM=
+github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.9/go.mod h1:lYy/2oYVGpWqJNIpiBrkaJ6cKGl+u0F5/z41rR54Sig=
 github.com/aws/aws-lambda-go v1.49.0 h1:z4VhTqkFZPM3xpEtTqWqRqsRH4TZBMJqTkRiBPYLqIQ=
 github.com/aws/aws-lambda-go v1.49.0/go.mod h1:dpMpZgvWx5vuQJfBt0zqBha60q7Dd7RfgJv23DymV8A=
 github.com/aws/aws-sdk-go-v2 v1.41.7 h1:DWpAJt66FmnnaRIOT/8ASTucrvuDPZASqhhLey6tLY8=
