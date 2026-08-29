@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.58 - 2026-08-29
+
+- Stamp the parent `workflow_task_queue` on activity headers and SoR payloads so
+  a cross-queue activity terminal can `InitWorker` the primary workflow tip
+  before Temporal delivers the next workflow task (ADR 010 return wake).
+
 ## 0.1.0-alpha.57 - 2026-08-28
 
 - Added `AIConfig.Inference: "google"` for direct Gemini Developer API access

@@ -20,6 +20,12 @@ const (
 	// activity.failed can stamp Dynamo-first wake fields (ADR 010).
 	retryPolicyHeaderKey = "gobeyond-retry-policy"
 
+	// workflowTaskQueueHeaderKey carries the parent workflow's physical task
+	// queue so a cross-queue activity can wake that primary on terminal
+	// (activity.completed / failed / canceled) — sibling schedule is one-way
+	// at schedule time; this closes the return path (ADR 010).
+	workflowTaskQueueHeaderKey = "gobeyond-workflow-task-queue"
+
 	// Temporal server defaults when ActivityOptions.RetryPolicy is nil.
 	defaultInitialInterval    = time.Second
 	defaultBackoffCoefficient = 2.0
@@ -90,6 +96,47 @@ func injectRetryPolicyHeader(ctx workflow.Context) {
 		},
 		Data: raw,
 	}
+}
+
+func injectWorkflowTaskQueueHeader(ctx workflow.Context) {
+	info := workflow.GetInfo(ctx)
+	if info == nil {
+		return
+	}
+	tq := strings.TrimSpace(info.TaskQueueName)
+	if tq == "" {
+		return
+	}
+	raw, err := json.Marshal(tq)
+	if err != nil {
+		return
+	}
+	h := interceptor.WorkflowHeader(ctx)
+	if h == nil {
+		return
+	}
+	h[workflowTaskQueueHeaderKey] = &commonpb.Payload{
+		Metadata: map[string][]byte{
+			converter.MetadataEncoding: []byte(converter.MetadataEncodingJSON),
+		},
+		Data: raw,
+	}
+}
+
+func readWorkflowTaskQueueFromActivityHeader(header map[string]*commonpb.Payload) string {
+	if header == nil {
+		return ""
+	}
+	p, ok := header[workflowTaskQueueHeaderKey]
+	if !ok || p == nil || len(p.Data) == 0 {
+		return ""
+	}
+	var tq string
+	if err := json.Unmarshal(p.Data, &tq); err != nil {
+		// Accept raw UTF-8 as a fallback for older stamps.
+		return strings.TrimSpace(string(p.Data))
+	}
+	return strings.TrimSpace(tq)
 }
 
 func readRetryPolicyFromActivityHeader(header map[string]*commonpb.Payload) (retryPolicyStamp, bool) {
