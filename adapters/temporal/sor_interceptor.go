@@ -100,6 +100,7 @@ func (s *sorWorkflowOutbound) ExecuteActivity(
 	args ...interface{},
 ) workflow.Future {
 	injectRetryPolicyHeader(ctx)
+	injectWorkflowTaskQueueHeader(ctx)
 	// Cross-queue schedule: stamp SoR + host-report InitWorker wake before the
 	// ScheduleActivityTask command leaves the WFT (cold-sibling gap; ADR 010).
 	// Same-queue and empty TaskQueue (inherit) skip. Local activities use a
@@ -315,6 +316,14 @@ func (s *sorActivityInbound) ExecuteActivity(
 	if info.ActivityType.Name == ReportSorEventName {
 		return s.Next.ExecuteActivity(ctx, in)
 	}
+	workflowTQ := readWorkflowTaskQueueFromActivityHeader(interceptor.Header(ctx))
+	startedPayload := map[string]string{
+		"task_queue": info.TaskQueue,
+		"attempt":    strconv.FormatInt(int64(info.Attempt), 10),
+	}
+	if workflowTQ != "" {
+		startedPayload["workflow_task_queue"] = workflowTQ
+	}
 	_ = postSorIngest(ctx, ReportSorEventInput{
 		WorkflowID:   info.WorkflowExecution.ID,
 		RunID:        info.WorkflowExecution.RunID,
@@ -325,10 +334,7 @@ func (s *sorActivityInbound) ExecuteActivity(
 		ActivityType: info.ActivityType.Name,
 		Status:       "RUNNING",
 		Attempt:      info.Attempt,
-		Payload: map[string]string{
-			"task_queue": info.TaskQueue,
-			"attempt":    strconv.FormatInt(int64(info.Attempt), 10),
-		},
+		Payload:      startedPayload,
 	})
 	ret, err := s.Next.ExecuteActivity(ctx, in)
 	status := "COMPLETED"
@@ -336,6 +342,9 @@ func (s *sorActivityInbound) ExecuteActivity(
 	payload := map[string]string{
 		"task_queue": info.TaskQueue,
 		"attempt":    strconv.FormatInt(int64(info.Attempt), 10),
+	}
+	if workflowTQ != "" {
+		payload["workflow_task_queue"] = workflowTQ
 	}
 	if err != nil {
 		if temporal.IsCanceledError(err) {

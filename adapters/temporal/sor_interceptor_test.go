@@ -1,9 +1,12 @@
 package temporal
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
+	commonpb "go.temporal.io/api/common/v1"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 )
 
@@ -88,5 +91,25 @@ func TestSiblingScheduleTarget(t *testing.T) {
 					tc.workflowTQ, tc.scheduledTQ, got, ok, tc.wantTarget, tc.wantOK)
 			}
 		})
+	}
+}
+
+func TestReadWorkflowTaskQueueFromActivityHeader(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal("control-plane-workflows__production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := map[string]*commonpb.Payload{
+		workflowTaskQueueHeaderKey: {
+			Metadata: map[string][]byte{converter.MetadataEncoding: []byte(converter.MetadataEncodingJSON)},
+			Data:     raw,
+		},
+	}
+	if got := readWorkflowTaskQueueFromActivityHeader(header); got != "control-plane-workflows__production" {
+		t.Fatalf("got %q", got)
+	}
+	if got := readWorkflowTaskQueueFromActivityHeader(nil); got != "" {
+		t.Fatalf("nil header got %q", got)
 	}
 }
