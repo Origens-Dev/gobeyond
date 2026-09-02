@@ -1,6 +1,6 @@
 {
   "name": "@go-beyond/schema",
-  "version": "0.1.0-alpha.49",
+  "version": "0.1.0-alpha.60",
   "description": "Serializable page and action schema contracts for GoBeyond",
   "license": "MIT",
   "type": "module",
