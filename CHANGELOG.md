@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.62 - 2026-09-02
+
+- Omit empty Gemini Live `system_instruction` (Developer API close 1007 when
+  the text oneof is unset).
+- Send a short opening client turn after Live connect so duplex/handset gets
+  an immediate spoken greeting without waiting on VAD over silence; set
+  `GOBEYOND_LIVE_OPENING_TURN=-` to disable.
+
 ## 0.1.0-alpha.61 - 2026-09-02
 
 - Fix Gemini Live Google API fallback model id

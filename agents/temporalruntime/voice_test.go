@@ -14,11 +14,12 @@ import (
 )
 
 type fakeLiveSession struct {
-	mu        sync.Mutex
-	inputs    []genai.LiveRealtimeInput
-	responses []genai.LiveToolResponseInput
-	messages  chan *genai.LiveServerMessage
-	closed    chan struct{}
+	mu          sync.Mutex
+	inputs      []genai.LiveRealtimeInput
+	clientTurns []genai.LiveClientContentInput
+	responses   []genai.LiveToolResponseInput
+	messages    chan *genai.LiveServerMessage
+	closed      chan struct{}
 }
 
 func newFakeLiveSession(messages ...*genai.LiveServerMessage) *fakeLiveSession {
@@ -36,6 +37,13 @@ func (session *fakeLiveSession) SendRealtimeInput(input genai.LiveRealtimeInput)
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	session.inputs = append(session.inputs, input)
+	return nil
+}
+
+func (session *fakeLiveSession) SendClientContent(input genai.LiveClientContentInput) error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.clientTurns = append(session.clientTurns, input)
 	return nil
 }
 
