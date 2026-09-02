@@ -88,6 +88,24 @@ leaves both values empty and remains unversioned.
 Configure a client before starting or signaling workflows. Browser code must
 not dial Temporal; use `postAction` into a Go (or Node server) handler.
 
+### Go (actions, API routes)
+
+```go
+import gbtemporal "github.com/Origens-Dev/gobeyond/adapters/temporal"
+
+client, err := gbtemporal.NewClientFromEnv(gbtemporal.ClientOptions{WorkerID: "default"})
+defer client.Close()
+handle, err := client.Start(ctx, gbtemporal.StartOptions{
+	WorkflowName: "default.demo",
+	Args:         []any{"hello"},
+})
+```
+
+See [workflow-triggers-go.md](workflow-triggers-go.md) for modes, hosted UDS,
+API fallback, and environment variables.
+
+### Node / TypeScript
+
 For Node/server triggers:
 
 ```ts
@@ -99,5 +117,5 @@ await workflows.start({ workflowName: "default.demo", taskQueue: "default__local
 ```
 
 `@origens-dev/temporal` is **server/Node only** — do not import it in browser
-bundles. The durables-site example starts workflows with the Go Temporal SDK
-inside action handlers instead.
+bundles. The durables-site example can use the Go trigger client inside action
+handlers instead of raw `client.Dial`.

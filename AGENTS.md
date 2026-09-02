@@ -36,6 +36,9 @@ without mixing framework-generated plumbing into application logic.
   `var Agent = agents.Define(...)`. Agent configs and tool, skill, subagent,
   schedule, and channel slots must remain compiler-visible literals. Direct is
   the zero-value execution mode; durable agents opt in with `Durable: true`.
+- Start or signal workflows from Go server code with
+  `adapters/temporal.NewClientFromEnv`; never dial Temporal from browser
+  bundles. See [workflow-triggers-go.md](docs/guides/workflow-triggers-go.md).
 - Authors write `app/`, `agents/`, `workflows/`, `internal/`, and optional root
   Go middleware only. Generated projections, contracts, registries, and process
   mains live under `generated/`.

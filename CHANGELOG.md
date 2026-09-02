@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `adapters/temporal` workflow trigger client (`NewClientFromEnv`) for Go
+  actions and services: local Temporal SDK dial, hosted host-report UDS with
+  API fallback, lazy connect, and public author docs.
+
 ## 0.1.0-alpha.58 - 2026-08-29
 
 - Stamp the parent `workflow_task_queue` on activity headers and SoR payloads so
