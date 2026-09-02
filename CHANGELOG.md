@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.59 - 2026-09-02
+
 - Add `adapters/temporal` workflow trigger client (`NewClientFromEnv`) for Go
   actions and services: local Temporal SDK dial, hosted host-report UDS with
   API fallback, lazy connect, and public author docs.
