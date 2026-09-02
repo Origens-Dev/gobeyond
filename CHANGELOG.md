@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.60 - 2026-09-02
+
+- Add Gemini Live voice framework: `AIConfig.LiveModel` / `ToolModel` /
+  `VoiceName`, agents manifest `v1alpha4`, and session instruction overlays.
+- Add public `agents/voice` contract plus `GeminiLiveAdapter` (Vertex or
+  Google API) with tool dispatch for spoken Q&A.
+- Add hosted voice client (`HostedVoiceClient`) for gbhost
+  `/v1/agents/voice/{start,stop,pcm}` over the host-report UDS.
+- Document G4a spike findings (`docs/spikes/gemini-live-g4a.md`): Live uses
+  `google.golang.org/genai`; requires `GOOGLE_CLOUD_PROJECT` and
+  `GOOGLE_CLOUD_LOCATION` (or `GOOGLE_CLOUD_REGION`) for Vertex ADC.
+
 ## 0.1.0-alpha.59 - 2026-09-02
 
 - Add `adapters/temporal` workflow trigger client (`NewClientFromEnv`) for Go
