@@ -123,6 +123,11 @@ func RegisterAI(registry Registerer, agentID string, definition agents.AIDefinit
 	if err := definition.ValidateRegistration(); err != nil {
 		return fmt.Errorf("AI agent %q: %w", strings.TrimSpace(agentID), err)
 	}
+	// ProbeLiveModel is separate from text LanguageModel() validation so agents
+	// without LiveModel keep the existing startup path unchanged.
+	if err := definition.ProbeLiveModel(); err != nil {
+		return fmt.Errorf("AI agent %q: %w", strings.TrimSpace(agentID), err)
+	}
 	return registry.Register(agentID, AdaptAI(definition))
 }
 
@@ -141,7 +146,11 @@ func (adapter aiAdapter) Start(ctx context.Context, call StartCall, emit EventEm
 	if err := json.Unmarshal(payload, &input); err != nil {
 		return fmt.Errorf("decode AI agent input: %w", err)
 	}
-	result, err := adapter.definition.Stream(ctx, call.Actor, input)
+	definition := adapter.definition
+	definition.AI.Instructions = agents.ResolveInstructions(definition.AI.Instructions, call.Session.Metadata)
+	// G4 StartConfig.Instructions should use the same ResolveInstructions overlay
+	// before opening a Live session (voice path acceptance is deferred to G4).
+	result, err := definition.Stream(ctx, call.Actor, input)
 	if err != nil {
 		return err
 	}

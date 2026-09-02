@@ -72,6 +72,16 @@ type AIConfig struct {
 	Instructions string
 	Revision     string
 
+	// LiveModel is the Gemini Live (or equivalent) model id used for voice.
+	// Required when the agent declares a voice channel. Reuse Inference for
+	// Live credentials — do not add a separate LiveInference field.
+	LiveModel string
+	// ToolModel is the text/tool-loop model used alongside LiveModel. Required
+	// whenever LiveModel is set; it is never defaulted from Model.
+	ToolModel string
+	// VoiceName is the default prebuilt voice for Live sessions.
+	VoiceName string
+
 	DurableUpdates             DurableUpdateStore
 	OnReviewPublicationFailure func(context.Context, updates.UpdateEvent, error)
 }
@@ -120,6 +130,27 @@ func (definition AIDefinition) ValidateRegistration() error {
 			name = toolID
 		}
 		return fmt.Errorf("AI agent tool %q requires approval, but native approval delivery is not available", name)
+	}
+	return nil
+}
+
+// ProbeLiveModel validates Live voice model config at RegisterAI startup.
+// Text agents without LiveModel are unaffected. When LiveModel is set, ToolModel
+// must resolve through the same LanguageModel path as text agents. Live API
+// connectivity itself is deferred to the voice adapter (G4).
+func (definition AIDefinition) ProbeLiveModel() error {
+	liveModel := strings.TrimSpace(definition.AI.LiveModel)
+	if liveModel == "" {
+		return nil
+	}
+	toolModel := strings.TrimSpace(definition.AI.ToolModel)
+	if toolModel == "" {
+		return errors.New("AI agent ToolModel is required when LiveModel is set")
+	}
+	probe := definition
+	probe.AI.Model = toolModel
+	if _, err := probe.LanguageModel(); err != nil {
+		return fmt.Errorf("AI agent ToolModel %q: %w", toolModel, err)
 	}
 	return nil
 }

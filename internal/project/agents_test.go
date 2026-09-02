@@ -78,7 +78,7 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true}, Run)
 	}
 }
 
-func TestDiscoverAgentChannelConnectorAndEmitsV1Alpha3(t *testing.T) {
+func TestDiscoverAgentChannelConnectorAndEmitsV1Alpha4(t *testing.T) {
 	root := t.TempDir()
 	writeSourceTestFile(t, filepath.Join(root, "agents", "support", "agent.go"), `package support
 
@@ -113,7 +113,7 @@ var Agent = gbagents.Define(gbagents.Config{Durable: true}, Run, gbagents.Slots{
 	}
 	text := string(encoded)
 	for _, want := range []string{
-		`"apiVersion":"gobeyond.agents/v1alpha3"`,
+		`"apiVersion":"gobeyond.agents/v1alpha4"`,
 		`"id":"web"`,
 		`"connector":""`,
 		`"id":"voice"`,
@@ -261,6 +261,63 @@ var Agent = gbagents.DefineAI(gbagents.AIConfig{
 	}
 }
 
+func TestDiscoverAIAgentVoiceFieldsAndRevision(t *testing.T) {
+	root := t.TempDir()
+	writeSourceTestFile(t, filepath.Join(root, "agents", "operator", "agent.go"), `package operator
+import gbagents "github.com/Origens-Dev/gobeyond/agents"
+var Agent = gbagents.DefineAI(gbagents.AIConfig{
+  Model: "google/gemini-2.5-flash", LiveModel: "gemini-live", ToolModel: "gemini-tool",
+  VoiceName: "Kore", Durable: true, Realtime: true, Inference: "vertex",
+}, gbagents.Slots{Channels: []gbagents.Channel{{ID: "web"}, {ID: "voice", Connector: "assistant-line"}}})
+`)
+	writeSourceTestFile(t, filepath.Join(root, "agents", "operator", "instructions.md"), "You are the operator.\n")
+	definitions, err := DiscoverAgentDefinitions(root)
+	if err != nil || len(definitions) != 1 {
+		t.Fatalf("definitions = %#v, err = %v", definitions, err)
+	}
+	definition := definitions[0]
+	if definition.LiveModel != "gemini-live" || definition.ToolModel != "gemini-tool" || definition.VoiceName != "Kore" {
+		t.Fatalf("voice fields = %#v", definition)
+	}
+	firstRevision := definition.Revision
+	encoded, err := json.Marshal(portableAgentsManifest(definitions, "build-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, want := range []string{
+		`"apiVersion":"gobeyond.agents/v1alpha4"`,
+		`"liveModel":"gemini-live"`,
+		`"toolModel":"gemini-tool"`,
+		`"voiceName":"Kore"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("manifest missing %s: %s", want, text)
+		}
+	}
+	writeSourceTestFile(t, filepath.Join(root, "agents", "operator", "agent.go"), `package operator
+import gbagents "github.com/Origens-Dev/gobeyond/agents"
+var Agent = gbagents.DefineAI(gbagents.AIConfig{
+  Model: "google/gemini-2.5-flash", LiveModel: "gemini-live", ToolModel: "gemini-tool",
+  VoiceName: "Puck", Durable: true, Realtime: true, Inference: "vertex",
+}, gbagents.Slots{Channels: []gbagents.Channel{{ID: "web"}, {ID: "voice", Connector: "assistant-line"}}})
+`)
+	definitions, err = DiscoverAgentDefinitions(root)
+	if err != nil || definitions[0].Revision == firstRevision {
+		t.Fatalf("voice name did not change revision: %#v, err = %v", definitions, err)
+	}
+	writeTestModule(t, root)
+	if err := Write(root, nil, "b_voice_fixture", false); err != nil {
+		t.Fatal(err)
+	}
+	assertSourceTestContains(t,
+		filepath.Join(root, GeneratedDir, "agents", definitions[0].Key, "gobeyond_register_gen.go"),
+		`definition.AI.LiveModel = "gemini-live"`,
+		`definition.AI.ToolModel = "gemini-tool"`,
+		`definition.AI.VoiceName = "Puck"`,
+	)
+}
+
 func TestDiscoverAgentGraphResolvesToolSubagentAndRealtimeQueues(t *testing.T) {
 	root := t.TempDir()
 	writeSourceTestFile(t, filepath.Join(root, "agents", "support", "agent.go"), `package support
@@ -326,6 +383,16 @@ func TestDiscoverAgentGraphRejectsInvalidExecutionCombinations(t *testing.T) {
 		want    string
 	}{
 		{
+			name:    "realtime without durable",
+			sources: map[string]string{"agents/a/agent.go": agentSource(`gbagents.Config{Realtime: true}, Run`)},
+			want:    "Realtime requires explicit Durable: true",
+		},
+		{
+			name:    "realtime durable false",
+			sources: map[string]string{"agents/a/agent.go": agentSource(`gbagents.Config{Durable: false, Realtime: true}, Run`)},
+			want:    "Realtime requires explicit Durable: true",
+		},
+		{
 			name:    "direct queue",
 			sources: map[string]string{"agents/a/agent.go": agentSource(`gbagents.Config{TaskQueue: "a"}, Run`)},
 			want:    "direct agents cannot set TaskQueue",
@@ -347,6 +414,28 @@ func TestDiscoverAgentGraphRejectsInvalidExecutionCombinations(t *testing.T) {
 				"agents/b/agent.go": strings.Replace(agentSource(`gbagents.Config{Durable: true}, Run, gbagents.Slots{Subagents: []gbagents.Subagent{{ID: "a"}}}`), "package support", "package b", 1),
 			},
 			want: "contains a cycle",
+		},
+		{
+			name: "voice without live model",
+			sources: map[string]string{
+				"agents/a/agent.go": `package a
+import gbagents "github.com/Origens-Dev/gobeyond/agents"
+var Agent = gbagents.DefineAI(gbagents.AIConfig{Model: "anthropic/test", Durable: true}, gbagents.Slots{Channels: []gbagents.Channel{{ID: "voice"}}})
+`,
+				"agents/a/instructions.md": "Help.",
+			},
+			want: "voice channel requires LiveModel",
+		},
+		{
+			name: "live model without tool model",
+			sources: map[string]string{
+				"agents/a/agent.go": `package a
+import gbagents "github.com/Origens-Dev/gobeyond/agents"
+var Agent = gbagents.DefineAI(gbagents.AIConfig{Model: "anthropic/test", LiveModel: "gemini-live", Durable: true})
+`,
+				"agents/a/instructions.md": "Help.",
+			},
+			want: "ToolModel is required when LiveModel is set",
 		},
 	}
 	for _, test := range tests {

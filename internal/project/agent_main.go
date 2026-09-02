@@ -24,6 +24,15 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 		source.WriteString(fmt.Sprintf("\tdefinition.AI.TaskQueue = %q\n", definition.TaskQueue))
 		source.WriteString(fmt.Sprintf("\tdefinition.AI.Instructions = %q\n", definition.Instructions))
 		source.WriteString(fmt.Sprintf("\tdefinition.AI.Revision = %q\n", definition.Revision))
+		if definition.LiveModel != "" {
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.LiveModel = %q\n", definition.LiveModel))
+		}
+		if definition.ToolModel != "" {
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.ToolModel = %q\n", definition.ToolModel))
+		}
+		if definition.VoiceName != "" {
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceName = %q\n", definition.VoiceName))
+		}
 		source.WriteString(fmt.Sprintf("\treturn httpruntime.RegisterAI(registry, %q, definition)\n", definition.ID))
 	} else {
 		source.WriteString(fmt.Sprintf("\treturn registry.Register(%q, httpruntime.Adapt(definition))\n", definition.ID))
@@ -48,6 +57,15 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 			source.WriteString(fmt.Sprintf("\tdefinition.AI.TaskQueue = %q\n", definition.TaskQueue))
 			source.WriteString(fmt.Sprintf("\tdefinition.AI.Instructions = %q\n", definition.Instructions))
 			source.WriteString(fmt.Sprintf("\tdefinition.AI.Revision = %q\n", definition.Revision))
+			if definition.LiveModel != "" {
+				source.WriteString(fmt.Sprintf("\tdefinition.AI.LiveModel = %q\n", definition.LiveModel))
+			}
+			if definition.ToolModel != "" {
+				source.WriteString(fmt.Sprintf("\tdefinition.AI.ToolModel = %q\n", definition.ToolModel))
+			}
+			if definition.VoiceName != "" {
+				source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceName = %q\n", definition.VoiceName))
+			}
 			source.WriteString(fmt.Sprintf("\treturn temporalruntime.RegisterAI(registry, runtimes, %q, definition)\n", definition.ID))
 		} else {
 			source.WriteString(fmt.Sprintf("\treturn temporalruntime.Register(registry, %q, definition)\n", definition.ID))

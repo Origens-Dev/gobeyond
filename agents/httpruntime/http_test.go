@@ -98,6 +98,33 @@ func TestDirectAIAdapterStreamsTextAndFinalOutput(t *testing.T) {
 	}
 }
 
+func TestDirectAIAdapterAppliesSessionInstructionOverlay(t *testing.T) {
+	model := ai.NewMockLanguageModel("assistant")
+	model.StreamFunc = func(context.Context, ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
+		stream := make(chan ai.StreamPart, 2)
+		stream <- ai.StreamPart{Type: "text-delta", ID: "text-1", TextDelta: "ok"}
+		stream <- ai.StreamPart{Type: "finish", FinishReason: ai.FinishReason{Unified: ai.FinishStop, Raw: "stop"}}
+		close(stream)
+		return &ai.LanguageModelStreamResult{Stream: stream}, nil
+	}
+	provider := ai.NewMockProvider()
+	provider.LanguageModels["assistant"] = model
+	definition := agents.DefineAI(agents.AIConfig{
+		Public: true, Model: "assistant", Provider: provider, Instructions: "Base instructions.",
+	})
+	_, handler := newTestRuntime(t, "assistant", AdaptAI(definition), Options{})
+	started := startTestSession(t, handler, "assistant",
+		`{"input":{"message":"hi"},"metadata":{"instructions":"Session overlay instructions."}}`,
+		"203.0.113.10:1234", "")
+	waitForRunStatus(t, handler, started.Session.ID, RunStatusCompleted, "203.0.113.10:1234", "")
+	if len(model.StreamCalls) != 1 {
+		t.Fatalf("stream calls = %d", len(model.StreamCalls))
+	}
+	if got := model.StreamCalls[0].Prompt[0].Text; got != "Session overlay instructions." {
+		t.Fatalf("effective instructions = %q, want session overlay", got)
+	}
+}
+
 func TestPrivateActorEnforcementAndLoopbackFallback(t *testing.T) {
 	actors := make(chan agents.Actor, 2)
 	adapter := AdapterFuncs{

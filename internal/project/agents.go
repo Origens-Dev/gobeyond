@@ -35,6 +35,9 @@ type AgentDefinition struct {
 	Realtime     bool
 	Public       bool
 	Model        string
+	LiveModel    string
+	ToolModel    string
+	VoiceName    string
 	MaxSteps     int
 	Instructions string
 	Revision     string
@@ -47,6 +50,9 @@ type AgentDefinition struct {
 	SourceFiles  []string
 	Slots        AgentSlots
 	Tools        []AgentToolDefinition
+	// DurableSet is true when Durable appeared as an explicit field in the
+	// authored config literal. Realtime requires an explicit Durable: true.
+	DurableSet bool
 	// SIPHandlers lists closed-enum method names with a site-registered
 	// sip.Handlers field in agents/<id>/sip.go (subset). Empty means
 	// edge-local defaults.
@@ -73,7 +79,7 @@ type AgentSlots struct {
 }
 
 // AgentChannel is the compiler projection of agents.Channel. Empty Connector
-// is allowed (web) and is emitted as an empty string under v1alpha3.
+// is allowed (web) and is emitted as an empty string under v1alpha4.
 type AgentChannel struct {
 	ID        string `json:"id"`
 	Connector string `json:"connector"`
@@ -136,7 +142,7 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 	if err != nil {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 	}
-	taskQueue, durable, realtime, public, model, maxSteps, err := parseAgentConfig(call.Config, call.Kind)
+	taskQueue, durable, durableSet, realtime, public, model, liveModel, toolModel, voiceName, maxSteps, err := parseAgentConfig(call.Config, call.Kind)
 	if err != nil {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 	}
@@ -160,10 +166,10 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 	}
 	definition := AgentDefinition{
 		ID: id, Key: AgentDefinitionKey(id), Kind: call.Kind, Mode: mode, TaskQueue: taskQueue,
-		TaskQueueSet: taskQueue != "", Durable: durable, Realtime: realtime, Public: public, SourceDir: authorPath(root, dir),
+		TaskQueueSet: taskQueue != "", Durable: durable, DurableSet: durableSet, Realtime: realtime, Public: public, SourceDir: authorPath(root, dir),
 		EntryFile: authorPath(root, entryFile), PackageName: packageName,
 		Handler: call.Handler, SourceFiles: files, Slots: call.Slots,
-		Model: model, MaxSteps: maxSteps, Tools: tools, SIPHandlers: sipHandlers,
+		Model: model, LiveModel: liveModel, ToolModel: toolModel, VoiceName: voiceName, MaxSteps: maxSteps, Tools: tools, SIPHandlers: sipHandlers,
 	}
 	for _, tool := range tools {
 		if !containsString(definition.Slots.Tools, tool.ID) {
@@ -260,85 +266,113 @@ func findAgentCall(file *ast.File) (agentCall, error) {
 	return agentCall{}, errors.New("missing exported var Agent = agents.Define(...) or agents.DefineAI(...)")
 }
 
-func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable bool, realtime bool, public bool, model string, maxSteps int, err error) {
+func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable bool, durableSet bool, realtime bool, public bool, model string, liveModel string, toolModel string, voiceName string, maxSteps int, err error) {
 	composite, ok := config.(*ast.CompositeLit)
 	if !ok {
-		return "", false, false, false, "", 0, errors.New("agent config must be an inline literal so the compiler can resolve its build metadata")
+		return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config must be an inline literal so the compiler can resolve its build metadata")
 	}
 	seen := map[string]bool{}
 	for _, element := range composite.Elts {
 		field, ok := element.(*ast.KeyValueExpr)
 		if !ok {
-			return "", false, false, false, "", 0, errors.New("agent config must use named fields")
+			return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config must use named fields")
 		}
 		key, ok := field.Key.(*ast.Ident)
 		if !ok {
-			return "", false, false, false, "", 0, errors.New("agent config field must be named")
+			return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config field must be named")
 		}
 		if seen[key.Name] {
-			return "", false, false, false, "", 0, fmt.Errorf("agent config field %s is duplicated", key.Name)
+			return "", false, false, false, false, "", "", "", "", 0, fmt.Errorf("agent config field %s is duplicated", key.Name)
 		}
 		seen[key.Name] = true
 		switch key.Name {
 		case "TaskQueue":
 			taskQueue, err = staticString(field.Value, "TaskQueue")
 			if err != nil {
-				return "", false, false, false, "", 0, err
+				return "", false, false, false, false, "", "", "", "", 0, err
 			}
 		case "Durable":
 			durable, err = staticBool(field.Value, "Durable")
 			if err != nil {
-				return "", false, false, false, "", 0, err
+				return "", false, false, false, false, "", "", "", "", 0, err
 			}
+			durableSet = true
 		case "Realtime":
 			realtime, err = staticBool(field.Value, "Realtime")
 			if err != nil {
-				return "", false, false, false, "", 0, err
+				return "", false, false, false, false, "", "", "", "", 0, err
 			}
 		case "Public":
 			public, err = staticBool(field.Value, "Public")
 			if err != nil {
-				return "", false, false, false, "", 0, err
+				return "", false, false, false, false, "", "", "", "", 0, err
 			}
 		case "Model":
 			if kind != AgentKindAI {
-				return "", false, false, false, "", 0, errors.New("agent config field Model is only supported by DefineAI")
+				return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config field Model is only supported by DefineAI")
 			}
 			model, err = staticString(field.Value, "Model")
 			if err != nil {
-				return "", false, false, false, "", 0, err
+				return "", false, false, false, false, "", "", "", "", 0, err
+			}
+		case "LiveModel":
+			if kind != AgentKindAI {
+				return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config field LiveModel is only supported by DefineAI")
+			}
+			liveModel, err = staticString(field.Value, "LiveModel")
+			if err != nil {
+				return "", false, false, false, false, "", "", "", "", 0, err
+			}
+		case "ToolModel":
+			if kind != AgentKindAI {
+				return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config field ToolModel is only supported by DefineAI")
+			}
+			toolModel, err = staticString(field.Value, "ToolModel")
+			if err != nil {
+				return "", false, false, false, false, "", "", "", "", 0, err
+			}
+		case "VoiceName":
+			if kind != AgentKindAI {
+				return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config field VoiceName is only supported by DefineAI")
+			}
+			voiceName, err = staticString(field.Value, "VoiceName")
+			if err != nil {
+				return "", false, false, false, false, "", "", "", "", 0, err
 			}
 		case "MaxSteps":
 			if kind != AgentKindAI {
-				return "", false, false, false, "", 0, errors.New("agent config field MaxSteps is only supported by DefineAI")
+				return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config field MaxSteps is only supported by DefineAI")
 			}
 			maxSteps, err = staticInt(field.Value, "MaxSteps")
 			if err != nil {
-				return "", false, false, false, "", 0, err
+				return "", false, false, false, false, "", "", "", "", 0, err
 			}
 		case "Inference":
 			if kind != AgentKindAI {
-				return "", false, false, false, "", 0, errors.New("agent config field Inference is only supported by DefineAI")
+				return "", false, false, false, false, "", "", "", "", 0, errors.New("agent config field Inference is only supported by DefineAI")
 			}
 			inference, err := staticString(field.Value, "Inference")
 			if err != nil {
-				return "", false, false, false, "", 0, err
+				return "", false, false, false, false, "", "", "", "", 0, err
 			}
 			if err := validateAIInference(inference); err != nil {
-				return "", false, false, false, "", 0, err
+				return "", false, false, false, false, "", "", "", "", 0, err
 			}
 		case "Tools", "Provider", "DurableUpdates", "OnReviewPublicationFailure":
 			if kind != AgentKindAI {
-				return "", false, false, false, "", 0, fmt.Errorf("agent config field %s is only supported by DefineAI", key.Name)
+				return "", false, false, false, false, "", "", "", "", 0, fmt.Errorf("agent config field %s is only supported by DefineAI", key.Name)
 			}
 		default:
-			return "", false, false, false, "", 0, fmt.Errorf("agent config field %s is not supported", key.Name)
+			return "", false, false, false, false, "", "", "", "", 0, fmt.Errorf("agent config field %s is not supported", key.Name)
 		}
 	}
 	if kind == AgentKindAI && strings.TrimSpace(model) == "" {
-		return "", false, false, false, "", 0, errors.New("AI agent Model is required")
+		return "", false, false, false, false, "", "", "", "", 0, errors.New("AI agent Model is required")
 	}
-	return taskQueue, durable, realtime, public, model, maxSteps, nil
+	if strings.TrimSpace(liveModel) != "" && strings.TrimSpace(toolModel) == "" {
+		return "", false, false, false, false, "", "", "", "", 0, errors.New("AI agent ToolModel is required when LiveModel is set")
+	}
+	return taskQueue, durable, durableSet, realtime, public, model, liveModel, toolModel, voiceName, maxSteps, nil
 }
 
 func parseAgentTools(config ast.Expr, kind string, files map[string]*ast.File) ([]AgentToolDefinition, error) {
@@ -469,11 +503,19 @@ func resolveAgentGraph(definitions []AgentDefinition) error {
 		definition := &definitions[index]
 		byID[definition.ID] = index
 		if definition.Realtime {
-			if !definition.Durable {
-				return fmt.Errorf("%s: Realtime requires Durable: true", definition.EntryFile)
+			if !definition.DurableSet || !definition.Durable {
+				return fmt.Errorf("%s: Realtime requires explicit Durable: true", definition.EntryFile)
 			}
 			if definition.TaskQueueSet {
 				return fmt.Errorf("%s: Realtime agents use a compiler-derived unique TaskQueue", definition.EntryFile)
+			}
+		}
+		if definition.Kind == AgentKindAI {
+			if hasVoiceChannel(definition.Slots) && strings.TrimSpace(definition.LiveModel) == "" {
+				return fmt.Errorf("%s: AI agent with voice channel requires LiveModel", definition.EntryFile)
+			}
+			if strings.TrimSpace(definition.LiveModel) != "" && strings.TrimSpace(definition.ToolModel) == "" {
+				return fmt.Errorf("%s: AI agent ToolModel is required when LiveModel is set", definition.EntryFile)
 			}
 		}
 		if !definition.Durable && definition.TaskQueueSet {
@@ -614,6 +656,15 @@ func validateAIInference(value string) error {
 func containsString(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func hasVoiceChannel(slots AgentSlots) bool {
+	for _, channel := range slots.Channels {
+		if channel.ID == "voice" {
 			return true
 		}
 	}
@@ -903,6 +954,7 @@ func agentRuntimeRevision(root string, definition AgentDefinition) (string, erro
 	_, _ = digest.Write([]byte("gobeyond-agent-runtime-v1\x00"))
 	_, _ = digest.Write([]byte(definition.ID))
 	_, _ = digest.Write([]byte("\x00" + definition.Model + "\x00" + strconv.Itoa(definition.MaxSteps)))
+	_, _ = digest.Write([]byte("\x00" + definition.LiveModel + "\x00" + definition.ToolModel + "\x00" + definition.VoiceName))
 	_, _ = digest.Write([]byte("\x00" + definition.Instructions))
 	for _, relativeFile := range definition.SourceFiles {
 		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relativeFile)))

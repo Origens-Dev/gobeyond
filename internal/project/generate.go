@@ -57,6 +57,9 @@ type AgentManifestDefinition struct {
 	Realtime    bool                `json:"realtime"`
 	Public      bool                `json:"public"`
 	Model       string              `json:"model,omitempty"`
+	LiveModel   string              `json:"liveModel,omitempty"`
+	ToolModel   string              `json:"toolModel,omitempty"`
+	VoiceName   string              `json:"voiceName,omitempty"`
 	MaxSteps    int                 `json:"maxSteps,omitempty"`
 	Revision    string              `json:"revision,omitempty"`
 	Slots       AgentSlots          `json:"slots"`
@@ -157,7 +160,7 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 }
 
 func portableAgentsManifest(definitions []AgentDefinition, buildID string) AgentsManifest {
-	manifest := AgentsManifest{APIVersion: "gobeyond.agents/v1alpha3", BuildID: buildID}
+	manifest := AgentsManifest{APIVersion: "gobeyond.agents/v1alpha4", BuildID: buildID}
 	for _, definition := range definitions {
 		slots := definition.Slots
 		slots.Tools = nonNilStrings(slots.Tools)
@@ -187,6 +190,9 @@ func portableAgentsManifest(definitions []AgentDefinition, buildID string) Agent
 			Realtime:    definition.Realtime,
 			Public:      definition.Public,
 			Model:       definition.Model,
+			LiveModel:   definition.LiveModel,
+			ToolModel:   definition.ToolModel,
+			VoiceName:   definition.VoiceName,
 			MaxSteps:    definition.MaxSteps,
 			Revision:    definition.Revision,
 			Slots:       slots,
@@ -297,7 +303,7 @@ func LoadAgentsManifest(root string) (AgentsManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return AgentsManifest{}, err
 	}
-	if manifest.APIVersion != "gobeyond.agents/v1alpha3" || strings.TrimSpace(manifest.BuildID) == "" {
+	if manifest.APIVersion != "gobeyond.agents/v1alpha4" || strings.TrimSpace(manifest.BuildID) == "" {
 		return AgentsManifest{}, errors.New("unsupported or incomplete agent manifest")
 	}
 	if manifest.Agents == nil {
