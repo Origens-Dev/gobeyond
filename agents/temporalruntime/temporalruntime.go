@@ -105,6 +105,11 @@ func RegisterAI(_ worker.Worker, runtimes *AIRegistry, agentID string, definitio
 	if _, err := definition.LanguageModel(); err != nil {
 		return fmt.Errorf("AI agent %q: %w", agentID, err)
 	}
+	// ProbeLiveModel is separate from text LanguageModel() validation so agents
+	// without LiveModel keep the existing startup path unchanged.
+	if err := definition.ProbeLiveModel(); err != nil {
+		return fmt.Errorf("AI agent %q: %w", agentID, err)
+	}
 	runtimes.mu.Lock()
 	defer runtimes.mu.Unlock()
 	if runtimes.registered {
@@ -647,7 +652,8 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 	}
 	agentInput := temporalai.AgentInput{
 		AgentID: definitionID(call), CompiledRevision: definition.AI.Revision,
-		ModelID: definition.AI.Model, Instructions: definition.AI.Instructions,
+		ModelID: definition.AI.Model,
+		Instructions: agents.ResolveInstructions(definition.AI.Instructions, call.Session.Metadata),
 		Prompt: input.PromptText(), Messages: activities.MessagesFromAI(messages),
 		Tools: toolDefinitions, MaxSteps: maxSteps,
 		Stream: updates.Options{
@@ -657,6 +663,8 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 		},
 		ToolContext: map[string]any{"gobeyondActor": call.Actor},
 	}
+	// G4 StartConfig.Instructions should use the same ResolveInstructions overlay
+	// before opening a Live session (voice path acceptance is deferred to G4).
 	if definition.Config.Realtime {
 		agentInput.DefaultModelBoundary = activities.ToolExecutionBoundaryLocalActivity
 		agentInput.DefaultToolBoundary = activities.ToolExecutionBoundaryLocalActivity
