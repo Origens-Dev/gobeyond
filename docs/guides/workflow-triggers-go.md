@@ -91,7 +91,7 @@ Start body fields (only these — never send queue/namespace/environment):
 \*Supply via `StartOptions.WorkerID` or `ClientOptions.WorkerID`.
 
 When UDS returns unavailable (`503` with `{"fallback":"api"}`, or socket
-`ENOENT` / `ECONNREFUSED`), the client falls back to the Origens workflows API
+`ENOENT` / `ECONNREFUSED`), the client falls back to the hosted GoBeyond workflows API
 when `GOBEYOND_API_URL` is set:
 
 - `POST {GOBEYOND_API_URL}/internal/workflows/start`
