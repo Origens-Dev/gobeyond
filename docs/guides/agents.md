@@ -175,6 +175,39 @@ nor its tools may author a task queue. Local activities do not heartbeat, so
 their start-to-close limits and worker drainage remain the enforcement
 boundary. Ordinary remote model and tool activities heartbeat while running.
 
+### Realtime vs Gemini Live voice
+
+`Realtime: true` is a **Temporal scheduling** choice (local-activity tool/model
+boundaries on a dedicated `realtime-{agentId}` queue). It is **not** Gemini Live
+audio.
+
+Gemini Live voice requires a `voice` channel plus:
+
+```go
+var Agent = gbagents.DefineAI(gbagents.AIConfig{
+  Model:     "google/gemini-2.5-flash",
+  Inference: "google", // or "vertex"; Live reuses Inference (no LiveInference field)
+  LiveModel: "gemini-3.1-flash-live-preview",
+  ToolModel: "gemini-3.1-flash-lite-preview",
+  VoiceName: "Kore",
+  Durable:   true,
+  Realtime:  true,
+})
+```
+
+The compiler rejects a `voice` channel without `LiveModel`, or `LiveModel`
+without `ToolModel`. Manifest version is `v1alpha4` (`liveModel`, `toolModel`,
+`voiceName`). Hosted Live runs through gbhost `POST /v1/agents/voice/start` and
+a length-prefixed PCM stream; see `agents/voice` and the Live adapter in
+`agents/temporalruntime`.
+
+Session metadata overlays (snake_case): `instructions`, `voice_name`. Use
+`agents.ResolveInstructions` / `ResolveVoiceName` before `StartConfig`.
+
+For `Inference: "google"`, set `GOOGLE_GENERATIVE_AI_API_KEY` (and optionally
+`GOBEYOND_LIVE_INFERENCE=google` on gbhost). Empty `Inference` defaults Live to
+Vertex.
+
 The compiler requires non-empty `instructions.md`, embeds it in generated Go,
 and uses the finalized GoBeyond build identity as the durable runtime revision.
 Workers resolve an exact AgentID + revision pair. A stale worker therefore fails
