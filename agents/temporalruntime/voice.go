@@ -108,20 +108,16 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 		}
 	}
 	// Kick an opening model turn so duplex/smoke gets downlink without
-	// waiting on VAD over silence/tones (handset speech still works either way).
+	// waiting on VAD over silence/tones. Use realtime text — not
+	// SendClientContent — so gemini-3.1-flash-live-preview keeps accepting
+	// subsequent SendRealtimeInput audio (mixing client_content + realtime
+	// after TurnComplete leaves the session deaf to the mic).
 	opening := strings.TrimSpace(os.Getenv("GOBEYOND_LIVE_OPENING_TURN"))
 	if opening == "" {
 		opening = "Please greet the caller briefly now."
 	}
 	if opening != "-" {
-		turnComplete := true
-		if sendErr := session.SendClientContent(genai.LiveSendClientContentParameters{
-			Turns: []*genai.Content{{
-				Role:  "user",
-				Parts: []*genai.Part{{Text: opening}},
-			}},
-			TurnComplete: &turnComplete,
-		}); sendErr != nil {
+		if sendErr := session.SendRealtimeInput(genai.LiveRealtimeInput{Text: opening}); sendErr != nil {
 			_ = session.Close()
 			return nil, fmt.Errorf("gemini live opening turn: %w", sendErr)
 		}
