@@ -16,8 +16,11 @@ import (
 )
 
 const (
-	defaultLiveModelFallback = "gemini-live-2.5-flash-native-audio"
-	pcmMIMEType              = "audio/pcm"
+	// Vertex-oriented Live id; Gemini Developer API rejects this for bidiGenerateContent.
+	defaultLiveModelFallbackVertex = "gemini-live-2.5-flash-native-audio"
+	// Verified on generativelanguage.googleapis.com v1alpha (2026-09-02).
+	defaultLiveModelFallbackGoogle = "gemini-2.5-flash-native-audio-preview-12-2025"
+	pcmMIMEType                    = "audio/pcm;rate=16000"
 )
 
 // liveSession is the narrow genai Live session surface used by the adapter so
@@ -86,7 +89,11 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	if err != nil {
 		fallback := strings.TrimSpace(os.Getenv("GOBEYOND_LIVE_MODEL_FALLBACK"))
 		if fallback == "" {
-			fallback = defaultLiveModelFallback
+			if strings.EqualFold(strings.TrimSpace(adapter.definition.AI.Inference), "google") {
+				fallback = defaultLiveModelFallbackGoogle
+			} else {
+				fallback = defaultLiveModelFallbackVertex
+			}
 		}
 		if fallback != model {
 			session, err = dial(ctx, adapter.definition, fallback, connectCfg)
