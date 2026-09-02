@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.61 - 2026-09-02
+
+- Fix Gemini Live Google API fallback model id
+  (`gemini-2.5-flash-native-audio-preview-12-2025`) so
+  `Inference: "google"` connects via `bidiGenerateContent`; keep Vertex
+  fallback `gemini-live-2.5-flash-native-audio`.
+- Set Live PCM MIME to `audio/pcm;rate=16000` so Gemini Live accepts
+  inbound audio framing.
+
 ## 0.1.0-alpha.60 - 2026-09-02
 
 - Add Gemini Live voice framework: `AIConfig.LiveModel` / `ToolModel` /

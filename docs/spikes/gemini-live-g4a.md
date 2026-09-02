@@ -37,7 +37,7 @@ APIs stabilize; bump deliberately when adopting newer Live features.
 | Role | Model id (candidate) | Notes |
 | --- | --- | --- |
 | Primary Live | `gemini-3.1-flash-live-preview` | Must be verified in Vertex Model Garden for the chosen region |
-| Fallback Live | `gemini-live-2.5-flash-native-audio` | Also verify availability / naming; genai examples still reference older preview ids |
+| Fallback Live | Vertex: `gemini-live-2.5-flash-native-audio`; Google API: `gemini-2.5-flash-native-audio-preview-12-2025` | Vertex id is rejected on Gemini Developer API `bidiGenerateContent`; Google id verified 2026-09-02 |
 
 These ids are **not** guaranteed. Before enabling prod traffic:
 
