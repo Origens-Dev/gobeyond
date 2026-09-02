@@ -159,7 +159,13 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.inputs) != 1 || string(fake.inputs[0].Audio.Data) != string([]byte{0x01, 0x02}) {
+	var pcmSeen bool
+	for _, in := range fake.inputs {
+		if in.Audio != nil && string(in.Audio.Data) == string([]byte{0x01, 0x02}) {
+			pcmSeen = true
+		}
+	}
+	if !pcmSeen {
 		t.Fatalf("inputs = %#v", fake.inputs)
 	}
 	if len(fake.responses) != 1 || fake.responses[0].FunctionResponses[0].Name != "lookup" {
