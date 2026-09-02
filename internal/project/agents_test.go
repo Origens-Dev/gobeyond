@@ -315,6 +315,14 @@ var Agent = gbagents.DefineAI(gbagents.AIConfig{
 		`definition.AI.LiveModel = "gemini-live"`,
 		`definition.AI.ToolModel = "gemini-tool"`,
 		`definition.AI.VoiceName = "Puck"`,
+		"func GobeyondRegisterVoice(registry *temporalruntime.VoiceRegistry) error",
+		`temporalruntime.RegisterVoice(registry, "operator", definition)`,
+	)
+	workerMain := filepath.Join(root, GeneratedDir, "cmd", "workflows", definitions[0].TaskQueue, "main.go")
+	assertSourceTestContains(t, workerMain,
+		"voiceRuntimes := temporalruntime.NewVoiceRegistry()",
+		"GobeyondRegisterVoice(voiceRuntimes)",
+		"temporalruntime.RetainVoiceRegistry(voiceRuntimes)",
 	)
 }
 

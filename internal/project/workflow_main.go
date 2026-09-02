@@ -144,6 +144,7 @@ func generatedWorkflowMain(websiteImport string, queue WorkflowQueue) ([]byte, e
 	var imports strings.Builder
 	var registrations strings.Builder
 	hasAIAgents := false
+	hasVoiceAgents := false
 	for index, definition := range queue.Definitions {
 		alias := fmt.Sprintf("definition%d", index)
 		definitionImport := path.Join(websiteImport, GeneratedDir, "workflows", definition.Key)
@@ -174,13 +175,27 @@ func generatedWorkflowMain(websiteImport string, queue WorkflowQueue) ([]byte, e
 		}
 		registrations.WriteString("\t\t\t\tlog.Fatal(err)\n")
 		registrations.WriteString("\t\t\t}\n")
+		if definition.Kind == AgentKindAI && definition.LiveModel != "" {
+			hasVoiceAgents = true
+			registrations.WriteString("\t\t\tif err := ")
+			registrations.WriteString(alias)
+			registrations.WriteString(".GobeyondRegisterVoice(voiceRuntimes); err != nil {\n")
+			registrations.WriteString("\t\t\t\tlog.Fatal(err)\n")
+			registrations.WriteString("\t\t\t}\n")
+		}
 	}
 	registrySetup := ""
 	registryFinish := ""
-	if hasAIAgents {
+	if hasAIAgents || hasVoiceAgents {
 		imports.WriteString("\ttemporalruntime \"github.com/Origens-Dev/gobeyond/agents/temporalruntime\"\n")
-		registrySetup = "\t\t\taiRuntimes := temporalruntime.NewAIRegistry()\n"
-		registryFinish = "\t\t\tif err := aiRuntimes.Register(w); err != nil {\n\t\t\t\tlog.Fatal(err)\n\t\t\t}\n"
+	}
+	if hasAIAgents {
+		registrySetup += "\t\t\taiRuntimes := temporalruntime.NewAIRegistry()\n"
+		registryFinish += "\t\t\tif err := aiRuntimes.Register(w); err != nil {\n\t\t\t\tlog.Fatal(err)\n\t\t\t}\n"
+	}
+	if hasVoiceAgents {
+		registrySetup += "\t\t\tvoiceRuntimes := temporalruntime.NewVoiceRegistry()\n"
+		registryFinish += "\t\t\ttemporalruntime.RetainVoiceRegistry(voiceRuntimes)\n"
 	}
 	source := fmt.Sprintf(`%s
 package main

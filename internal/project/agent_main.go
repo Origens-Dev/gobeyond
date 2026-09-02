@@ -71,6 +71,23 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 			source.WriteString(fmt.Sprintf("\treturn temporalruntime.Register(registry, %q, definition)\n", definition.ID))
 		}
 		source.WriteString("}\n")
+		if definition.Kind == AgentKindAI && definition.LiveModel != "" {
+			source.WriteString("\nfunc GobeyondRegisterVoice(registry *temporalruntime.VoiceRegistry) error {\n")
+			source.WriteString("\tdefinition := Agent\n")
+			source.WriteString(fmt.Sprintf("\tdefinition.Config.TaskQueue = %q\n", definition.TaskQueue))
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.TaskQueue = %q\n", definition.TaskQueue))
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.Instructions = %q\n", definition.Instructions))
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.Revision = %q\n", definition.Revision))
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.LiveModel = %q\n", definition.LiveModel))
+			if definition.ToolModel != "" {
+				source.WriteString(fmt.Sprintf("\tdefinition.AI.ToolModel = %q\n", definition.ToolModel))
+			}
+			if definition.VoiceName != "" {
+				source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceName = %q\n", definition.VoiceName))
+			}
+			source.WriteString(fmt.Sprintf("\treturn temporalruntime.RegisterVoice(registry, %q, definition)\n", definition.ID))
+			source.WriteString("}\n")
+		}
 	}
 	formatted, err := format.Source([]byte(source.String()))
 	if err != nil {
