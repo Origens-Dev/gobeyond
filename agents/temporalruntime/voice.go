@@ -27,6 +27,7 @@ const (
 // unit tests can inject a fake without dialing Google.
 type liveSession interface {
 	SendRealtimeInput(input genai.LiveRealtimeInput) error
+	SendClientContent(input genai.LiveClientContentInput) error
 	SendToolResponse(input genai.LiveToolResponseInput) error
 	Receive() (*genai.LiveServerMessage, error)
 	Close() error
@@ -69,10 +70,14 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	}
 	connectCfg := &genai.LiveConnectConfig{
 		ResponseModalities: []genai.Modality{genai.ModalityAudio},
-		SystemInstruction: &genai.Content{
-			Parts: []*genai.Part{{Text: cfg.Instructions}},
-		},
-		Tools: liveToolsFromDefinition(adapter.definition),
+		Tools:              liveToolsFromDefinition(adapter.definition),
+	}
+	// Gemini Developer API rejects system_instruction parts with an empty
+	// oneof (close 1007). Omit the field when instructions resolve empty.
+	if instr := strings.TrimSpace(cfg.Instructions); instr != "" {
+		connectCfg.SystemInstruction = &genai.Content{
+			Parts: []*genai.Part{{Text: instr}},
+		}
 	}
 	if voiceName := strings.TrimSpace(cfg.VoiceName); voiceName != "" {
 		connectCfg.SpeechConfig = &genai.SpeechConfig{
@@ -100,6 +105,25 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 		}
 		if err != nil {
 			return nil, fmt.Errorf("gemini live connect: %w", err)
+		}
+	}
+	// Kick an opening model turn so duplex/smoke gets downlink without
+	// waiting on VAD over silence/tones (handset speech still works either way).
+	opening := strings.TrimSpace(os.Getenv("GOBEYOND_LIVE_OPENING_TURN"))
+	if opening == "" {
+		opening = "Please greet the caller briefly now."
+	}
+	if opening != "-" {
+		turnComplete := true
+		if sendErr := session.SendClientContent(genai.LiveSendClientContentParameters{
+			Turns: []*genai.Content{{
+				Role:  "user",
+				Parts: []*genai.Part{{Text: opening}},
+			}},
+			TurnComplete: &turnComplete,
+		}); sendErr != nil {
+			_ = session.Close()
+			return nil, fmt.Errorf("gemini live opening turn: %w", sendErr)
 		}
 	}
 	return &geminiLiveHandle{
