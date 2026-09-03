@@ -23,6 +23,7 @@ const (
 	VoiceSessionExecuteToolUpdate = "gobeyond.agents.voice_session.execute_tool.v1"
 
 	voiceSessionExecuteToolActivityName = "gobeyond.agents.voice_session.execute_tool"
+	maxVoiceSessionToolCalls            = 8
 )
 
 // VoiceSessionInput is the durable voice-call workflow argument.
@@ -42,6 +43,10 @@ type VoiceSessionExecuteToolInput struct {
 	Input      json.RawMessage `json:"input,omitempty"`
 	ActorID    string          `json:"actor_id,omitempty"`
 	ActorKind  string          `json:"actor_kind,omitempty"`
+	NetworkID  string          `json:"network_id,omitempty"`
+	// AllowedToolIDs is derived from the verified voice grant by the API. It is
+	// optional for colocated/internal tests and older direct workflow callers.
+	AllowedToolIDs []string `json:"allowed_tool_ids,omitempty"`
 }
 
 // VoiceSessionExecuteToolResult is returned to Maglev so it can SendToolResponse.
@@ -63,12 +68,28 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 		"execution_id", in.ExecutionID,
 	)
 
+	toolCalls := 0
+	completed := map[string]VoiceSessionExecuteToolResult{}
 	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 			if strings.TrimSpace(req.AgentID) == "" {
 				req.AgentID = in.AgentID
 			}
-			return executeVoiceSessionToolLocal(ctx, req)
+			callID := strings.TrimSpace(req.ToolCallID)
+			if callID != "" {
+				if result, ok := completed[callID]; ok {
+					return result, nil
+				}
+			}
+			if toolCalls >= maxVoiceSessionToolCalls {
+				return VoiceSessionExecuteToolResult{Error: "voice session tool quota exceeded"}, nil
+			}
+			toolCalls++
+			result, err := executeVoiceSessionToolLocal(ctx, req)
+			if err == nil && callID != "" {
+				completed[callID] = result
+			}
+			return result, err
 		}); err != nil {
 		return err
 	}
@@ -121,7 +142,21 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 			return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("invalid tool input: %v", err)}, nil
 		}
 	}
-	actor := agents.Actor{ID: strings.TrimSpace(req.ActorID), Kind: strings.TrimSpace(req.ActorKind)}
+	actorMetadata := map[string]string{}
+	if networkID := strings.TrimSpace(req.NetworkID); networkID != "" {
+		actorMetadata["network_id"] = networkID
+	}
+	actor := agents.Actor{
+		ID:       strings.TrimSpace(req.ActorID),
+		Kind:     strings.TrimSpace(req.ActorKind),
+		Metadata: actorMetadata,
+	}
+	if err := actor.Validate(); err != nil {
+		return VoiceSessionExecuteToolResult{Error: "voice session actor unavailable"}, nil
+	}
+	if len(req.AllowedToolIDs) > 0 && !voiceToolAllowed(req.AllowedToolIDs, toolName) {
+		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("tool %q is not allowed", toolName)}, nil
+	}
 	result, err := tool.Execute(ctx, ai.ToolCall{
 		ToolCallID: strings.TrimSpace(req.ToolCallID),
 		ToolName:   toolName,
@@ -137,6 +172,17 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("encode tool result: %v", err)}, nil
 	}
 	return VoiceSessionExecuteToolResult{Result: raw}, nil
+}
+
+func voiceToolAllowed(ids []string, name string) bool {
+	name = strings.TrimSpace(name)
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == name || (id == "web_search" && name == "web-search") {
+			return true
+		}
+	}
+	return false
 }
 
 func lookupDefinitionTool(definition agents.AIDefinition, name string) (ai.Tool, bool) {

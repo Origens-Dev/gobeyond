@@ -182,6 +182,87 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 	}
 }
 
+func TestGeminiLiveToolDoesNotBlockAudioReceive(t *testing.T) {
+	toolStarted := make(chan struct{})
+	releaseTool := make(chan struct{})
+	tool := agents.DefineTool(agents.ToolConfig{Name: "lookup"}, func(ctx context.Context, _ agents.Actor, _ map[string]any) (map[string]any, error) {
+		close(toolStarted)
+		select {
+		case <-releaseTool:
+			return map[string]any{"ok": true}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+	provider := ai.NewMockProvider()
+	provider.LanguageModels["tool-model"] = ai.NewMockLanguageModel("tool-model")
+	definition := agents.DefineAI(agents.AIConfig{
+		Durable: true, Model: "tool-model", ToolModel: "tool-model", LiveModel: "gemini-live",
+		Provider: provider, Tools: map[string]ai.Tool{"lookup": tool},
+	})
+	fake := newFakeLiveSession(
+		&genai.LiveServerMessage{ToolCall: &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+			ID: "call-async", Name: "lookup", Args: map[string]any{},
+		}}}},
+		&genai.LiveServerMessage{ServerContent: &genai.LiveServerContent{ModelTurn: &genai.Content{Parts: []*genai.Part{{
+			InlineData: &genai.Blob{Data: []byte{0x55}, MIMEType: pcmMIMEType},
+		}}}}},
+	)
+	adapter := &GeminiLiveAdapter{
+		definition: definition,
+		dial: func(context.Context, agents.AIDefinition, string, *genai.LiveConnectConfig) (liveSession, error) {
+			return fake, nil
+		},
+	}
+	pcmIn := make(chan []byte)
+	pcmOut := make(chan voice.AudioFrame, 1)
+	handle, _, err := adapter.Start(context.Background(), voice.StartConfig{
+		AgentID: "operator", SessionID: "session", RunID: "run",
+		Actor: agents.Actor{ID: "line-1", Kind: "line"},
+	}, pcmIn, pcmOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- handle.Run(ctx) }()
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	select {
+	case out := <-pcmOut:
+		if string(out.Data) != string([]byte{0x55}) {
+			t.Fatalf("pcm out=%v", out.Data)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("audio was blocked by tool execution")
+	}
+	close(releaseTool)
+	deadline := time.Now().Add(time.Second)
+	for {
+		fake.mu.Lock()
+		responses := len(fake.responses)
+		fake.mu.Unlock()
+		if responses == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("tool response was not sent")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	_ = fake.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
 func TestGeminiLiveAdapterReportsUsageMetadata(t *testing.T) {
 	provider := ai.NewMockProvider()
 	provider.LanguageModels["tool-model"] = ai.NewMockLanguageModel("tool-model")

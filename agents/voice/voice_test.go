@@ -29,6 +29,38 @@ func TestEncodeFrameRejectsOversizedPayload(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeAudioFrameV3RoundTrip(t *testing.T) {
+	want := voice.AudioFrame{Data: []byte{0x01, 0x02, 0x03}, Flush: true, BarrierID: 42}
+	encoded, err := voice.EncodeAudioFrameV3(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := voice.DecodeAudioFrameV3(bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Data, want.Data) || !got.Flush || got.BarrierID != want.BarrierID {
+		t.Fatalf("frame = %+v, want %+v", got, want)
+	}
+}
+
+func TestEncodeAudioFrameRejectsV3ControlOnV2(t *testing.T) {
+	if _, err := voice.EncodeAudioFrame(voice.AudioFrame{Flush: true, BarrierID: 1}); err == nil {
+		t.Fatal("expected v2 flush barrier error")
+	}
+}
+
+func TestPCMEndpointAcceptsV3Framing(t *testing.T) {
+	spec := voice.PCMEndpointSpec{
+		Transport: voice.TransportUnix,
+		Path:      "/run/gobeyond/host/host-report.sock",
+		Frame:     voice.FrameLengthPrefixedLEV3,
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNormalizeSampleRates(t *testing.T) {
 	cfg := voice.StartConfig{}
 	voice.NormalizeSampleRates(&cfg)

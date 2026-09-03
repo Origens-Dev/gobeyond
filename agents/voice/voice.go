@@ -67,8 +67,15 @@ type StartConfig struct {
 	VoiceName        string
 	Instructions     string
 	Metadata         map[string]string
+	// EnabledToolIDs is the canonical platform capability allowlist. Empty
+	// means use the authored definition's tools for direct/local adapters.
+	EnabledToolIDs   []string
 	PCMInSampleRate  int
 	PCMOutSampleRate int
+	// OnPlayoutBarrier is called before a tool result is released back to a
+	// realtime provider. Hosted media bridges use it to flush and drain queued
+	// telephone audio; local adapters may leave it nil.
+	OnPlayoutBarrier func(context.Context, uint64) error
 	// OnUsage, when set, is invoked for each Live UsageMetadata the adapter
 	// observes. The callback must not block the audio path for long.
 	OnUsage func(Usage)
@@ -92,6 +99,11 @@ type AudioFrame struct {
 	Data         []byte
 	Interrupted  bool
 	TurnComplete bool
+	// Flush is a non-semantic control marker used by hosted media bridges.
+	// BarrierID identifies the provider response whose telephone playout must
+	// drain before its continuation is released.
+	Flush     bool
+	BarrierID uint64
 }
 
 // Adapter opens a Live voice session bound to PCM channels.

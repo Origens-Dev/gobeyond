@@ -45,6 +45,7 @@ func TestVoiceSessionExecuteToolActivityRunsTool(t *testing.T) {
 	input, _ := json.Marshal(map[string]any{"q": "hello"})
 	out, err := VoiceSessionExecuteToolActivity(context.Background(), VoiceSessionExecuteToolInput{
 		AgentID: "call-operator", ToolName: "lookup", ToolCallID: "call_1", Input: input,
+		NetworkID: "network-1", ActorID: "line-1", ActorKind: "line",
 	})
 	if err != nil {
 		t.Fatal(err)

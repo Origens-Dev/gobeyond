@@ -33,10 +33,29 @@ type ToolConfig struct {
 
 type ToolHandler[Input any, Output any] func(context.Context, Actor, Input) (Output, error)
 
+// ToolCallHandler is the call-aware form of ToolHandler. The call metadata is
+// supplied by the provider and is preserved across hosted/durable tool
+// dispatch. Existing tools should continue to use ToolHandler unless they
+// need to correlate work with a provider tool-call ID.
+type ToolCallHandler[Input any, Output any] func(context.Context, Actor, ai.ToolCall, Input) (Output, error)
+
 // DefineTool adapts a typed, actor-aware application function to the Go AI SDK
 // tool contract. Model input is schema-validated by go-ai before this decoder
 // runs; the authenticated actor comes from framework-owned runtime context.
 func DefineTool[Input any, Output any](config ToolConfig, handler ToolHandler[Input, Output]) AITool {
+	return DefineToolWithCall(config, func(ctx context.Context, actor Actor, _ ai.ToolCall, input Input) (Output, error) {
+		if handler == nil {
+			var zero Output
+			return zero, errors.New("agent tool handler is required")
+		}
+		return handler(ctx, actor, input)
+	})
+}
+
+// DefineToolWithCall adapts a typed, actor-aware application function while
+// retaining the provider's complete ToolCall, including ToolCallID. It is
+// additive so existing authored tools keep the original handler signature.
+func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCallHandler[Input, Output]) AITool {
 	metadata := ai.ProviderMetadata(nil)
 	if config.TaskQueue != "" {
 		metadata = ai.ProviderMetadata{
@@ -64,7 +83,7 @@ func DefineTool[Input any, Output any](config ToolConfig, handler ToolHandler[In
 			if err := json.Unmarshal(data, &input); err != nil {
 				return nil, fmt.Errorf("decode agent tool input: %w", err)
 			}
-			return handler(ctx, actor, input)
+			return handler(ctx, actor, call, input)
 		},
 	}
 }

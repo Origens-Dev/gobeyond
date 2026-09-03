@@ -20,6 +20,8 @@ const (
 	FrameLengthPrefixedLE = "length-prefixed-le"
 	// FrameLengthPrefixedLEV2 carries AudioFrame control flags.
 	FrameLengthPrefixedLEV2 = "length-prefixed-le-v2"
+	// FrameLengthPrefixedLEV3 adds an explicit playout flush barrier.
+	FrameLengthPrefixedLEV3 = "length-prefixed-le-v3"
 	// DefaultAuthHeader is the HTTP header carrying the session token on PCM.
 	DefaultAuthHeader = "Authorization"
 )
@@ -37,8 +39,12 @@ type HostedStartRequest struct {
 	Instructions     string            `json:"instructions,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
 	Actor            ActorDTO          `json:"actor"`
-	PCMInSampleRate  int               `json:"pcm_in_sample_rate,omitempty"`
-	PCMOutSampleRate int               `json:"pcm_out_sample_rate,omitempty"`
+	// EnabledToolIDs is a canonical allowlist; hosts map IDs to fixed schemas.
+	EnabledToolIDs []string `json:"enabled_tool_ids,omitempty"`
+	// PCMProtocolVersion 3 enables explicit telephone playout barriers.
+	PCMProtocolVersion int `json:"pcm_protocol_version,omitempty"`
+	PCMInSampleRate    int `json:"pcm_in_sample_rate,omitempty"`
+	PCMOutSampleRate   int `json:"pcm_out_sample_rate,omitempty"`
 }
 
 // ActorDTO is the JSON projection of agents.Actor for hosted voice start.
@@ -114,7 +120,7 @@ func (spec PCMEndpointSpec) Validate() error {
 		return fmt.Errorf("unsupported PCM transport %q", spec.Transport)
 	}
 	switch strings.ToLower(strings.TrimSpace(spec.Frame)) {
-	case FrameLengthPrefixedLE, FrameLengthPrefixedLEV2, "":
+	case FrameLengthPrefixedLE, FrameLengthPrefixedLEV2, FrameLengthPrefixedLEV3, "":
 	default:
 		return fmt.Errorf("unsupported PCM frame %q", spec.Frame)
 	}
@@ -124,9 +130,13 @@ func (spec PCMEndpointSpec) Validate() error {
 	return nil
 }
 
-// EncodeAudioFrame encodes one output frame. The first payload byte is flags:
-// bit 0 is interruption and bit 1 is turn completion.
+// EncodeAudioFrame encodes one v2 output frame. The first payload byte is
+// flags: bit 0 is interruption and bit 1 is turn completion. v3-only Flush
+// frames must use EncodeAudioFrameV3.
 func EncodeAudioFrame(frame AudioFrame) ([]byte, error) {
+	if frame.Flush || frame.BarrierID != 0 {
+		return nil, fmt.Errorf("flush barriers require v3 voice framing")
+	}
 	if len(frame.Data)+1 > MaxFrameBytes {
 		return nil, fmt.Errorf("voice audio frame exceeds MaxFrameBytes")
 	}
@@ -140,6 +150,38 @@ func EncodeAudioFrame(frame AudioFrame) ([]byte, error) {
 	payload := make([]byte, 1+len(frame.Data))
 	payload[0] = flags
 	copy(payload[1:], frame.Data)
+	out := make([]byte, 4+len(payload))
+	binary.LittleEndian.PutUint32(out[:4], uint32(len(payload)))
+	copy(out[4:], payload)
+	return out, nil
+}
+
+// EncodeAudioFrameV3 encodes one output frame. v3 adds bit 2 (Flush) and an
+// eight-byte little-endian BarrierID after the flags byte for Flush frames.
+func EncodeAudioFrameV3(frame AudioFrame) ([]byte, error) {
+	extra := 0
+	if frame.Flush {
+		extra = 8
+	}
+	if len(frame.Data)+1+extra > MaxFrameBytes {
+		return nil, fmt.Errorf("voice audio frame exceeds MaxFrameBytes")
+	}
+	flags := byte(0)
+	if frame.Interrupted {
+		flags |= 1
+	}
+	if frame.TurnComplete {
+		flags |= 2
+	}
+	if frame.Flush {
+		flags |= 4
+	}
+	payload := make([]byte, 1+extra+len(frame.Data))
+	payload[0] = flags
+	if frame.Flush {
+		binary.LittleEndian.PutUint64(payload[1:9], frame.BarrierID)
+	}
+	copy(payload[1+extra:], frame.Data)
 	out := make([]byte, 4+len(payload))
 	binary.LittleEndian.PutUint32(out[:4], uint32(len(payload)))
 	copy(out[4:], payload)
@@ -165,6 +207,37 @@ func DecodeAudioFrame(r io.Reader) (AudioFrame, error) {
 		TurnComplete: payload[0]&2 != 0,
 		Data:         append([]byte(nil), payload[1:]...),
 	}, nil
+}
+
+// DecodeAudioFrameV3 reads one v3 output frame.
+func DecodeAudioFrameV3(r io.Reader) (AudioFrame, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return AudioFrame{}, err
+	}
+	n := binary.LittleEndian.Uint32(header[:])
+	if n < 1 || n > MaxFrameBytes {
+		return AudioFrame{}, fmt.Errorf("voice audio frame length %d is invalid", n)
+	}
+	payload := make([]byte, n)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return AudioFrame{}, err
+	}
+	frame := AudioFrame{
+		Interrupted:  payload[0]&1 != 0,
+		TurnComplete: payload[0]&2 != 0,
+		Flush:        payload[0]&4 != 0,
+	}
+	dataOffset := 1
+	if frame.Flush {
+		if len(payload) < 9 {
+			return AudioFrame{}, fmt.Errorf("voice flush frame is missing barrier id")
+		}
+		frame.BarrierID = binary.LittleEndian.Uint64(payload[1:9])
+		dataOffset = 9
+	}
+	frame.Data = append([]byte(nil), payload[dataOffset:]...)
+	return frame, nil
 }
 
 // RedactToken returns a log-safe preview. Never log the full session_token
