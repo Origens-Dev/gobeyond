@@ -62,21 +62,9 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 	if voiceName == "" {
 		voiceName = "eve"
 	}
-	toolDeclarations := make([]map[string]any, 0, len(h.tools))
-	for key, tool := range h.tools {
-		name := strings.TrimSpace(tool.Name)
-		if name == "" {
-			name = key
-		}
-		parameters, _ := tool.InputSchema.(map[string]any)
-		toolDeclarations = append(toolDeclarations, map[string]any{
-			"type": "function", "name": name, "description": tool.Description,
-			"parameters": parameters,
-		})
-	}
 	if err := h.writeJSON(map[string]any{"type": "session.update", "session": map[string]any{
 		"voice": voiceName, "instructions": instructions, "turn_detection": map[string]any{"type": "server_vad"},
-		"tools": toolDeclarations,
+		"tools": grokSessionTools(h.tools),
 		"audio": map[string]any{
 			"input":  map[string]any{"format": map[string]any{"type": "audio/pcmu", "rate": 8000}, "transport": "json"},
 			"output": map[string]any{"format": map[string]any{"type": "audio/pcmu", "rate": 8000}, "transport": "json"},
@@ -89,6 +77,38 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 		InputFormat:  voice.AudioFormat{Encoding: voice.EncodingPCMU, SampleRate: 8000, Channels: 1},
 		OutputFormat: voice.AudioFormat{Encoding: voice.EncodingPCMU, SampleRate: 8000, Channels: 1},
 	}, nil
+}
+
+// grokSessionTools maps the provider-neutral voice tool allowlist to Grok's
+// session tools. web_search is a server-side xAI tool, so it must be declared
+// as {"type":"web_search"}; it is not a client-side function and must not be
+// routed through the hosted Google grounding callback. Other authored tools
+// remain client-side functions and are completed by completeFunctionCalls.
+func grokSessionTools(tools map[string]ai.Tool) []map[string]any {
+	if len(tools) == 0 {
+		return nil
+	}
+	nativeWebSearch := false
+	functions := make([]map[string]any, 0, len(tools))
+	for key, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			name = key
+		}
+		if isWebSearchTool(name) {
+			nativeWebSearch = true
+			continue
+		}
+		parameters, _ := tool.InputSchema.(map[string]any)
+		functions = append(functions, map[string]any{
+			"type": "function", "name": name, "description": tool.Description,
+			"parameters": parameters,
+		})
+	}
+	if nativeWebSearch {
+		return append([]map[string]any{{"type": "web_search"}}, functions...)
+	}
+	return functions
 }
 
 type grokLiveHandle struct {
