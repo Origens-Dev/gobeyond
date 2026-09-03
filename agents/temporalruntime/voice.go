@@ -48,12 +48,12 @@ func NewGeminiLiveAdapter(definition agents.AIDefinition) *GeminiLiveAdapter {
 }
 
 // Start opens a Live session and returns a handle that pumps PCM and tools.
-func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, pcmIn <-chan []byte, pcmOut chan<- []byte) (voice.SessionHandle, error) {
+func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, pcmIn <-chan []byte, pcmOut chan<- voice.AudioFrame) (voice.SessionHandle, voice.StartResult, error) {
 	if adapter == nil {
-		return nil, errors.New("gemini live adapter is required")
+		return nil, voice.StartResult{}, errors.New("gemini live adapter is required")
 	}
 	if err := cfg.Actor.Validate(); err != nil {
-		return nil, err
+		return nil, voice.StartResult{}, err
 	}
 	voice.NormalizeSampleRates(&cfg)
 	cfg.Instructions = agents.ResolveInstructions(cfg.Instructions, cfg.Metadata)
@@ -67,7 +67,7 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 
 	model := strings.TrimSpace(adapter.definition.AI.LiveModel)
 	if model == "" {
-		return nil, errors.New("AI agent LiveModel is required for voice")
+		return nil, voice.StartResult{}, errors.New("AI agent LiveModel is required for voice")
 	}
 	connectCfg := &genai.LiveConnectConfig{
 		ResponseModalities: []genai.Modality{genai.ModalityAudio},
@@ -109,7 +109,7 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 			}
 		}
 		if err != nil {
-			return nil, fmt.Errorf("gemini live connect: %w", err)
+			return nil, voice.StartResult{}, fmt.Errorf("gemini live connect: %w", err)
 		}
 	}
 	// Kick an opening model turn so duplex/smoke gets downlink without
@@ -124,18 +124,21 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	if opening != "-" {
 		if sendErr := session.SendRealtimeInput(genai.LiveRealtimeInput{Text: opening}); sendErr != nil {
 			_ = session.Close()
-			return nil, fmt.Errorf("gemini live opening turn: %w", sendErr)
+			return nil, voice.StartResult{}, fmt.Errorf("gemini live opening turn: %w", sendErr)
 		}
 	}
 	return &geminiLiveHandle{
-		cfg:     cfg,
-		session: session,
-		tools:   adapter.definition.AI.Tools,
-		model:   connectedModel,
-		backend: liveUsageBackend(adapter.definition.AI.Inference),
-		pcmIn:   pcmIn,
-		pcmOut:  pcmOut,
-	}, nil
+			cfg:     cfg,
+			session: session,
+			tools:   adapter.definition.AI.Tools,
+			model:   connectedModel,
+			backend: liveUsageBackend(adapter.definition.AI.Inference),
+			pcmIn:   pcmIn,
+			pcmOut:  pcmOut,
+		}, voice.StartResult{
+			InputFormat:  voice.AudioFormat{Encoding: voice.EncodingPCM16LE, SampleRate: voice.DefaultPCMInSampleRate, Channels: 1},
+			OutputFormat: voice.AudioFormat{Encoding: voice.EncodingPCM16LE, SampleRate: voice.DefaultPCMOutSampleRate, Channels: 1},
+		}, nil
 }
 
 type geminiLiveHandle struct {
@@ -145,7 +148,7 @@ type geminiLiveHandle struct {
 	model   string
 	backend string
 	pcmIn   <-chan []byte
-	pcmOut  chan<- []byte
+	pcmOut  chan<- voice.AudioFrame
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -257,6 +260,16 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 			continue
 		}
 		handle.reportUsage(message.UsageMetadata)
+		if message.ServerContent != nil && message.ServerContent.Interrupted {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case handle.pcmOut <- voice.AudioFrame{Interrupted: true}:
+			}
+			// Interruption wins over co-present model content. Do not allow
+			// stale audio from the interrupted turn into the playout queue.
+			continue
+		}
 		if message.ToolCall != nil {
 			if err := handle.dispatchToolCall(ctx, message.ToolCall); err != nil {
 				return err
@@ -273,7 +286,14 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case handle.pcmOut <- append([]byte(nil), part.InlineData.Data...):
+			case handle.pcmOut <- voice.AudioFrame{Data: append([]byte(nil), part.InlineData.Data...)}:
+			}
+		}
+		if message.ServerContent.TurnComplete || message.ServerContent.GenerationComplete {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case handle.pcmOut <- voice.AudioFrame{TurnComplete: true}:
 			}
 		}
 	}

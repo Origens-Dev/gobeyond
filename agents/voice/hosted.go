@@ -1,7 +1,9 @@
 package voice
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 )
@@ -16,6 +18,8 @@ const (
 	TransportUnix = "unix"
 	// FrameLengthPrefixedLE matches EncodeFrame / DecodeFrame.
 	FrameLengthPrefixedLE = "length-prefixed-le"
+	// FrameLengthPrefixedLEV2 carries AudioFrame control flags.
+	FrameLengthPrefixedLEV2 = "length-prefixed-le-v2"
 	// DefaultAuthHeader is the HTTP header carrying the session token on PCM.
 	DefaultAuthHeader = "Authorization"
 )
@@ -59,10 +63,12 @@ type HostedStartResponse struct {
 //
 //	{"transport":"unix","path":"/run/gobeyond/host/host-report.sock","auth_header":"Authorization","frame":"length-prefixed-le"}
 type PCMEndpointSpec struct {
-	Transport  string `json:"transport"`
-	Path       string `json:"path"`
-	AuthHeader string `json:"auth_header"`
-	Frame      string `json:"frame"`
+	Transport    string      `json:"transport"`
+	Path         string      `json:"path"`
+	AuthHeader   string      `json:"auth_header"`
+	Frame        string      `json:"frame"`
+	InputFormat  AudioFormat `json:"input_format,omitempty"`
+	OutputFormat AudioFormat `json:"output_format,omitempty"`
 	// PCMPath overrides the default /v1/agents/voice/pcm/{token} when set.
 	PCMPath string `json:"pcm_path,omitempty"`
 }
@@ -108,7 +114,7 @@ func (spec PCMEndpointSpec) Validate() error {
 		return fmt.Errorf("unsupported PCM transport %q", spec.Transport)
 	}
 	switch strings.ToLower(strings.TrimSpace(spec.Frame)) {
-	case FrameLengthPrefixedLE, "":
+	case FrameLengthPrefixedLE, FrameLengthPrefixedLEV2, "":
 	default:
 		return fmt.Errorf("unsupported PCM frame %q", spec.Frame)
 	}
@@ -116,6 +122,49 @@ func (spec PCMEndpointSpec) Validate() error {
 		return fmt.Errorf("PCM endpoint path is required")
 	}
 	return nil
+}
+
+// EncodeAudioFrame encodes one output frame. The first payload byte is flags:
+// bit 0 is interruption and bit 1 is turn completion.
+func EncodeAudioFrame(frame AudioFrame) ([]byte, error) {
+	if len(frame.Data)+1 > MaxFrameBytes {
+		return nil, fmt.Errorf("voice audio frame exceeds MaxFrameBytes")
+	}
+	flags := byte(0)
+	if frame.Interrupted {
+		flags |= 1
+	}
+	if frame.TurnComplete {
+		flags |= 2
+	}
+	payload := make([]byte, 1+len(frame.Data))
+	payload[0] = flags
+	copy(payload[1:], frame.Data)
+	out := make([]byte, 4+len(payload))
+	binary.LittleEndian.PutUint32(out[:4], uint32(len(payload)))
+	copy(out[4:], payload)
+	return out, nil
+}
+
+// DecodeAudioFrame reads one v2 output frame.
+func DecodeAudioFrame(r io.Reader) (AudioFrame, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return AudioFrame{}, err
+	}
+	n := binary.LittleEndian.Uint32(header[:])
+	if n < 1 || n > MaxFrameBytes {
+		return AudioFrame{}, fmt.Errorf("voice audio frame length %d is invalid", n)
+	}
+	payload := make([]byte, n)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return AudioFrame{}, err
+	}
+	return AudioFrame{
+		Interrupted:  payload[0]&1 != 0,
+		TurnComplete: payload[0]&2 != 0,
+		Data:         append([]byte(nil), payload[1:]...),
+	}, nil
 }
 
 // RedactToken returns a log-safe preview. Never log the full session_token

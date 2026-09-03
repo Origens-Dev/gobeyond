@@ -109,7 +109,8 @@ func (client *HostedVoiceClient) OpenPCM(ctx context.Context, sessionToken strin
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(spec.Frame), voice.FrameLengthPrefixedLE) {
+	frame := strings.ToLower(strings.TrimSpace(spec.Frame))
+	if frame != voice.FrameLengthPrefixedLE && frame != voice.FrameLengthPrefixedLEV2 {
 		return nil, fmt.Errorf("hosted voice PCM frame %q is not supported", spec.Frame)
 	}
 
@@ -142,6 +143,7 @@ func (client *HostedVoiceClient) OpenPCM(ctx context.Context, sessionToken strin
 		pipeWriter: pw,
 		started:    started,
 		httpClient: httpClient,
+		frame:      frame,
 	}, nil
 }
 
@@ -178,6 +180,7 @@ type HostedPCMStream struct {
 	body       io.ReadCloser
 	started    <-chan pcmOpenResult
 	httpClient *http.Client
+	frame      string
 
 	mu     sync.Mutex
 	closed bool
@@ -200,17 +203,31 @@ func (stream *HostedPCMStream) WritePCM(pcm []byte) error {
 
 // ReadPCM reads one downlink PCM payload.
 func (stream *HostedPCMStream) ReadPCM() ([]byte, error) {
-	if err := stream.ensureResponse(); err != nil {
+	frame, err := stream.ReadAudioFrame()
+	if err != nil {
 		return nil, err
+	}
+	return frame.Data, nil
+}
+
+// ReadAudioFrame reads one downlink audio frame, including interruption and
+// turn-completion control markers when the endpoint uses v2 framing.
+func (stream *HostedPCMStream) ReadAudioFrame() (voice.AudioFrame, error) {
+	if err := stream.ensureResponse(); err != nil {
+		return voice.AudioFrame{}, err
 	}
 	stream.mu.Lock()
 	body := stream.body
 	closed := stream.closed
 	stream.mu.Unlock()
 	if closed || body == nil {
-		return nil, errors.New("hosted voice PCM stream is closed")
+		return voice.AudioFrame{}, errors.New("hosted voice PCM stream is closed")
 	}
-	return voice.DecodeFrame(body)
+	if stream.frame == voice.FrameLengthPrefixedLEV2 {
+		return voice.DecodeAudioFrame(body)
+	}
+	data, err := voice.DecodeFrame(body)
+	return voice.AudioFrame{Data: data}, err
 }
 
 func (stream *HostedPCMStream) ensureResponse() error {

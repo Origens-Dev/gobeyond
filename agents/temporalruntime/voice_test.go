@@ -109,9 +109,9 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 	}
 
 	pcmIn := make(chan []byte, 1)
-	pcmOut := make(chan []byte, 1)
+	pcmOut := make(chan voice.AudioFrame, 1)
 
-	handle, err := adapter.Start(context.Background(), voice.StartConfig{
+	handle, _, err := adapter.Start(context.Background(), voice.StartConfig{
 		AgentID: "operator", SessionID: "sess", RunID: "run",
 		Actor:    agents.Actor{ID: "user-1", Kind: "user", Metadata: map[string]string{"network_id": "net-1"}},
 		Metadata: map[string]string{"instructions": "Overlay.", "voice_name": "Puck"},
@@ -130,7 +130,13 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		fake.mu.Lock()
-		gotInput := len(fake.inputs) == 1
+		gotInput := false
+		for _, input := range fake.inputs {
+			if input.Audio != nil {
+				gotInput = true
+				break
+			}
+		}
 		fake.mu.Unlock()
 		if gotInput {
 			break
@@ -143,8 +149,8 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 
 	select {
 	case out := <-pcmOut:
-		if string(out) != string([]byte{0x10, 0x20}) {
-			t.Fatalf("pcm out = %v", out)
+		if string(out.Data) != string([]byte{0x10, 0x20}) {
+			t.Fatalf("pcm out = %v", out.Data)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for pcm out")
@@ -199,9 +205,9 @@ func TestGeminiLiveAdapterReportsUsageMetadata(t *testing.T) {
 		},
 	}
 	pcmIn := make(chan []byte)
-	pcmOut := make(chan []byte)
+	pcmOut := make(chan voice.AudioFrame)
 	got := make(chan voice.Usage, 1)
-	handle, err := adapter.Start(context.Background(), voice.StartConfig{
+	handle, _, err := adapter.Start(context.Background(), voice.StartConfig{
 		AgentID: "call-operator", SessionID: "vs_sess", RunID: "vx_exec",
 		Actor:   agents.Actor{ID: "user-1", Kind: "user"},
 		OnUsage: func(u voice.Usage) { got <- u },
