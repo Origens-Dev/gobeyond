@@ -1,13 +1,29 @@
 package temporalruntime
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
+	"github.com/Origens-Dev/go-ai/packages/ai"
+	"github.com/Origens-Dev/gobeyond/agents"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
 
-const VoiceSessionWorkflowName = "gobeyond.agents.voice_session.v1"
+const (
+	VoiceSessionWorkflowName = "gobeyond.agents.voice_session.v1"
+
+	// VoiceSessionExecuteToolUpdate is the Maglev/API → workflow Update that
+	// runs a Live tool as a LocalActivity on the agent worker (P2 remote path
+	// and P3 colocated LocalActivity tools).
+	VoiceSessionExecuteToolUpdate = "gobeyond.agents.voice_session.execute_tool.v1"
+
+	voiceSessionExecuteToolActivityName = "gobeyond.agents.voice_session.execute_tool"
+)
 
 // VoiceSessionInput is the durable voice-call workflow argument.
 type VoiceSessionInput struct {
@@ -17,9 +33,27 @@ type VoiceSessionInput struct {
 	ExecutionID string `json:"execution_id"`
 }
 
-// VoiceSessionWorkflow is the P0 lifecycle workflow for an AI phone/softphone
-// call. Media stays on Maglev; this workflow exists so Origens Agents SoR can
-// track the run. Later phases add LocalActivity tool Updates.
+// VoiceSessionExecuteToolInput is the Update / LocalActivity payload for one
+// Gemini Live function call.
+type VoiceSessionExecuteToolInput struct {
+	AgentID    string          `json:"agent_id"`
+	ToolName   string          `json:"tool_name"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Input      json.RawMessage `json:"input,omitempty"`
+	ActorID    string          `json:"actor_id,omitempty"`
+	ActorKind  string          `json:"actor_kind,omitempty"`
+}
+
+// VoiceSessionExecuteToolResult is returned to Maglev so it can SendToolResponse.
+type VoiceSessionExecuteToolResult struct {
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}
+
+// VoiceSessionWorkflow is the lifecycle workflow for an AI phone/softphone
+// call. Media may stay on Maglev (P0–P2) or colocate on the realtime
+// RoleWorker (P3); this workflow is the Origens Agents SoR handle and the
+// LocalActivity home for Live tool Updates.
 func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("voice session started",
@@ -28,6 +62,17 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 		"session_id", in.SessionID,
 		"execution_id", in.ExecutionID,
 	)
+
+	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
+		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+			if strings.TrimSpace(req.AgentID) == "" {
+				req.AgentID = in.AgentID
+			}
+			return executeVoiceSessionToolLocal(ctx, req)
+		}); err != nil {
+		return err
+	}
+
 	// Block until cancel/terminate from Maglev hangup (or a future complete signal).
 	// 30m matches Maglev Live session token TTL.
 	_ = workflow.Sleep(ctx, 30*time.Minute)
@@ -35,10 +80,85 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	return nil
 }
 
-// RegisterVoiceSessionWorkflow registers the platform voice-session workflow.
+func executeVoiceSessionToolLocal(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+	var out VoiceSessionExecuteToolResult
+	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+	})
+	err := workflow.ExecuteLocalActivity(laCtx, voiceSessionExecuteToolActivityName, req).Get(ctx, &out)
+	if err != nil {
+		return VoiceSessionExecuteToolResult{Error: err.Error()}, nil
+	}
+	return out, nil
+}
+
+// VoiceSessionExecuteToolActivity resolves the agent tool from ProcessVoiceRegistry
+// and runs it in-process on the realtime worker (LocalActivity). Maglev cannot
+// hold customer tools; the agent worker can.
+func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+	_ = ctx
+	agentID := strings.TrimSpace(req.AgentID)
+	toolName := strings.TrimSpace(req.ToolName)
+	if agentID == "" || toolName == "" {
+		return VoiceSessionExecuteToolResult{Error: "agent_id and tool_name required"}, nil
+	}
+	reg := ProcessVoiceRegistry()
+	if reg == nil {
+		return VoiceSessionExecuteToolResult{Error: "voice registry unavailable (not colocated)"}, nil
+	}
+	definition, ok := reg.Definition(agentID)
+	if !ok {
+		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("agent %q has no voice definition", agentID)}, nil
+	}
+	tool, ok := lookupDefinitionTool(definition, toolName)
+	if !ok || tool.Execute == nil {
+		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("unknown tool %q", toolName)}, nil
+	}
+
+	var args map[string]any
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &args); err != nil {
+			return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("invalid tool input: %v", err)}, nil
+		}
+	}
+	actor := agents.Actor{ID: strings.TrimSpace(req.ActorID), Kind: strings.TrimSpace(req.ActorKind)}
+	result, err := tool.Execute(ctx, ai.ToolCall{
+		ToolCallID: strings.TrimSpace(req.ToolCallID),
+		ToolName:   toolName,
+		Input:      args,
+	}, ai.ToolExecutionOptions{
+		Context: map[string]any{"gobeyondActor": actor},
+	})
+	if err != nil {
+		return VoiceSessionExecuteToolResult{Error: err.Error()}, nil
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("encode tool result: %v", err)}, nil
+	}
+	return VoiceSessionExecuteToolResult{Result: raw}, nil
+}
+
+func lookupDefinitionTool(definition agents.AIDefinition, name string) (ai.Tool, bool) {
+	if tool, ok := definition.AI.Tools[name]; ok {
+		return tool, true
+	}
+	for key, tool := range definition.AI.Tools {
+		if strings.TrimSpace(tool.Name) == name || key == name {
+			return tool, true
+		}
+	}
+	return ai.Tool{}, false
+}
+
+// RegisterVoiceSessionWorkflow registers the platform voice-session workflow
+// and its LocalActivity tool executor.
 func RegisterVoiceSessionWorkflow(w worker.Registry) {
 	if w == nil {
 		return
 	}
 	w.RegisterWorkflowWithOptions(VoiceSessionWorkflow, workflow.RegisterOptions{Name: VoiceSessionWorkflowName})
+	w.RegisterActivityWithOptions(VoiceSessionExecuteToolActivity, activity.RegisterOptions{
+		Name: voiceSessionExecuteToolActivityName,
+	})
 }
