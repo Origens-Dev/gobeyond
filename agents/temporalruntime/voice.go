@@ -131,7 +131,9 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	return &geminiLiveHandle{
 			cfg:     cfg,
 			session: session,
-			tools:   voiceToolsFromDefinition(adapter.definition, cfg.EnabledToolIDs),
+			// Native Google Search is a server-side Live tool. Only authored
+			// function tools are dispatched back to the host.
+			tools:   clientToolsFromDefinition(adapter.definition, cfg.EnabledToolIDs),
 			model:   connectedModel,
 			backend: liveUsageBackend(adapter.definition.AI.Inference),
 			pcmIn:   pcmIn,
@@ -453,10 +455,15 @@ func liveToolsFromDefinition(definition agents.AIDefinition, enabled []string) [
 		return nil
 	}
 	declarations := make([]*genai.FunctionDeclaration, 0, len(tools))
+	nativeGoogleSearch := false
 	for key, tool := range tools {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
 			name = key
+		}
+		if isWebSearchTool(name) {
+			nativeGoogleSearch = true
+			continue
 		}
 		decl := &genai.FunctionDeclaration{
 			Name: name, Description: tool.Description,
@@ -466,10 +473,42 @@ func liveToolsFromDefinition(definition agents.AIDefinition, enabled []string) [
 		}
 		declarations = append(declarations, decl)
 	}
-	if len(declarations) == 0 {
+	if !nativeGoogleSearch && len(declarations) == 0 {
 		return nil
 	}
-	return []*genai.Tool{{FunctionDeclarations: declarations}}
+	result := make([]*genai.Tool, 0, 2)
+	if nativeGoogleSearch {
+		result = append(result, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
+	}
+	if len(declarations) > 0 {
+		result = append(result, &genai.Tool{FunctionDeclarations: declarations})
+	}
+	return result
+}
+
+// clientToolsFromDefinition returns authored callback tools for Gemini's
+// client-side dispatcher. Native web search is a server tool and must not be
+// registered as a callback.
+func clientToolsFromDefinition(definition agents.AIDefinition, enabled []string) map[string]ai.Tool {
+	tools := voiceToolsFromDefinition(definition, enabled)
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make(map[string]ai.Tool, len(tools))
+	for key, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			name = key
+		}
+		if isWebSearchTool(name) {
+			continue
+		}
+		out[key] = tool
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) map[string]ai.Tool {
