@@ -57,7 +57,7 @@ type VoiceSessionExecuteToolResult struct {
 
 // VoiceSessionWorkflow is the lifecycle workflow for an AI phone/softphone
 // call. Media may stay on Maglev (P0–P2) or colocate on the realtime
-// RoleWorker (P3); this workflow is the Origens Agents SoR handle and the
+// RoleWorker (P3); this workflow is the hosted Agents SoR handle and the
 // LocalActivity home for Live tool Updates.
 func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	logger := workflow.GetLogger(ctx)
