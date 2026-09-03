@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -90,6 +91,7 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	if dial == nil {
 		dial = dialGenaiLive
 	}
+	connectedModel := model
 	session, err := dial(ctx, adapter.definition, model, connectCfg)
 	if err != nil {
 		fallback := strings.TrimSpace(os.Getenv("GOBEYOND_LIVE_MODEL_FALLBACK"))
@@ -102,6 +104,9 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 		}
 		if fallback != model {
 			session, err = dial(ctx, adapter.definition, fallback, connectCfg)
+			if err == nil {
+				connectedModel = fallback
+			}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("gemini live connect: %w", err)
@@ -126,6 +131,8 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 		cfg:     cfg,
 		session: session,
 		tools:   adapter.definition.AI.Tools,
+		model:   connectedModel,
+		backend: liveUsageBackend(adapter.definition.AI.Inference),
 		pcmIn:   pcmIn,
 		pcmOut:  pcmOut,
 	}, nil
@@ -135,11 +142,14 @@ type geminiLiveHandle struct {
 	cfg     voice.StartConfig
 	session liveSession
 	tools   map[string]ai.Tool
+	model   string
+	backend string
 	pcmIn   <-chan []byte
 	pcmOut  chan<- []byte
 
 	closeOnce sync.Once
 	closed    chan struct{}
+	usageSeq  atomic.Uint64
 }
 
 func (handle *geminiLiveHandle) Run(ctx context.Context) error {
@@ -246,6 +256,7 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 		if message == nil {
 			continue
 		}
+		handle.reportUsage(message.UsageMetadata)
 		if message.ToolCall != nil {
 			if err := handle.dispatchToolCall(ctx, message.ToolCall); err != nil {
 				return err
@@ -317,6 +328,38 @@ func (handle *geminiLiveHandle) lookupTool(name string) (ai.Tool, bool) {
 	return ai.Tool{}, false
 }
 
+func (handle *geminiLiveHandle) reportUsage(meta *genai.UsageMetadata) {
+	if handle == nil || handle.cfg.OnUsage == nil || meta == nil {
+		return
+	}
+	prompt := int64(meta.PromptTokenCount) + int64(meta.ToolUsePromptTokenCount)
+	completion := int64(meta.ResponseTokenCount) + int64(meta.ThoughtsTokenCount)
+	total := int64(meta.TotalTokenCount)
+	if prompt == 0 && completion == 0 && total == 0 {
+		return
+	}
+	if prompt == 0 && completion == 0 && total > 0 {
+		prompt = total
+	}
+	handle.usageSeq.Add(1)
+	handle.cfg.OnUsage(voice.Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      total,
+		Model:            handle.model,
+		Backend:          handle.backend,
+	})
+}
+
+func liveUsageBackend(inference string) string {
+	switch strings.ToLower(strings.TrimSpace(inference)) {
+	case "google":
+		return "google"
+	default:
+		return "vertex"
+	}
+}
+
 func liveToolsFromDefinition(definition agents.AIDefinition) []*genai.Tool {
 	if len(definition.AI.Tools) == 0 {
 		return nil
@@ -369,9 +412,9 @@ func genaiClientConfig(inference string) (*genai.ClientConfig, error) {
 			return nil, errors.New("vertex Live requires GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION (or GOOGLE_CLOUD_REGION)")
 		}
 		return &genai.ClientConfig{
-			Backend:  genai.BackendVertexAI,
-			Project:  project,
-			Location: location,
+			Backend:     genai.BackendVertexAI,
+			Project:     project,
+			Location:    location,
 			HTTPOptions: genai.HTTPOptions{APIVersion: "v1beta1"},
 		}, nil
 	case "google":
@@ -380,8 +423,8 @@ func genaiClientConfig(inference string) (*genai.ClientConfig, error) {
 			return nil, errors.New("google Live requires GOOGLE_API_KEY, GEMINI_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY")
 		}
 		return &genai.ClientConfig{
-			Backend: genai.BackendGeminiAPI,
-			APIKey:  apiKey,
+			Backend:     genai.BackendGeminiAPI,
+			APIKey:      apiKey,
 			HTTPOptions: genai.HTTPOptions{APIVersion: "v1alpha"},
 		}, nil
 	default:
