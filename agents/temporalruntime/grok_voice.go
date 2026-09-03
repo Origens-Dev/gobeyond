@@ -62,28 +62,58 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 	if voiceName == "" {
 		voiceName = "eve"
 	}
+	inputFormat := grokAudioFormat(cfg.AudioPreferences.InputFormats)
+	outputFormat := grokAudioFormat(cfg.AudioPreferences.OutputFormats)
 	if err := h.writeJSON(map[string]any{"type": "session.update", "session": map[string]any{
 		"voice": voiceName, "instructions": instructions, "turn_detection": map[string]any{"type": "server_vad"},
 		"tools": grokSessionTools(h.tools),
 		"audio": map[string]any{
-			"input":  map[string]any{"format": map[string]any{"type": "audio/pcmu", "rate": 8000}, "transport": "json"},
-			"output": map[string]any{"format": map[string]any{"type": "audio/pcmu", "rate": 8000}, "transport": "json"},
+			"input":  map[string]any{"format": grokWireFormat(inputFormat), "transport": "json"},
+			"output": map[string]any{"format": grokWireFormat(outputFormat), "transport": "json"},
 		},
 	}}); err != nil {
 		_ = conn.Close()
 		return nil, voice.StartResult{}, err
 	}
 	return h, voice.StartResult{
-		InputFormat:  voice.AudioFormat{Encoding: voice.EncodingPCMU, SampleRate: 8000, Channels: 1},
-		OutputFormat: voice.AudioFormat{Encoding: voice.EncodingPCMU, SampleRate: 8000, Channels: 1},
+		InputFormat: inputFormat, OutputFormat: outputFormat,
 	}, nil
 }
 
-// grokSessionTools maps the provider-neutral voice tool allowlist to Grok's
-// session tools. web_search is a server-side xAI tool, so it must be declared
-// as {"type":"web_search"}; it is not a client-side function and must not be
-// routed through the hosted Google grounding callback. Other authored tools
-// remain client-side functions and are completed by completeFunctionCalls.
+func grokAudioFormat(preferred []voice.AudioFormat) voice.AudioFormat {
+	fallback := voice.AudioFormat{Encoding: voice.EncodingPCMU, SampleRate: 8000, Channels: 1}
+	for _, format := range preferred {
+		if format.Validate() != nil {
+			continue
+		}
+		if format.Encoding == voice.EncodingOpus {
+			format.SampleRate, format.Channels = 24000, 1
+			return format
+		}
+		if format.Encoding == voice.EncodingPCMU || format.Encoding == voice.EncodingPCMA {
+			return format
+		}
+	}
+	return fallback
+}
+
+func grokWireFormat(format voice.AudioFormat) map[string]any {
+	typeName := "audio/pcmu"
+	switch format.Encoding {
+	case voice.EncodingOpus:
+		typeName = "audio/opus"
+	case voice.EncodingPCMA:
+		typeName = "audio/pcma"
+	case voice.EncodingPCM16LE:
+		typeName = "audio/pcm"
+	}
+	result := map[string]any{"type": typeName}
+	if typeName == "audio/pcm" {
+		result["rate"] = format.SampleRate
+	}
+	return result
+}
+
 func grokSessionTools(tools map[string]ai.Tool) []map[string]any {
 	if len(tools) == 0 {
 		return nil
@@ -100,15 +130,17 @@ func grokSessionTools(tools map[string]ai.Tool) []map[string]any {
 			continue
 		}
 		parameters, _ := tool.InputSchema.(map[string]any)
-		functions = append(functions, map[string]any{
-			"type": "function", "name": name, "description": tool.Description,
-			"parameters": parameters,
-		})
+		functions = append(functions, map[string]any{"type": "function", "name": name, "description": tool.Description, "parameters": parameters})
 	}
 	if nativeWebSearch {
 		return append([]map[string]any{{"type": "web_search"}}, functions...)
 	}
 	return functions
+}
+
+func isWebSearchTool(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "web_search" || name == "web-search" || name == "search_web"
 }
 
 type grokLiveHandle struct {

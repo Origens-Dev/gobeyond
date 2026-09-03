@@ -131,9 +131,8 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	return &geminiLiveHandle{
 			cfg:     cfg,
 			session: session,
-			// Google Search is a server-side Live tool. Keep it out of the
-			// client callback map; only authored function tools are dispatched
-			// back to the host.
+			// Native Google Search is a server-side Live tool. Only authored
+			// function tools are dispatched back to the host.
 			tools:   clientToolsFromDefinition(adapter.definition, cfg.EnabledToolIDs),
 			model:   connectedModel,
 			backend: liveUsageBackend(adapter.definition.AI.Inference),
@@ -455,8 +454,8 @@ func liveToolsFromDefinition(definition agents.AIDefinition, enabled []string) [
 	if len(tools) == 0 {
 		return nil
 	}
-	nativeGoogleSearch := false
 	declarations := make([]*genai.FunctionDeclaration, 0, len(tools))
+	nativeGoogleSearch := false
 	for key, tool := range tools {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
@@ -479,8 +478,6 @@ func liveToolsFromDefinition(definition agents.AIDefinition, enabled []string) [
 	}
 	result := make([]*genai.Tool, 0, 2)
 	if nativeGoogleSearch {
-		// Google Search is executed by the Gemini Live service. It must be
-		// declared as a built-in tool instead of as a function callback.
 		result = append(result, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
 	}
 	if len(declarations) > 0 {
@@ -489,6 +486,9 @@ func liveToolsFromDefinition(definition agents.AIDefinition, enabled []string) [
 	return result
 }
 
+// clientToolsFromDefinition returns authored callback tools for Gemini's
+// client-side dispatcher. Native web search is a server tool and must not be
+// registered as a callback.
 func clientToolsFromDefinition(definition agents.AIDefinition, enabled []string) map[string]ai.Tool {
 	tools := voiceToolsFromDefinition(definition, enabled)
 	if len(tools) == 0 {
@@ -509,10 +509,6 @@ func clientToolsFromDefinition(definition agents.AIDefinition, enabled []string)
 		return nil
 	}
 	return out
-}
-
-func isWebSearchTool(name string) bool {
-	return strings.EqualFold(strings.ReplaceAll(strings.TrimSpace(name), "-", "_"), "web_search")
 }
 
 func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) map[string]ai.Tool {

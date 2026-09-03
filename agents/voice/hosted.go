@@ -42,9 +42,11 @@ type HostedStartRequest struct {
 	// EnabledToolIDs is a canonical allowlist; hosts map IDs to fixed schemas.
 	EnabledToolIDs []string `json:"enabled_tool_ids,omitempty"`
 	// PCMProtocolVersion 3 enables explicit telephone playout barriers.
-	PCMProtocolVersion int `json:"pcm_protocol_version,omitempty"`
-	PCMInSampleRate    int `json:"pcm_in_sample_rate,omitempty"`
-	PCMOutSampleRate   int `json:"pcm_out_sample_rate,omitempty"`
+	PCMProtocolVersion int               `json:"pcm_protocol_version,omitempty"`
+	PCMInSampleRate    int               `json:"pcm_in_sample_rate,omitempty"`
+	PCMOutSampleRate   int               `json:"pcm_out_sample_rate,omitempty"`
+	AudioPreferences   AudioPreferences  `json:"audio_preferences,omitempty"`
+	AudioCapabilities  AudioCapabilities `json:"audio_capabilities,omitempty"`
 }
 
 // ActorDTO is the JSON projection of agents.Actor for hosted voice start.
