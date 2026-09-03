@@ -148,6 +148,7 @@ func (runtimes *AIRegistry) Register(registry worker.Worker) error {
 		return nil
 	}
 	temporalai.RegisterAgentWorkflow(registry)
+	RegisterVoiceSessionWorkflow(registry)
 	temporalai.RegisterActivities(registry, activities.New(activities.Options{
 		RuntimeResolver: runtimes,
 		UpdateConnector: agentUpdateRouter{registry: runtimes},
