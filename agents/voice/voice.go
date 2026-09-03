@@ -7,7 +7,7 @@
 // [Adapter] uses length-prefixed frames:
 //
 //   - Gemini audio is signed 16-bit little-endian mono (no WAV/RIFF header).
-//   - Grok may use raw G.711 μ-law (PCMU) mono at 8 kHz.
+//   - Grok may use raw G.711 μ-law (PCMU) or Opus mono audio.
 //   - Frame layout: uint32 little-endian payload length, then payload bytes.
 //   - Maximum payload per frame: [MaxFrameBytes] (64 KiB)
 //
@@ -37,6 +37,8 @@ const (
 
 	EncodingPCM16LE = "pcm_s16le"
 	EncodingPCMU    = "pcmu"
+	EncodingPCMA    = "pcma"
+	EncodingOpus    = "opus"
 )
 
 // Compile-time pin: keep google.golang.org/genai in go.mod for the Live client
@@ -72,6 +74,9 @@ type StartConfig struct {
 	EnabledToolIDs   []string
 	PCMInSampleRate  int
 	PCMOutSampleRate int
+	// AudioPreferences are provider-leg preferences. Network/device codec
+	// policy is negotiated by the media bridge and must not be placed here.
+	AudioPreferences AudioPreferences
 	// OnPlayoutBarrier is called before a tool result is released back to a
 	// realtime provider. Hosted media bridges use it to flush and drain queued
 	// telephone audio; local adapters may leave it nil.
@@ -81,11 +86,48 @@ type StartConfig struct {
 	OnUsage func(Usage)
 }
 
+// AudioPreferences describes preferred provider-leg formats independently in
+// each direction. The first mutually supported format wins.
+type AudioPreferences struct {
+	InputFormats  []AudioFormat `json:"input_formats,omitempty"`
+	OutputFormats []AudioFormat `json:"output_formats,omitempty"`
+}
+
+// AudioCapabilities describes formats a hosted bridge can consume and produce.
+type AudioCapabilities struct {
+	InputFormats  []AudioFormat `json:"input_formats,omitempty"`
+	OutputFormats []AudioFormat `json:"output_formats,omitempty"`
+}
+
 // AudioFormat describes the bytes exchanged by one voice session direction.
 type AudioFormat struct {
 	Encoding   string `json:"encoding"`
 	SampleRate int    `json:"sample_rate"`
 	Channels   int    `json:"channels"`
+}
+
+// Validate checks the bounded audio formats supported by the hosted contract.
+func (f AudioFormat) Validate() error {
+	if f.Channels != 1 {
+		return fmt.Errorf("voice audio format requires mono channels, got %d", f.Channels)
+	}
+	switch f.Encoding {
+	case EncodingPCM16LE:
+		if f.SampleRate != 8000 && f.SampleRate != 16000 && f.SampleRate != 24000 && f.SampleRate != 48000 {
+			return fmt.Errorf("unsupported PCM sample rate %d", f.SampleRate)
+		}
+	case EncodingPCMU, EncodingPCMA:
+		if f.SampleRate != 8000 {
+			return fmt.Errorf("%s requires 8000 Hz, got %d", f.Encoding, f.SampleRate)
+		}
+	case EncodingOpus:
+		if f.SampleRate != 24000 && f.SampleRate != 48000 {
+			return fmt.Errorf("opus requires 24000 or 48000 Hz, got %d", f.SampleRate)
+		}
+	default:
+		return fmt.Errorf("unsupported voice encoding %q", f.Encoding)
+	}
+	return nil
 }
 
 // StartResult describes the formats selected by an adapter before media starts.
