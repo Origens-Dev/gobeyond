@@ -360,3 +360,36 @@ func TestGenaiClientConfigMapsInference(t *testing.T) {
 		t.Fatal("expected unsupported inference error")
 	}
 }
+
+func TestGeminiLiveToolsUseNativeGoogleSearch(t *testing.T) {
+	definition := agents.DefineAI(agents.AIConfig{
+		Tools: map[string]ai.Tool{
+			"web-search": {Name: "web-search", Description: "Search current public-web facts."},
+			"lookup":     {Name: "lookup", Description: "Look up an internal record."},
+		},
+	})
+	tools := liveToolsFromDefinition(definition, []string{"web_search", "lookup"})
+	if len(tools) != 2 {
+		t.Fatalf("Gemini Live tools = %#v", tools)
+	}
+	var nativeSearch bool
+	var functionNames []string
+	for _, tool := range tools {
+		if tool.GoogleSearch != nil {
+			nativeSearch = true
+		}
+		for _, declaration := range tool.FunctionDeclarations {
+			functionNames = append(functionNames, declaration.Name)
+		}
+	}
+	if !nativeSearch {
+		t.Fatalf("Gemini Live tools did not include Google Search: %#v", tools)
+	}
+	if len(functionNames) != 1 || functionNames[0] != "lookup" {
+		t.Fatalf("Gemini function declarations = %#v", functionNames)
+	}
+	clientTools := clientToolsFromDefinition(definition, []string{"web_search", "lookup"})
+	if len(clientTools) != 1 || clientTools["lookup"].Name != "lookup" {
+		t.Fatalf("Gemini client tools = %#v", clientTools)
+	}
+}
