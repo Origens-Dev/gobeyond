@@ -113,7 +113,7 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 
 	handle, err := adapter.Start(context.Background(), voice.StartConfig{
 		AgentID: "operator", SessionID: "sess", RunID: "run",
-		Actor: agents.Actor{ID: "user-1", Kind: "user", Metadata: map[string]string{"network_id": "net-1"}},
+		Actor:    agents.Actor{ID: "user-1", Kind: "user", Metadata: map[string]string{"network_id": "net-1"}},
 		Metadata: map[string]string{"instructions": "Overlay.", "voice_name": "Puck"},
 	}, pcmIn, pcmOut)
 	if err != nil {
@@ -173,6 +173,66 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 	}
 	if toolSeen.ID != "user-1" || toolSeen.Metadata["network_id"] != "net-1" {
 		t.Fatalf("tool actor = %#v", toolSeen)
+	}
+}
+
+func TestGeminiLiveAdapterReportsUsageMetadata(t *testing.T) {
+	provider := ai.NewMockProvider()
+	provider.LanguageModels["tool-model"] = ai.NewMockLanguageModel("tool-model")
+	definition := agents.DefineAI(agents.AIConfig{
+		Durable: true, Model: "tool-model", ToolModel: "tool-model",
+		LiveModel: "gemini-live-test", Inference: "google", Provider: provider,
+	})
+	fake := newFakeLiveSession(&genai.LiveServerMessage{
+		UsageMetadata: &genai.UsageMetadata{
+			PromptTokenCount:        11,
+			ResponseTokenCount:      4,
+			ToolUsePromptTokenCount: 2,
+			ThoughtsTokenCount:      1,
+			TotalTokenCount:         18,
+		},
+	})
+	adapter := &GeminiLiveAdapter{
+		definition: definition,
+		dial: func(context.Context, agents.AIDefinition, string, *genai.LiveConnectConfig) (liveSession, error) {
+			return fake, nil
+		},
+	}
+	pcmIn := make(chan []byte)
+	pcmOut := make(chan []byte)
+	got := make(chan voice.Usage, 1)
+	handle, err := adapter.Start(context.Background(), voice.StartConfig{
+		AgentID: "call-operator", SessionID: "vs_sess", RunID: "vx_exec",
+		Actor:   agents.Actor{ID: "user-1", Kind: "user"},
+		OnUsage: func(u voice.Usage) { got <- u },
+	}, pcmIn, pcmOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- handle.Run(ctx) }()
+
+	var usage voice.Usage
+	select {
+	case usage = <-got:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for usage")
+	}
+	if usage.PromptTokens != 13 || usage.CompletionTokens != 5 || usage.TotalTokens != 18 {
+		t.Fatalf("usage=%+v", usage)
+	}
+	if usage.Model != "gemini-live-test" || usage.Backend != "google" {
+		t.Fatalf("model/backend=%+v", usage)
+	}
+
+	close(pcmIn)
+	_ = fake.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return")
 	}
 }
 

@@ -42,20 +42,34 @@ const (
 // docs/spikes/gemini-live-g4a.md.
 var _ = genai.LiveConnectConfig{}
 
+// Usage is one Gemini Live UsageMetadata snapshot (typically per model turn).
+// PromptTokens maps prompt_token_count; CompletionTokens maps
+// response_token_count. Hosts emit this as usage.llm.
+type Usage struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	Model            string
+	Backend          string
+}
+
 // StartConfig is the transport-neutral input to a Live voice session.
 // Instructions and VoiceName should already include any session metadata
 // overlay (agents.ResolveInstructions / ResolveVoiceName) before Start.
 type StartConfig struct {
-	AgentID           string
-	SessionID         string
-	RunID             string
-	CompiledRevision  string
-	Actor             agents.Actor
-	VoiceName         string
-	Instructions      string
-	Metadata          map[string]string
-	PCMInSampleRate   int
-	PCMOutSampleRate  int
+	AgentID          string
+	SessionID        string
+	RunID            string
+	CompiledRevision string
+	Actor            agents.Actor
+	VoiceName        string
+	Instructions     string
+	Metadata         map[string]string
+	PCMInSampleRate  int
+	PCMOutSampleRate int
+	// OnUsage, when set, is invoked for each Live UsageMetadata the adapter
+	// observes. The callback must not block the audio path for long.
+	OnUsage func(Usage)
 }
 
 // Adapter opens a Live voice session bound to PCM channels.
