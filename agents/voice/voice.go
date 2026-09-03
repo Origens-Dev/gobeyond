@@ -1,15 +1,14 @@
 // Package voice defines the public Live PCM adapter contract for GoBeyond
 // AI agents.
 //
-// # PCM framing
+// # Audio framing
 //
-// Bidirectional audio between the voice bridge (voice-worker / gbhost) and a
-// [Adapter] uses length-prefixed frames of raw PCM:
+// Bidirectional audio between the voice bridge (voice-worker / gbhost) and an
+// [Adapter] uses length-prefixed frames:
 //
-//   - Sample format: signed 16-bit little-endian mono (no WAV/RIFF header)
-//   - Default input rate: [DefaultPCMInSampleRate] (16 kHz, Gemini Live in)
-//   - Default output rate: [DefaultPCMOutSampleRate] (24 kHz, Gemini Live out)
-//   - Frame layout: uint32 little-endian payload length, then payload bytes
+//   - Gemini audio is signed 16-bit little-endian mono (no WAV/RIFF header).
+//   - Grok may use raw G.711 μ-law (PCMU) mono at 8 kHz.
+//   - Frame layout: uint32 little-endian payload length, then payload bytes.
 //   - Maximum payload per frame: [MaxFrameBytes] (64 KiB)
 //
 // Channel values (pcmIn / pcmOut) carry raw PCM payloads only (no length
@@ -35,6 +34,9 @@ const (
 	DefaultPCMOutSampleRate = 24000
 	// MaxFrameBytes caps one length-prefixed PCM payload.
 	MaxFrameBytes = 64 * 1024
+
+	EncodingPCM16LE = "pcm_s16le"
+	EncodingPCMU    = "pcmu"
 )
 
 // Compile-time pin: keep google.golang.org/genai in go.mod for the Live client
@@ -65,16 +67,48 @@ type StartConfig struct {
 	VoiceName        string
 	Instructions     string
 	Metadata         map[string]string
+	// EnabledToolIDs is the canonical platform capability allowlist. Empty
+	// means use the authored definition's tools for direct/local adapters.
+	EnabledToolIDs   []string
 	PCMInSampleRate  int
 	PCMOutSampleRate int
+	// OnPlayoutBarrier is called before a tool result is released back to a
+	// realtime provider. Hosted media bridges use it to flush and drain queued
+	// telephone audio; local adapters may leave it nil.
+	OnPlayoutBarrier func(context.Context, uint64) error
 	// OnUsage, when set, is invoked for each Live UsageMetadata the adapter
 	// observes. The callback must not block the audio path for long.
 	OnUsage func(Usage)
 }
 
+// AudioFormat describes the bytes exchanged by one voice session direction.
+type AudioFormat struct {
+	Encoding   string `json:"encoding"`
+	SampleRate int    `json:"sample_rate"`
+	Channels   int    `json:"channels"`
+}
+
+// StartResult describes the formats selected by an adapter before media starts.
+type StartResult struct {
+	InputFormat  AudioFormat `json:"input_format"`
+	OutputFormat AudioFormat `json:"output_format"`
+}
+
+// AudioFrame is one model output frame. Control-only frames have empty Data.
+type AudioFrame struct {
+	Data         []byte
+	Interrupted  bool
+	TurnComplete bool
+	// Flush is a non-semantic control marker used by hosted media bridges.
+	// BarrierID identifies the provider response whose telephone playout must
+	// drain before its continuation is released.
+	Flush     bool
+	BarrierID uint64
+}
+
 // Adapter opens a Live voice session bound to PCM channels.
 type Adapter interface {
-	Start(ctx context.Context, cfg StartConfig, pcmIn <-chan []byte, pcmOut chan<- []byte) (SessionHandle, error)
+	Start(ctx context.Context, cfg StartConfig, audioIn <-chan []byte, audioOut chan<- AudioFrame) (SessionHandle, StartResult, error)
 }
 
 // SessionHandle runs until the session ends or the context is cancelled.

@@ -3,6 +3,7 @@ package temporalruntime
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,7 +62,15 @@ func RegisterVoice(registry *VoiceRegistry, agentID string, definition agents.AI
 	if err := definition.ProbeLiveModel(); err != nil {
 		return fmt.Errorf("AI agent %q: %w", agentID, err)
 	}
-	adapter := NewGeminiLiveAdapter(definition)
+	var adapter voice.Adapter
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GOBEYOND_VOICE_PROVIDER"))) {
+	case "", "gemini":
+		adapter = NewGeminiLiveAdapter(definition)
+	case "grok":
+		adapter = NewGrokLiveAdapter(definition)
+	default:
+		return fmt.Errorf("unsupported GOBEYOND_VOICE_PROVIDER %q (use gemini or grok)", os.Getenv("GOBEYOND_VOICE_PROVIDER"))
+	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	if registry.adapters == nil {

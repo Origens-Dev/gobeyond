@@ -2,6 +2,7 @@ package temporalruntime
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -109,7 +110,8 @@ func (client *HostedVoiceClient) OpenPCM(ctx context.Context, sessionToken strin
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(spec.Frame), voice.FrameLengthPrefixedLE) {
+	frame := strings.ToLower(strings.TrimSpace(spec.Frame))
+	if frame != voice.FrameLengthPrefixedLE && frame != voice.FrameLengthPrefixedLEV2 && frame != voice.FrameLengthPrefixedLEV3 {
 		return nil, fmt.Errorf("hosted voice PCM frame %q is not supported", spec.Frame)
 	}
 
@@ -142,6 +144,7 @@ func (client *HostedVoiceClient) OpenPCM(ctx context.Context, sessionToken strin
 		pipeWriter: pw,
 		started:    started,
 		httpClient: httpClient,
+		frame:      frame,
 	}, nil
 }
 
@@ -178,6 +181,7 @@ type HostedPCMStream struct {
 	body       io.ReadCloser
 	started    <-chan pcmOpenResult
 	httpClient *http.Client
+	frame      string
 
 	mu     sync.Mutex
 	closed bool
@@ -185,12 +189,23 @@ type HostedPCMStream struct {
 
 // WritePCM encodes and sends one uplink PCM payload.
 func (stream *HostedPCMStream) WritePCM(pcm []byte) error {
-	stream.mu.Lock()
-	defer stream.mu.Unlock()
-	if stream == nil || stream.closed || stream.pipeWriter == nil {
+	if stream == nil {
 		return errors.New("hosted voice PCM stream is closed")
 	}
-	frame, err := voice.EncodeFrame(pcm)
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.closed || stream.pipeWriter == nil {
+		return errors.New("hosted voice PCM stream is closed")
+	}
+	var (
+		frame []byte
+		err   error
+	)
+	if stream.frame == voice.FrameLengthPrefixedLEV3 {
+		frame, err = voice.EncodeAudioFrameV3(voice.AudioFrame{Data: pcm})
+	} else {
+		frame, err = voice.EncodeFrame(pcm)
+	}
 	if err != nil {
 		return err
 	}
@@ -198,19 +213,62 @@ func (stream *HostedPCMStream) WritePCM(pcm []byte) error {
 	return err
 }
 
+// WritePlayoutAck acknowledges a v3 Flush barrier after telephone playout has
+// drained. It is intentionally unavailable on the legacy framing versions.
+func (stream *HostedPCMStream) WritePlayoutAck(barrierID uint64) error {
+	if stream == nil {
+		return errors.New("hosted voice PCM stream is closed")
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.closed || stream.pipeWriter == nil {
+		return errors.New("hosted voice PCM stream is closed")
+	}
+	if stream.frame != voice.FrameLengthPrefixedLEV3 {
+		return errors.New("playout acknowledgements require v3 voice framing")
+	}
+	payload := make([]byte, 9)
+	payload[0] = 0x80
+	binary.LittleEndian.PutUint64(payload[1:], barrierID)
+	var header [4]byte
+	binary.LittleEndian.PutUint32(header[:], uint32(len(payload)))
+	if _, err := stream.pipeWriter.Write(header[:]); err != nil {
+		return err
+	}
+	_, err := stream.pipeWriter.Write(payload)
+	return err
+}
+
 // ReadPCM reads one downlink PCM payload.
 func (stream *HostedPCMStream) ReadPCM() ([]byte, error) {
-	if err := stream.ensureResponse(); err != nil {
+	frame, err := stream.ReadAudioFrame()
+	if err != nil {
 		return nil, err
+	}
+	return frame.Data, nil
+}
+
+// ReadAudioFrame reads one downlink audio frame, including interruption and
+// turn-completion control markers when the endpoint uses v2 framing.
+func (stream *HostedPCMStream) ReadAudioFrame() (voice.AudioFrame, error) {
+	if err := stream.ensureResponse(); err != nil {
+		return voice.AudioFrame{}, err
 	}
 	stream.mu.Lock()
 	body := stream.body
 	closed := stream.closed
 	stream.mu.Unlock()
 	if closed || body == nil {
-		return nil, errors.New("hosted voice PCM stream is closed")
+		return voice.AudioFrame{}, errors.New("hosted voice PCM stream is closed")
 	}
-	return voice.DecodeFrame(body)
+	if stream.frame == voice.FrameLengthPrefixedLEV3 {
+		return voice.DecodeAudioFrameV3(body)
+	}
+	if stream.frame == voice.FrameLengthPrefixedLEV2 {
+		return voice.DecodeAudioFrame(body)
+	}
+	data, err := voice.DecodeFrame(body)
+	return voice.AudioFrame{Data: data}, err
 }
 
 func (stream *HostedPCMStream) ensureResponse() error {
@@ -241,9 +299,12 @@ func (stream *HostedPCMStream) ensureResponse() error {
 // CloseUplink closes the request body so servers that buffer the full upload
 // can finish and send the response. Optional for true duplex servers.
 func (stream *HostedPCMStream) CloseUplink() error {
+	if stream == nil {
+		return nil
+	}
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	if stream == nil || stream.pipeWriter == nil {
+	if stream.pipeWriter == nil {
 		return nil
 	}
 	err := stream.pipeWriter.Close()

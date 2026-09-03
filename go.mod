@@ -7,6 +7,7 @@ require (
 	github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.9
 	github.com/aws/aws-lambda-go v1.49.0
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.19.1
 	github.com/redis/go-redis/v9 v9.21.0
 	go.temporal.io/api v1.62.12

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -48,12 +49,12 @@ func NewGeminiLiveAdapter(definition agents.AIDefinition) *GeminiLiveAdapter {
 }
 
 // Start opens a Live session and returns a handle that pumps PCM and tools.
-func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, pcmIn <-chan []byte, pcmOut chan<- []byte) (voice.SessionHandle, error) {
+func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, pcmIn <-chan []byte, pcmOut chan<- voice.AudioFrame) (voice.SessionHandle, voice.StartResult, error) {
 	if adapter == nil {
-		return nil, errors.New("gemini live adapter is required")
+		return nil, voice.StartResult{}, errors.New("gemini live adapter is required")
 	}
 	if err := cfg.Actor.Validate(); err != nil {
-		return nil, err
+		return nil, voice.StartResult{}, err
 	}
 	voice.NormalizeSampleRates(&cfg)
 	cfg.Instructions = agents.ResolveInstructions(cfg.Instructions, cfg.Metadata)
@@ -67,11 +68,11 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 
 	model := strings.TrimSpace(adapter.definition.AI.LiveModel)
 	if model == "" {
-		return nil, errors.New("AI agent LiveModel is required for voice")
+		return nil, voice.StartResult{}, errors.New("AI agent LiveModel is required for voice")
 	}
 	connectCfg := &genai.LiveConnectConfig{
 		ResponseModalities: []genai.Modality{genai.ModalityAudio},
-		Tools:              liveToolsFromDefinition(adapter.definition),
+		Tools:              liveToolsFromDefinition(adapter.definition, cfg.EnabledToolIDs),
 	}
 	// Gemini Developer API rejects system_instruction parts with an empty
 	// oneof (close 1007). Omit the field when instructions resolve empty.
@@ -109,7 +110,7 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 			}
 		}
 		if err != nil {
-			return nil, fmt.Errorf("gemini live connect: %w", err)
+			return nil, voice.StartResult{}, fmt.Errorf("gemini live connect: %w", err)
 		}
 	}
 	// Kick an opening model turn so duplex/smoke gets downlink without
@@ -124,18 +125,21 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	if opening != "-" {
 		if sendErr := session.SendRealtimeInput(genai.LiveRealtimeInput{Text: opening}); sendErr != nil {
 			_ = session.Close()
-			return nil, fmt.Errorf("gemini live opening turn: %w", sendErr)
+			return nil, voice.StartResult{}, fmt.Errorf("gemini live opening turn: %w", sendErr)
 		}
 	}
 	return &geminiLiveHandle{
-		cfg:     cfg,
-		session: session,
-		tools:   adapter.definition.AI.Tools,
-		model:   connectedModel,
-		backend: liveUsageBackend(adapter.definition.AI.Inference),
-		pcmIn:   pcmIn,
-		pcmOut:  pcmOut,
-	}, nil
+			cfg:     cfg,
+			session: session,
+			tools:   voiceToolsFromDefinition(adapter.definition, cfg.EnabledToolIDs),
+			model:   connectedModel,
+			backend: liveUsageBackend(adapter.definition.AI.Inference),
+			pcmIn:   pcmIn,
+			pcmOut:  pcmOut,
+		}, voice.StartResult{
+			InputFormat:  voice.AudioFormat{Encoding: voice.EncodingPCM16LE, SampleRate: voice.DefaultPCMInSampleRate, Channels: 1},
+			OutputFormat: voice.AudioFormat{Encoding: voice.EncodingPCM16LE, SampleRate: voice.DefaultPCMOutSampleRate, Channels: 1},
+		}, nil
 }
 
 type geminiLiveHandle struct {
@@ -145,11 +149,15 @@ type geminiLiveHandle struct {
 	model   string
 	backend string
 	pcmIn   <-chan []byte
-	pcmOut  chan<- []byte
+	pcmOut  chan<- voice.AudioFrame
 
-	closeOnce sync.Once
-	closed    chan struct{}
-	usageSeq  atomic.Uint64
+	closeOnce  sync.Once
+	closed     chan struct{}
+	usageSeq   atomic.Uint64
+	barrierSeq atomic.Uint64
+	writeMu    sync.Mutex
+	toolWG     sync.WaitGroup
+	toolErrCh  chan error
 }
 
 func (handle *geminiLiveHandle) Run(ctx context.Context) error {
@@ -161,7 +169,11 @@ func (handle *geminiLiveHandle) Run(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	defer func() { _ = handle.Close() }()
+	defer func() {
+		handle.toolWG.Wait()
+		_ = handle.Close()
+	}()
+	handle.toolErrCh = make(chan error, 1)
 
 	sendErrCh := make(chan error, 1)
 	recvErrCh := make(chan error, 1)
@@ -175,14 +187,21 @@ func (handle *geminiLiveHandle) Run(ctx context.Context) error {
 	case err := <-recvErrCh:
 		cancel()
 		<-sendErrCh
+		handle.toolWG.Wait()
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
 			return err
+		}
+		select {
+		case toolErr := <-handle.toolErrCh:
+			return toolErr
+		default:
 		}
 		return nil
 	case err := <-sendErrCh:
 		if err != nil {
 			cancel()
 			<-recvErrCh
+			handle.toolWG.Wait()
 			if !errors.Is(err, context.Canceled) {
 				return err
 			}
@@ -193,6 +212,7 @@ func (handle *geminiLiveHandle) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-recvErrCh:
+			handle.toolWG.Wait()
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
 				return err
 			}
@@ -228,7 +248,7 @@ func (handle *geminiLiveHandle) sendPCM(ctx context.Context) error {
 			if len(chunk) == 0 {
 				continue
 			}
-			if err := handle.session.SendRealtimeInput(genai.LiveRealtimeInput{
+			if err := handle.sendRealtimeInput(genai.LiveRealtimeInput{
 				Audio: &genai.Blob{Data: chunk, MIMEType: pcmMIMEType},
 			}); err != nil {
 				return err
@@ -257,63 +277,130 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 			continue
 		}
 		handle.reportUsage(message.UsageMetadata)
+		if message.ServerContent != nil && message.ServerContent.Interrupted {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case handle.pcmOut <- voice.AudioFrame{Interrupted: true}:
+			}
+			// Interruption wins over co-present model content. Do not allow
+			// stale audio from the interrupted turn into the playout queue.
+			continue
+		}
 		if message.ToolCall != nil {
 			if err := handle.dispatchToolCall(ctx, message.ToolCall); err != nil {
 				return err
 			}
 			continue
 		}
-		if message.ServerContent == nil || message.ServerContent.ModelTurn == nil {
-			continue
-		}
-		for _, part := range message.ServerContent.ModelTurn.Parts {
-			if part == nil || part.InlineData == nil || len(part.InlineData.Data) == 0 {
-				continue
+		if message.ServerContent != nil && message.ServerContent.ModelTurn != nil {
+			for _, part := range message.ServerContent.ModelTurn.Parts {
+				if part == nil || part.InlineData == nil || len(part.InlineData.Data) == 0 {
+					continue
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case handle.pcmOut <- voice.AudioFrame{Data: append([]byte(nil), part.InlineData.Data...)}:
+				}
 			}
+		}
+		// GenerationComplete means the provider stopped generating. It is not
+		// the semantic end of a turn when a tool continuation is pending.
+		if message.ServerContent != nil && message.ServerContent.TurnComplete {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case handle.pcmOut <- append([]byte(nil), part.InlineData.Data...):
+			case handle.pcmOut <- voice.AudioFrame{TurnComplete: true}:
 			}
 		}
 	}
 }
 
 func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *genai.LiveServerToolCall) error {
-	if call == nil {
+	if call == nil || len(call.FunctionCalls) == 0 {
 		return nil
 	}
-	responses := make([]*genai.FunctionResponse, 0, len(call.FunctionCalls))
-	for _, functionCall := range call.FunctionCalls {
-		if functionCall == nil {
-			continue
+	handle.toolWG.Add(1)
+	go func() {
+		defer handle.toolWG.Done()
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		responses := make([]*genai.FunctionResponse, len(call.FunctionCalls))
+		var wg sync.WaitGroup
+		for i, functionCall := range call.FunctionCalls {
+			if functionCall == nil {
+				continue
+			}
+			wg.Add(1)
+			go func(i int, functionCall *genai.FunctionCall) {
+				defer wg.Done()
+				name := strings.TrimSpace(functionCall.Name)
+				tool, ok := handle.lookupTool(name)
+				if !ok || tool.Execute == nil {
+					responses[i] = &genai.FunctionResponse{ID: functionCall.ID, Name: name,
+						Response: map[string]any{"error": fmt.Sprintf("unknown tool %q", name)}}
+					return
+				}
+				result, err := tool.Execute(callCtx, ai.ToolCall{
+					ToolCallID: functionCall.ID, ToolName: name, Input: functionCall.Args,
+				}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": handle.cfg.Actor}})
+				response := map[string]any{"result": result}
+				if err != nil {
+					response = map[string]any{"error": err.Error()}
+				}
+				responses[i] = &genai.FunctionResponse{ID: functionCall.ID, Name: name, Response: response}
+			}(i, functionCall)
 		}
-		name := strings.TrimSpace(functionCall.Name)
-		tool, ok := handle.lookupTool(name)
-		if !ok || tool.Execute == nil {
-			responses = append(responses, &genai.FunctionResponse{
-				ID: functionCall.ID, Name: name,
-				Response: map[string]any{"error": fmt.Sprintf("unknown tool %q", name)},
-			})
-			continue
+		wg.Wait()
+		responses = compactFunctionResponses(responses)
+		if len(responses) == 0 || callCtx.Err() != nil {
+			return
 		}
-		result, err := tool.Execute(ctx, ai.ToolCall{
-			ToolCallID: functionCall.ID, ToolName: name, Input: functionCall.Args,
-		}, ai.ToolExecutionOptions{
-			Context: map[string]any{"gobeyondActor": handle.cfg.Actor},
-		})
-		response := map[string]any{"result": result}
-		if err != nil {
-			response = map[string]any{"error": err.Error()}
+		if handle.cfg.OnPlayoutBarrier != nil {
+			barrierID := handle.barrierSeq.Add(1)
+			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
+				handle.reportAsyncError(err)
+				return
+			}
 		}
-		responses = append(responses, &genai.FunctionResponse{
-			ID: functionCall.ID, Name: name, Response: response,
-		})
+		if err := handle.sendToolResponse(genai.LiveToolResponseInput{FunctionResponses: responses}); err != nil {
+			handle.reportAsyncError(err)
+		}
+	}()
+	return nil
+}
+
+func compactFunctionResponses(in []*genai.FunctionResponse) []*genai.FunctionResponse {
+	out := make([]*genai.FunctionResponse, 0, len(in))
+	for _, response := range in {
+		if response != nil {
+			out = append(out, response)
+		}
 	}
-	if len(responses) == 0 {
-		return nil
+	return out
+}
+
+func (handle *geminiLiveHandle) sendRealtimeInput(input genai.LiveRealtimeInput) error {
+	handle.writeMu.Lock()
+	defer handle.writeMu.Unlock()
+	return handle.session.SendRealtimeInput(input)
+}
+
+func (handle *geminiLiveHandle) sendToolResponse(input genai.LiveToolResponseInput) error {
+	handle.writeMu.Lock()
+	defer handle.writeMu.Unlock()
+	return handle.session.SendToolResponse(input)
+}
+
+func (handle *geminiLiveHandle) reportAsyncError(err error) {
+	if err == nil || handle.toolErrCh == nil || errors.Is(err, context.Canceled) {
+		return
 	}
-	return handle.session.SendToolResponse(genai.LiveToolResponseInput{FunctionResponses: responses})
+	select {
+	case handle.toolErrCh <- err:
+	default:
+	}
 }
 
 func (handle *geminiLiveHandle) lookupTool(name string) (ai.Tool, bool) {
@@ -360,12 +447,13 @@ func liveUsageBackend(inference string) string {
 	}
 }
 
-func liveToolsFromDefinition(definition agents.AIDefinition) []*genai.Tool {
-	if len(definition.AI.Tools) == 0 {
+func liveToolsFromDefinition(definition agents.AIDefinition, enabled []string) []*genai.Tool {
+	tools := voiceToolsFromDefinition(definition, enabled)
+	if len(tools) == 0 {
 		return nil
 	}
-	declarations := make([]*genai.FunctionDeclaration, 0, len(definition.AI.Tools))
-	for key, tool := range definition.AI.Tools {
+	declarations := make([]*genai.FunctionDeclaration, 0, len(tools))
+	for key, tool := range tools {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
 			name = key
@@ -382,6 +470,36 @@ func liveToolsFromDefinition(definition agents.AIDefinition) []*genai.Tool {
 		return nil
 	}
 	return []*genai.Tool{{FunctionDeclarations: declarations}}
+}
+
+func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) map[string]ai.Tool {
+	if len(definition.AI.Tools) == 0 {
+		return nil
+	}
+	if len(enabled) == 0 {
+		return definition.AI.Tools
+	}
+	allowed := make(map[string]struct{}, len(enabled))
+	for _, id := range enabled {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			allowed[id] = struct{}{}
+		}
+	}
+	out := make(map[string]ai.Tool)
+	for key, tool := range definition.AI.Tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			name = key
+		}
+		canonical := strings.ReplaceAll(name, "-", "_")
+		if _, ok := allowed[name]; ok {
+			out[key] = tool
+		} else if _, ok := allowed[canonical]; ok {
+			out[key] = tool
+		}
+	}
+	return out
 }
 
 func dialGenaiLive(ctx context.Context, definition agents.AIDefinition, model string, config *genai.LiveConnectConfig) (liveSession, error) {
