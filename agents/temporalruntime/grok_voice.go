@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -20,6 +21,8 @@ import (
 )
 
 const defaultGrokVoiceModel = "grok-voice-think-fast-2.0"
+
+const defaultGrokOpeningTurn = "Please greet the caller briefly now."
 
 type GrokLiveAdapter struct{ definition agents.AIDefinition }
 
@@ -78,9 +81,31 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 		_ = conn.Close()
 		return nil, voice.StartResult{}, err
 	}
+	if opening, ok := grokOpeningResponse(); ok {
+		if err := h.writeJSON(opening); err != nil {
+			_ = conn.Close()
+			return nil, voice.StartResult{}, fmt.Errorf("grok voice opening response: %w", err)
+		}
+	}
 	return h, voice.StartResult{
 		InputFormat: inputFormat, OutputFormat: outputFormat,
 	}, nil
+}
+
+func grokOpeningResponse() (map[string]any, bool) {
+	opening := strings.TrimSpace(os.Getenv("GOBEYOND_LIVE_OPENING_TURN"))
+	if opening == "-" {
+		return nil, false
+	}
+	if opening == "" {
+		opening = defaultGrokOpeningTurn
+	}
+	return map[string]any{
+		"type": "response.create",
+		"response": map[string]any{
+			"instructions": opening,
+		},
+	}, true
 }
 
 func grokAudioFormat(preferred []voice.AudioFormat) voice.AudioFormat {
@@ -172,6 +197,7 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 	for {
 		kind, data, err := h.conn.ReadMessage()
 		if err != nil {
+			h.logReadError(err)
 			return err
 		}
 		select {
@@ -197,6 +223,7 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 		if err := json.Unmarshal(data, &e); err != nil {
 			return fmt.Errorf("grok voice event: %w", err)
 		}
+		h.logProviderEvent(e.Type)
 		switch e.Type {
 		case "session.updated", "response.created", "response.output_audio.done":
 		case "response.output_audio.delta", "response.audio.delta":
@@ -243,6 +270,29 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 			return fmt.Errorf("grok voice provider error: %s", string(data))
 		}
 	}
+}
+
+func (h *grokLiveHandle) logProviderEvent(eventType string) {
+	switch eventType {
+	case "session.updated", "response.created", "response.done",
+		"response.output_audio.done", "input_audio_buffer.speech_started",
+		"input_audio_buffer.speech_stopped", "error":
+		log.Printf("grok voice provider event session=%s type=%s", strings.TrimSpace(h.cfg.SessionID), eventType)
+	}
+}
+
+func (h *grokLiveHandle) logReadError(err error) {
+	if err == nil {
+		return
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		log.Printf("grok voice websocket closed session=%s code=%d text=%s",
+			strings.TrimSpace(h.cfg.SessionID), closeErr.Code, closeErr.Text)
+		return
+	}
+	log.Printf("grok voice websocket read failed session=%s err=%v",
+		strings.TrimSpace(h.cfg.SessionID), err)
 }
 
 type grokFunctionCall struct {

@@ -41,3 +41,32 @@ func TestGrokSessionToolsDoesNotEnableWebSearchWhenNotAllowed(t *testing.T) {
 		t.Fatalf("Grok session tools = %#v", tools)
 	}
 }
+
+func TestGrokOpeningResponseUsesDefault(t *testing.T) {
+	t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "")
+
+	message, ok := grokOpeningResponse()
+	if !ok {
+		t.Fatal("default opening response disabled")
+	}
+	if got := message["type"]; got != "response.create" {
+		t.Fatalf("opening event type = %#v", got)
+	}
+	response, ok := message["response"].(map[string]any)
+	if !ok || response["instructions"] != defaultGrokOpeningTurn {
+		t.Fatalf("opening response = %#v", message["response"])
+	}
+}
+
+func TestGrokOpeningResponseCanBeOverriddenOrDisabled(t *testing.T) {
+	t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "Say hello to Andrew.")
+	message, ok := grokOpeningResponse()
+	if !ok || message["response"].(map[string]any)["instructions"] != "Say hello to Andrew." {
+		t.Fatalf("override opening response = %#v", message)
+	}
+
+	t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "-")
+	if message, ok := grokOpeningResponse(); ok || message != nil {
+		t.Fatalf("disabled opening response = %#v, enabled=%t", message, ok)
+	}
+}
