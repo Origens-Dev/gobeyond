@@ -38,7 +38,10 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 	if key == "" {
 		return nil, voice.StartResult{}, errors.New("XAI_API_KEY is required when GOBEYOND_VOICE_PROVIDER=grok")
 	}
-	model := strings.TrimSpace(os.Getenv("GOBEYOND_GROK_VOICE_MODEL"))
+	model := strings.TrimSpace(cfg.VoiceModel)
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("GOBEYOND_GROK_VOICE_MODEL"))
+	}
 	if model == "" {
 		model = defaultGrokVoiceModel
 	}
