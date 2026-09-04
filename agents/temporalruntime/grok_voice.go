@@ -24,6 +24,8 @@ const defaultGrokVoiceModel = "grok-voice-think-fast-2.0"
 
 const defaultGrokOpeningTurn = "Please greet the caller briefly now."
 
+const defaultGrokReasoningEffort = "none"
+
 type GrokLiveAdapter struct{ definition agents.AIDefinition }
 
 func NewGrokLiveAdapter(definition agents.AIDefinition) *GrokLiveAdapter {
@@ -72,7 +74,8 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 	outputFormat := grokAudioFormat(cfg.AudioPreferences.OutputFormats)
 	if err := h.writeJSON(map[string]any{"type": "session.update", "session": map[string]any{
 		"voice": voiceName, "instructions": instructions, "turn_detection": map[string]any{"type": "server_vad"},
-		"tools": grokSessionTools(h.tools),
+		"reasoning": map[string]any{"effort": grokReasoningEffort()},
+		"tools":     grokSessionTools(h.tools),
 		"audio": map[string]any{
 			"input":  map[string]any{"format": grokWireFormat(inputFormat), "transport": "json"},
 			"output": map[string]any{"format": grokWireFormat(outputFormat), "transport": "json"},
@@ -90,6 +93,17 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 	return h, voice.StartResult{
 		InputFormat: inputFormat, OutputFormat: outputFormat,
 	}, nil
+}
+
+func grokReasoningEffort() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GOBEYOND_GROK_REASONING_EFFORT"))) {
+	case "high":
+		return "high"
+	case "none":
+		return "none"
+	default:
+		return defaultGrokReasoningEffort
+	}
 }
 
 func grokOpeningResponse() (map[string]any, bool) {
@@ -217,8 +231,11 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 			continue
 		}
 		var e struct {
-			Type  string `json:"type"`
-			Delta string `json:"delta"`
+			Type     string `json:"type"`
+			Delta    string `json:"delta"`
+			Response struct {
+				Status string `json:"status"`
+			} `json:"response"`
 		}
 		if err := json.Unmarshal(data, &e); err != nil {
 			return fmt.Errorf("grok voice event: %w", err)
@@ -261,6 +278,9 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 				}()
 				continue
 			}
+			if !grokResponseCompleted(e.Response.Status) {
+				continue
+			}
 			select {
 			case h.audioOut <- voice.AudioFrame{TurnComplete: true}:
 			case <-ctx.Done():
@@ -270,6 +290,11 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 			return fmt.Errorf("grok voice provider error: %s", string(data))
 		}
 	}
+}
+
+func grokResponseCompleted(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	return status == "" || status == "completed"
 }
 
 func (h *grokLiveHandle) logProviderEvent(eventType string) {
