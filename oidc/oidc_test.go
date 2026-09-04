@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTokenPrefersRequestOverEnvironment(t *testing.T) {
@@ -50,6 +51,44 @@ func TestTokenUsesSlotBrokerWhenNoRequestOrEnvironment(t *testing.T) {
 	token, err := (&TokenSource{SocketPath: socketPath}).Token(context.Background(), TokenOptions{})
 	if err != nil || token != "broker-token" {
 		t.Fatalf("token = %q, err = %v", token, err)
+	}
+}
+
+func TestTokenRetriesTransientSlotBrokerConnection(t *testing.T) {
+	t.Setenv(EnvTokenOrigens, "")
+	t.Setenv(EnvTokenGoBeyond, "")
+	socketPath := "/tmp/gb-oidc-retry.sock"
+	_ = os.Remove(socketPath)
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	listenerCh := make(chan net.Listener, 1)
+	serverErrCh := make(chan error, 1)
+	go func() {
+		// The first broker dial sees the not-yet-created socket. A healthy broker
+		// appearing during the bounded retry window must be usable.
+		time.Sleep(75 * time.Millisecond)
+		listener, err := net.Listen("unix", socketPath)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		listenerCh <- listener
+		serverErrCh <- http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"recovered-broker-token"}`))
+		}))
+	}()
+
+	token, err := (&TokenSource{SocketPath: socketPath}).Token(context.Background(), TokenOptions{})
+	if err != nil || token != "recovered-broker-token" {
+		t.Fatalf("token = %q, err = %v", token, err)
+	}
+	select {
+	case listener := <-listenerCh:
+		_ = listener.Close()
+	case err := <-serverErrCh:
+		t.Fatalf("broker listener = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("broker listener did not start")
 	}
 }
 
