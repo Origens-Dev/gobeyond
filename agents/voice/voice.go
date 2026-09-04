@@ -66,6 +66,8 @@ type StartConfig struct {
 	RunID            string
 	CompiledRevision string
 	Actor            agents.Actor
+	VoiceProvider    string
+	VoiceModel       string
 	VoiceName        string
 	Instructions     string
 	Metadata         map[string]string

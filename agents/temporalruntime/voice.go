@@ -67,6 +67,9 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	}
 
 	model := strings.TrimSpace(adapter.definition.AI.LiveModel)
+	if override := strings.TrimSpace(cfg.VoiceModel); override != "" {
+		model = override
+	}
 	if model == "" {
 		return nil, voice.StartResult{}, errors.New("AI agent LiveModel is required for voice")
 	}

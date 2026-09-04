@@ -34,6 +34,8 @@ type HostedStartRequest struct {
 	RunID            string            `json:"run_id"`
 	CallID           string            `json:"call_id,omitempty"`
 	NetworkID        string            `json:"network_id,omitempty"`
+	VoiceProvider    string            `json:"voice_provider,omitempty"`
+	VoiceModel       string            `json:"voice_model,omitempty"`
 	CompiledRevision string            `json:"compiled_revision,omitempty"`
 	VoiceName        string            `json:"voice_name,omitempty"`
 	Instructions     string            `json:"instructions,omitempty"`
