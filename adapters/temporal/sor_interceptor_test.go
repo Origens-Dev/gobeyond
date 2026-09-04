@@ -2,12 +2,19 @@ package temporal
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 )
 
 func TestShouldReportTimer(t *testing.T) {
@@ -55,6 +62,45 @@ func TestIsNonRetryableActivityErr(t *testing.T) {
 	}
 	if !isNonRetryableActivityErr(temporal.NewNonRetryableApplicationError("x", "t", nil)) {
 		t.Fatal("NonRetryableApplicationError must mark non_retryable")
+	}
+}
+
+func TestWorkflowInterceptorReportsFailedTerminalStatus(t *testing.T) {
+	t.Setenv(envHostReportSocket, t.TempDir()+"/missing.sock")
+	t.Setenv(envEnvironmentID, "env-1")
+	t.Setenv(envWorkerID, "worker-1")
+	events := make(chan ReportSorEventInput, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var event ReportSorEventInput
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		events <- event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	t.Setenv(envAPIURL, server.URL)
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&sorWorkerInterceptor{}}})
+	env.RegisterActivity(ReportSorEvent)
+	env.ExecuteWorkflow(func(workflow.Context) error { return errors.New("boom") })
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if env.GetWorkflowError() == nil {
+		t.Fatal("workflow should fail")
+	}
+
+	select {
+	case event := <-events:
+		if event.Type != "workflow.failed" || event.Status != "FAILED" {
+			t.Fatalf("terminal event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("workflow terminal event was not reported")
 	}
 }
 
