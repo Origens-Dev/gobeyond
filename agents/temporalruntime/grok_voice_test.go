@@ -70,3 +70,37 @@ func TestGrokOpeningResponseCanBeOverriddenOrDisabled(t *testing.T) {
 		t.Fatalf("disabled opening response = %#v, enabled=%t", message, ok)
 	}
 }
+
+func TestGrokReasoningEffortDefaultsToNone(t *testing.T) {
+	t.Setenv("GOBEYOND_GROK_REASONING_EFFORT", "")
+	if got := grokReasoningEffort(); got != "none" {
+		t.Fatalf("default reasoning effort = %q, want none", got)
+	}
+}
+
+func TestGrokReasoningEffortAllowsHighOverride(t *testing.T) {
+	t.Setenv("GOBEYOND_GROK_REASONING_EFFORT", "high")
+	if got := grokReasoningEffort(); got != "high" {
+		t.Fatalf("high reasoning effort = %q, want high", got)
+	}
+}
+
+func TestGrokReasoningEffortRejectsUnknownValues(t *testing.T) {
+	t.Setenv("GOBEYOND_GROK_REASONING_EFFORT", "balanced")
+	if got := grokReasoningEffort(); got != "none" {
+		t.Fatalf("unknown reasoning effort = %q, want none", got)
+	}
+}
+
+func TestGrokResponseCompletedOnlyAcceptsCompletedOrMissingStatus(t *testing.T) {
+	for _, status := range []string{"", "completed", " COMPLETED "} {
+		if !grokResponseCompleted(status) {
+			t.Errorf("status %q treated as incomplete", status)
+		}
+	}
+	for _, status := range []string{"cancelled", "failed", "incomplete"} {
+		if grokResponseCompleted(status) {
+			t.Errorf("status %q treated as complete", status)
+		}
+	}
+}
