@@ -62,6 +62,9 @@ const (
 	// DefaultShutdownGrace applies when GOBEYOND_SHUTDOWN_GRACE is unset
 	// or unparseable.
 	DefaultShutdownGrace = 20 * time.Second
+	// DefaultWriteTimeout is the response write deadline used by Serve and
+	// ServeContext.
+	DefaultWriteTimeout = 20 * time.Second
 )
 
 // ReservedEnvPrefixes are environment-variable name prefixes owned by the
@@ -208,13 +211,24 @@ func Serve(handler http.Handler) error {
 // ServeContext serves handler on listener until ctx is cancelled, then
 // drains in-flight requests up to ShutdownGrace before returning nil. In
 // hosted mode it sends readiness only after net/http has called Accept on the
-// primary listener, which proves the server has entered its accept loop.
+// primary listener, which proves the server has entered its accept loop. It
+// uses DefaultWriteTimeout for the HTTP response write deadline.
 func ServeContext(ctx context.Context, listener net.Listener, handler http.Handler) error {
+	return ServeContextWithWriteTimeout(ctx, listener, handler, DefaultWriteTimeout)
+}
+
+// ServeContextWithWriteTimeout serves handler on listener until ctx is
+// cancelled, then drains in-flight requests up to ShutdownGrace before
+// returning nil. writeTimeout controls the HTTP response write deadline; a
+// zero value disables that deadline. In hosted mode it sends readiness only
+// after net/http has called Accept on the primary listener, which proves the
+// server has entered its accept loop.
+func ServeContextWithWriteTimeout(ctx context.Context, listener net.Listener, handler http.Handler, writeTimeout time.Duration) error {
 	server := &http.Server{
 		Handler:           WithHealthz(handler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      20 * time.Second,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
