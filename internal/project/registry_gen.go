@@ -766,10 +766,13 @@ import (
 	registry %q
 	routes %q
 	gbruntime "github.com/Origens-Dev/gobeyond/runtime"
+	gbtelemetry "github.com/Origens-Dev/gobeyond/telemetry"
 )
 
 func main() {
 %s
+	shutdownTelemetry := gbtelemetry.InstallFromEnv()
+	defer shutdownTelemetry()
 	planPack := os.Getenv("GOBEYOND_PLAN_PACK")
 	if planPack == "" {
 		planPack = filepath.Join("dist", "server", "render-plans.gbp")
