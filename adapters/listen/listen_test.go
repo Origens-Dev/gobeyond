@@ -147,6 +147,19 @@ func TestServeContextOverUnixSocket(t *testing.T) {
 	}
 }
 
+func TestServeContextWithWriteTimeoutRejectsNonPositiveTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	if err := listen.ServeContextWithWriteTimeout(
+		context.Background(), listener, http.NotFoundHandler(), 0,
+	); err == nil {
+		t.Fatal("expected non-positive write timeout to fail")
+	}
+}
+
 func TestServeContextSignalsReadinessAfterInstallingHealthHandler(t *testing.T) {
 	appSocket := shortSocketPath(t)
 	signalSocket := filepath.Join(filepath.Dir(appSocket), "ready.sock")
