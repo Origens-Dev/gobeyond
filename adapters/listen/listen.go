@@ -210,11 +210,26 @@ func Serve(handler http.Handler) error {
 // hosted mode it sends readiness only after net/http has called Accept on the
 // primary listener, which proves the server has entered its accept loop.
 func ServeContext(ctx context.Context, listener net.Listener, handler http.Handler) error {
+	return ServeContextWithWriteTimeout(ctx, listener, handler, 20*time.Second)
+}
+
+// ServeContextWithWriteTimeout is ServeContext with an explicit response
+// write deadline for applications that intentionally stream responses longer
+// than the framework default.
+func ServeContextWithWriteTimeout(
+	ctx context.Context,
+	listener net.Listener,
+	handler http.Handler,
+	writeTimeout time.Duration,
+) error {
+	if writeTimeout <= 0 {
+		return errors.New("listen write timeout must be positive")
+	}
 	server := &http.Server{
 		Handler:           WithHealthz(handler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      20 * time.Second,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
