@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -33,10 +34,25 @@ const (
 
 type requestIDContextKey struct{}
 
+var (
+	installOnce  sync.Once
+	shutdownOnce sync.Once
+	shutdown     = func() {}
+)
+
 // InstallFromEnv enables authenticated OTLP/gRPC export when the hosting
 // platform injected an endpoint and tenant-bound token. Missing or invalid
 // telemetry configuration degrades to the OpenTelemetry no-op provider.
 func InstallFromEnv() func() {
+	installOnce.Do(func() {
+		shutdown = installFromEnv()
+	})
+	return func() {
+		shutdownOnce.Do(shutdown)
+	}
+}
+
+func installFromEnv() func() {
 	log := slog.Default()
 	endpoint := normalizeEndpoint(os.Getenv("GOBEYOND_OTEL_EXPORTER_OTLP_ENDPOINT"))
 	token := strings.TrimSpace(os.Getenv("GOBEYOND_OTEL_EXPORTER_OTLP_AUTH_TOKEN"))
@@ -100,6 +116,12 @@ func InstallFromEnv() func() {
 // boundary span. The request ID is propagated through context so every child
 // span is normalized onto the platform request trace.
 func StartServerRequest(ctx context.Context, header http.Header, requestID, method, path string) (context.Context, trace.Span) {
+	// Generated mains call InstallFromEnv eagerly. Keep this lazy guard at the
+	// runtime boundary as well so older generated-main layouts still install
+	// the provider before application instrumentation executes.
+	installOnce.Do(func() {
+		shutdown = installFromEnv()
+	})
 	ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(header))
 	ctx = context.WithValue(ctx, requestIDContextKey{}, requestID)
 	return otel.Tracer("github.com/Origens-Dev/gobeyond/runtime").Start(ctx, method+" "+path,
