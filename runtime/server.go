@@ -33,6 +33,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/renderplan"
 	"github.com/Origens-Dev/gobeyond/router"
 	"github.com/Origens-Dev/gobeyond/security"
+	gbtelemetry "github.com/Origens-Dev/gobeyond/telemetry"
 )
 
 const maxRewrites = 8
@@ -520,6 +521,11 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		return
 	}
+	requestContext, requestSpan := gbtelemetry.StartServerRequest(
+		request.Context(), request.Header, requestID, request.Method, request.URL.Path,
+	)
+	request = request.WithContext(requestContext)
+	defer requestSpan.End()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			s.logger.Error("request panic", "request_id", requestID, "panic", recovered)

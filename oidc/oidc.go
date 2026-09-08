@@ -30,6 +30,8 @@ const (
 	HeaderGoBeyond        = "x-gobeyond-oidc-token"
 	DefaultSourceAudience = "origens-platform"
 	AWSTSAudience         = "sts.amazonaws.com"
+	brokerMaxAttempts     = 3
+	brokerRetryDelay      = 100 * time.Millisecond
 )
 
 type TokenOptions struct {
@@ -155,11 +157,6 @@ func (s *TokenSource) brokerToken(ctx context.Context) (string, error) {
 	if socketPath == "" {
 		return "", errors.New("gobeyond oidc: no request token, environment token, or slot broker configured")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://gobeyond/v1/oidc/token", bytes.NewReader([]byte(`{}`)))
-	if err != nil {
-		return "", fmt.Errorf("gobeyond oidc: build broker request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
 	transport := &http.Transport{
 		DisableCompression: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -168,23 +165,72 @@ func (s *TokenSource) brokerToken(ctx context.Context) (string, error) {
 	}
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	defer transport.CloseIdleConnections()
-	response, err := client.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("gobeyond oidc: broker request: %w", err)
+	for attempt := 1; attempt <= brokerMaxAttempts; attempt++ {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://gobeyond/v1/oidc/token", bytes.NewReader([]byte(`{}`)))
+		if err != nil {
+			return "", fmt.Errorf("gobeyond oidc: build broker request: %w", err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		if err != nil {
+			if attempt == brokerMaxAttempts || !isRetryableBrokerError(err) {
+				return "", fmt.Errorf("gobeyond oidc: broker request: %w", err)
+			}
+			if err := waitForBrokerRetry(ctx); err != nil {
+				return "", fmt.Errorf("gobeyond oidc: broker request: %w", err)
+			}
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+			_ = response.Body.Close()
+			if response.StatusCode >= http.StatusInternalServerError && attempt < brokerMaxAttempts {
+				if err := waitForBrokerRetry(ctx); err != nil {
+					return "", fmt.Errorf("gobeyond oidc: broker request: %w", err)
+				}
+				continue
+			}
+			return "", fmt.Errorf("gobeyond oidc: broker status %d", response.StatusCode)
+		}
+		var result brokerResponse
+		decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result)
+		_ = response.Body.Close()
+		if decodeErr != nil {
+			return "", fmt.Errorf("gobeyond oidc: decode broker response: %w", decodeErr)
+		}
+		if strings.TrimSpace(result.Token) == "" {
+			return "", errors.New("gobeyond oidc: broker returned an empty token")
+		}
+		return result.Token, nil
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return "", fmt.Errorf("gobeyond oidc: broker status %d", response.StatusCode)
+	return "", errors.New("gobeyond oidc: broker request exhausted retries")
+}
+
+func waitForBrokerRetry(ctx context.Context) error {
+	timer := time.NewTimer(brokerRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	var result brokerResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
-		return "", fmt.Errorf("gobeyond oidc: decode broker response: %w", err)
+}
+
+func isRetryableBrokerError(err error) bool {
+	if err == nil {
+		return false
 	}
-	if strings.TrimSpace(result.Token) == "" {
-		return "", errors.New("gobeyond oidc: broker returned an empty token")
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
 	}
-	return result.Token, nil
+	message := strings.ToLower(err.Error())
+	return os.IsNotExist(err) ||
+		strings.Contains(message, "no such file") ||
+		strings.Contains(message, "connection refused") ||
+		strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "broken pipe")
 }
 
 func (s *TokenSource) httpClient() *http.Client {
