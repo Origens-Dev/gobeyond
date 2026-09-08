@@ -64,13 +64,14 @@ type Tool struct {
 // Command is also the Temporal LocalActivity request. OperationID and the
 // idempotency tuple are allocated by the authenticated server before execution.
 type Command struct {
-	Version     string          `json:"version"`
-	Context     Context         `json:"context"`
-	OperationID string          `json:"operation_id"`
-	ToolID      string          `json:"tool_id"`
-	ToolCallID  string          `json:"tool_call_id"`
-	InputDigest string          `json:"input_digest"`
-	Arguments   json.RawMessage `json:"arguments"`
+	AnnouncementBarrierID uint64          `json:"announcement_barrier_id"`
+	Version               string          `json:"version"`
+	Context               Context         `json:"context"`
+	OperationID           string          `json:"operation_id"`
+	ToolID                string          `json:"tool_id"`
+	ToolCallID            string          `json:"tool_call_id"`
+	InputDigest           string          `json:"input_digest"`
+	Arguments             json.RawMessage `json:"arguments"`
 }
 
 type Operation struct {

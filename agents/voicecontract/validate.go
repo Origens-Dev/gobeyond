@@ -55,6 +55,9 @@ func (s ScopeTransition) Validate() error {
 	return nil
 }
 func (c Command) Validate() error {
+	if c.ToolID == "dial-contact" && c.AnnouncementBarrierID == 0 {
+		return errors.New("announcement drain barrier required")
+	}
 	if c.Version != Version || c.Context.Validate() != nil || !identifier(c.OperationID) || !identifier(c.ToolID) || !identifier(c.ToolCallID) {
 		return errors.New("invalid command")
 	}

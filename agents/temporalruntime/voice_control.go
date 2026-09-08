@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -13,15 +14,16 @@ import (
 // The same mutex linearizes terminal commit against provider writes and output.
 // No network Close occurs while this mutex is held.
 type liveControlGate struct {
-	mu                sync.Mutex
-	serial            sync.Mutex
-	pending, terminal bool
+	mu       sync.Mutex
+	serial   sync.Mutex
+	pending  bool
+	terminal atomic.Bool
 }
 
 func (g *liveControlGate) write(fn func() error) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.terminal {
+	if g.terminal.Load() {
 		return nil
 	}
 	return fn()
@@ -29,7 +31,7 @@ func (g *liveControlGate) write(fn func() error) error {
 func (g *liveControlGate) emit(ctx context.Context, out chan<- voice.AudioFrame, f voice.AudioFrame) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.pending || g.terminal {
+	if g.pending || g.terminal.Load() {
 		return nil
 	}
 	select {
@@ -43,16 +45,22 @@ func (g *liveControlGate) stopped() bool { g.mu.Lock(); defer g.mu.Unlock(); ret
 func (g *liveControlGate) begin() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.terminal {
+	if g.terminal.Load() {
 		return false
 	}
 	g.pending = true
 	return true
 }
 func (g *liveControlGate) finish(terminal bool) {
+	if terminal {
+		g.terminal.Store(true)
+		return
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.terminal = g.terminal || terminal
+	if terminal {
+		g.terminal.Store(true)
+	}
 	g.pending = false
 }
 func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.Tool, error) {
