@@ -136,3 +136,26 @@ func (e Envelope) Validate() error {
 	}
 	return nil
 }
+
+// Validate checks current structural claims only. Cryptographic verification and
+// time, registration, nonce, owner and registry checks remain mandatory upstream.
+func (g GrantClaims) Validate() error {
+	if g.Version != Version || g.GrantVersion != 3 || !identifier(g.KeyID) || g.Context.Validate() != nil || !identifier(g.Nonce) || g.ExpiresAt <= 0 {
+		return errors.New("invalid current grant")
+	}
+	if len(g.Capabilities) != 3 || g.Capabilities[0] != "start" || g.Capabilities[1] != "cancel" || g.Capabilities[2] != "execute" {
+		return errors.New("invalid current capabilities")
+	}
+	return classes(g.DestinationClasses)
+}
+func (s SoftphoneEvent) Validate() error {
+	if s.Version != Version || s.Type != "call_state" || !identifier(s.CallID) || s.Generation == 0 || s.Sequence == 0 || !identifier(s.RemoteParty.DestinationID) || len(s.RemoteParty.PublicLabel) == 0 || !safeText(s.RemoteParty.PublicLabel, 128) {
+		return errors.New("invalid softphone event")
+	}
+	switch s.State {
+	case "ringing", "answered", "failed", "cancelled":
+		return nil
+	default:
+		return errors.New("invalid softphone state")
+	}
+}

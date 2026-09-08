@@ -122,3 +122,43 @@ func TestFreezeDoesNotMutate(t *testing.T) {
 		t.Fatal("mutated registry")
 	}
 }
+func TestAllGoldenContracts(t *testing.T) {
+	cases := []struct {
+		name string
+		v    interface{ Validate() error }
+	}{
+		{"grant", &GrantClaims{}}, {"event-accepted", &Operation{}}, {"event-ringing", &Operation{}}, {"event-answered", &Operation{}}, {"terminal", &TerminalResult{}}, {"assistant-envelope", &Envelope{}}, {"screener-envelope", &Envelope{}}, {"softphone-event", &SoftphoneEvent{}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, e := os.ReadFile("testdata/" + tt.name + ".json")
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = Decode(raw, MaxManifestBytes, tt.v); e != nil {
+				t.Fatal(e)
+			}
+			if e = tt.v.Validate(); e != nil {
+				t.Fatal(e)
+			}
+		})
+	}
+}
+func TestSchemaKeywordMismatch(t *testing.T) {
+	raw, e := os.ReadFile("testdata/manifest.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var m Manifest
+	if e = Decode(raw, MaxManifestBytes, &m); e != nil {
+		t.Fatal(e)
+	}
+	for _, s := range []string{`{"type":"object","properties":{},"required":[],"additionalProperties":false,"maxLength":3}`, `{"type":"string","maxLength":128}`} {
+		m.Tools[0].InputSchema = []byte(s)
+		c, _ := CanonicalJSON([]byte(s), MaxSchemaBytes)
+		m.Tools[0].SchemaDigest = Digest(c)
+		if _, _, e = FreezeManifest(m); e == nil {
+			t.Fatal("accepted invalid schema", s)
+		}
+	}
+}
