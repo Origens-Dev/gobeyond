@@ -13,7 +13,7 @@ import (
 )
 
 type voiceControlWorkflowState struct {
-	count       int
+	budget      *voiceToolBudget
 	digests     map[string]string
 	results     map[string]VoiceSessionExecuteToolResult
 	pending     map[string]bool
@@ -21,7 +21,7 @@ type voiceControlWorkflowState struct {
 }
 
 func newVoiceControlWorkflowState() *voiceControlWorkflowState {
-	return &voiceControlWorkflowState{digests: map[string]string{}, results: map[string]VoiceSessionExecuteToolResult{}, pending: map[string]bool{}}
+	return &voiceControlWorkflowState{budget: &voiceToolBudget{}, digests: map[string]string{}, results: map[string]VoiceSessionExecuteToolResult{}, pending: map[string]bool{}}
 }
 func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessionInput, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 	c := req.CallControl
@@ -43,10 +43,10 @@ func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessio
 		}
 		return s.results[key], nil
 	}
-	if s.count >= 2 || c.AnnouncementBarrierID <= s.lastBarrier {
+	if s.budget.count >= 2 || c.AnnouncementBarrierID <= s.lastBarrier {
 		return VoiceSessionExecuteToolResult{}, errors.New("control budget or drain fence exhausted")
 	}
-	s.count++
+	s.budget.count++
 	s.lastBarrier = c.AnnouncementBarrierID
 	s.digests[key] = c.InputDigest
 	s.pending[key] = true

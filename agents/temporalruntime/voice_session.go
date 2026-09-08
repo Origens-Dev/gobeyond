@@ -81,6 +81,7 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	completed := map[string]VoiceSessionExecuteToolResult{}
 	control := newVoiceControlWorkflowState()
 	reads := newVoiceReadWorkflowState()
+	reads.budget = control.budget
 	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 			if req.RemoteRead != nil {

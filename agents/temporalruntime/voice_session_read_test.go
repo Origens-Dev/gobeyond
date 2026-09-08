@@ -135,3 +135,66 @@ func TestRemoteReadWorkflowReplayAndScope(t *testing.T) {
 		})
 	}
 }
+
+func TestOperatorWorkflowSharesTwoToolsAcrossReadAndControl(t *testing.T) {
+	raw, _ := os.ReadFile("../voicecontract/testdata/command.json")
+	var command voicecontract.Command
+	_ = voicecontract.Decode(raw, 16384, &command)
+	raw, _ = os.ReadFile("../voicecontract/testdata/remote-read.json")
+	var read voicecontract.ReadRequest
+	_ = voicecontract.Decode(raw, 16384, &read)
+	read.Context = command.Context
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	id, _ := WorkflowID(command.Context.SessionID, command.Context.ExecutionID)
+	env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: id})
+	calls := 0
+	env.RegisterActivityWithOptions(func(_ context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+		calls++
+		if req.RemoteRead != nil {
+			return VoiceSessionExecuteToolResult{Result: []byte(`{"results":[]}`)}, nil
+		}
+		return VoiceSessionExecuteToolResult{Operation: &voicecontract.Operation{Version: "1", Context: command.Context, OperationID: command.OperationID, State: "accepted", Sequence: 1}}, nil
+	}, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		control := newVoiceControlWorkflowState()
+		reads := newVoiceReadWorkflowState()
+		reads.budget = control.budget
+		in := VoiceSessionInput{Context: &command.Context, AgentID: command.Context.AgentID, CallID: command.Context.CallID, SessionID: command.Context.SessionID, ExecutionID: command.Context.ExecutionID}
+		rreq := VoiceSessionExecuteToolInput{Grant: "opaque", RemoteRead: &read}
+		creq := VoiceSessionExecuteToolInput{Grant: "opaque", CallControl: &command}
+		if result, e := reads.execute(ctx, in, rreq); e != nil || result.Error != "" {
+			return errors.New("first read rejected")
+		}
+		if _, e := control.execute(ctx, in, creq); e != nil {
+			return e
+		}
+		if result, e := reads.execute(ctx, in, rreq); e != nil || result.Error != "" {
+			return errors.New("exact read replay charged")
+		}
+		if _, e := control.execute(ctx, in, creq); e != nil {
+			return errors.New("exact control replay charged")
+		}
+		nextRead := read
+		nextRead.ToolCallID = "third-read"
+		rreq.RemoteRead = &nextRead
+		if result, e := reads.execute(ctx, in, rreq); e == nil && result.Error == "" {
+			return errors.New("third read accepted")
+		}
+		nextControl := command
+		nextControl.ToolCallID = "third-control"
+		nextControl.OperationID = "new-op"
+		nextControl.AnnouncementBarrierID++
+		creq.CallControl = &nextControl
+		if _, e := control.execute(ctx, in, creq); e == nil {
+			return errors.New("third control accepted")
+		}
+		return nil
+	})
+	if e := env.GetWorkflowError(); e != nil {
+		t.Fatal(e)
+	}
+	if calls != 2 {
+		t.Fatalf("tool executions=%d", calls)
+	}
+}

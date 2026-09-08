@@ -7,14 +7,17 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
+type voiceToolBudget struct{ count int }
+
 type voiceReadWorkflowState struct {
+	budget  *voiceToolBudget
 	digests map[string]string
 	results map[string]VoiceSessionExecuteToolResult
 	pending map[string]bool
 }
 
 func newVoiceReadWorkflowState() *voiceReadWorkflowState {
-	return &voiceReadWorkflowState{map[string]string{}, map[string]VoiceSessionExecuteToolResult{}, map[string]bool{}}
+	return &voiceReadWorkflowState{budget: &voiceToolBudget{}, digests: map[string]string{}, results: map[string]VoiceSessionExecuteToolResult{}, pending: map[string]bool{}}
 }
 func (s *voiceReadWorkflowState) execute(ctx workflow.Context, in VoiceSessionInput, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 	r := req.RemoteRead
@@ -41,9 +44,10 @@ func (s *voiceReadWorkflowState) execute(ctx workflow.Context, in VoiceSessionIn
 		}
 		return s.results[key], nil
 	}
-	if len(s.digests) >= 2 {
+	if s.budget.count >= 2 {
 		return VoiceSessionExecuteToolResult{Error: "directory search budget exhausted"}, nil
 	}
+	s.budget.count++
 	s.digests[key] = digest
 	s.pending[key] = true
 	result, err := executeVoiceSessionToolLocal(ctx, req)
