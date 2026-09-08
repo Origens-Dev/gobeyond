@@ -122,7 +122,7 @@ func schema(v any, depth int) error {
 	if !ok || depth > MaxDepth {
 		return errors.New("schema object required")
 	}
-	allowed := map[string]bool{"type": true, "properties": true, "required": true, "additionalProperties": true, "maxLength": true, "minLength": true, "enum": true, "anyOf": true}
+	allowed := map[string]bool{"type": true, "properties": true, "required": true, "additionalProperties": true, "maxLength": true, "minLength": true, "enum": true, "anyOf": true, "items": true, "maxItems": true}
 	for k := range m {
 		if !allowed[k] {
 			return fmt.Errorf("unsupported schema keyword %q", k)
@@ -173,6 +173,19 @@ func schema(v any, depth int) error {
 				return errors.New("unknown required property")
 			}
 			seen[s] = true
+		}
+	case "array":
+		for k := range m {
+			if k != "type" && k != "items" && k != "maxItems" {
+				return errors.New("invalid array schema keyword")
+			}
+		}
+		max, ok := m["maxItems"].(float64)
+		if !ok || max < 1 || max > 5 || max != float64(int(max)) {
+			return errors.New("bounded array required")
+		}
+		if err := schema(m["items"], depth+1); err != nil {
+			return err
 		}
 	case "string":
 		for k := range m {
@@ -242,8 +255,35 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 			return nil, "", errors.New("schema digest mismatch")
 		}
 		t.InputSchema = c
-		if e := classes(t.DestinationClasses); e != nil {
-			return nil, "", e
+		if t.IsRead() {
+			if len(t.DestinationClasses) != 0 || t.TerminalOnSuccess || t.MaxResultBytes < 1 || t.MaxResultBytes > 4096 {
+				return nil, "", errors.New("invalid read policy")
+			}
+			output, e := CanonicalJSON(t.OutputSchema, MaxSchemaBytes)
+			if e != nil {
+				return nil, "", e
+			}
+			var definition any
+			if e = json.Unmarshal(output, &definition); e != nil {
+				return nil, "", e
+			}
+			if e = schema(definition, 0); e != nil {
+				return nil, "", e
+			}
+			if root, ok := definition.(map[string]any); !ok || root["type"] != "object" {
+				return nil, "", errors.New("read output root must be object")
+			}
+			if Digest(output) != t.OutputSchemaDigest {
+				return nil, "", errors.New("read output schema digest mismatch")
+			}
+			t.OutputSchema = output
+		} else {
+			if t.ExecutionKind != "" && t.ExecutionKind != "call_control" || len(t.OutputSchema) > 0 || t.OutputSchemaDigest != "" || t.MaxResultBytes != 0 {
+				return nil, "", errors.New("invalid execution policy")
+			}
+			if e := classes(t.DestinationClasses); e != nil {
+				return nil, "", e
+			}
 		}
 	}
 	sort.Slice(m.Tools, func(i, j int) bool { return m.Tools[i].ID < m.Tools[j].ID })

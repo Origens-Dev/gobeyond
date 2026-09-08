@@ -532,7 +532,8 @@ func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) 
 	if len(enabled) == 0 {
 		out := make(map[string]ai.Tool)
 		for id, tool := range definition.AI.Tools {
-			if _, controlled := agents.VoiceControlPolicy(tool); !controlled {
+			_, remoteRead := agents.VoiceRemoteReadPolicy(tool)
+			if _, controlled := agents.VoiceControlPolicy(tool); !controlled && !remoteRead {
 				out[id] = tool
 			}
 		}
@@ -547,6 +548,9 @@ func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) 
 	}
 	out := make(map[string]ai.Tool)
 	for key, tool := range definition.AI.Tools {
+		if _, read := agents.VoiceRemoteReadPolicy(tool); read {
+			continue
+		}
 		if _, controlled := agents.VoiceControlPolicy(tool); controlled {
 			continue
 		}

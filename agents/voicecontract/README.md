@@ -49,3 +49,13 @@ Browser events come only from authenticated server state and expose public ident
 never purpose, voicemail, transcripts, policy or internal party identity. Screening
 purpose is disclosed only after explicit acceptance via validated UPDATE to the
 winning managed dialog. No fixture grants SIP/header serialization authority.
+
+Registry remote reads use `execution_kind: "read"`, a closed output object schema,
+`output_schema_digest`, and `max_result_bytes` (1–4096). They have no destinations
+and cannot be terminal. Arrays are bounded to at most five items. Current
+compilation emits `call_control` for operation tools; omitted execution kind in
+existing version-1 fixtures retains the same call-control meaning and digest.
+`remote-read.json` binds the full verified Context and input digest but contains
+no operation ID or announcement barrier. Read requests are limited to 1 KiB and
+two distinct read tool calls per session; ordinary results must match the compiled
+output schema. Only typed authored opt-in can enter this manifest.

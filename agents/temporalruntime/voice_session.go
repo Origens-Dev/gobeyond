@@ -40,7 +40,8 @@ type VoiceSessionInput struct {
 // VoiceSessionExecuteToolInput is the Update / LocalActivity payload for one
 // Gemini Live function call.
 type VoiceSessionExecuteToolInput struct {
-	Grant string `json:"grant,omitempty"`
+	Grant      string                     `json:"grant,omitempty"`
+	RemoteRead *voicecontract.ReadRequest `json:"remote_read,omitempty"`
 	// CallControl belongs to the dedicated asynchronous current-grant path.
 	CallControl *voicecontract.Command `json:"call_control,omitempty"`
 	AgentID     string                 `json:"agent_id"`
@@ -79,8 +80,15 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	toolCalls := 0
 	completed := map[string]VoiceSessionExecuteToolResult{}
 	control := newVoiceControlWorkflowState()
+	reads := newVoiceReadWorkflowState()
 	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+			if req.RemoteRead != nil {
+				if req.CallControl != nil {
+					return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
+				}
+				return reads.execute(ctx, in, req)
+			}
 			if req.CallControl != nil {
 				return control.execute(ctx, in, req)
 			}
@@ -129,6 +137,12 @@ func executeVoiceSessionToolLocal(ctx workflow.Context, req VoiceSessionExecuteT
 // and runs it in-process on the realtime worker (LocalActivity). Maglev cannot
 // hold customer tools; the agent worker can.
 func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+	if req.RemoteRead != nil {
+		if req.CallControl != nil {
+			return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
+		}
+		return executeVoiceRemoteReadActivity(ctx, req)
+	}
 	if req.CallControl != nil {
 		return executeVoiceControlActivity(ctx, req)
 	}
@@ -150,6 +164,9 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("unknown tool %q", toolName)}, nil
 	}
 
+	if _, read := agents.VoiceRemoteReadPolicy(tool); read {
+		return VoiceSessionExecuteToolResult{}, errors.New("remote read requires current scoped dispatch")
+	}
 	if _, controlled := agents.VoiceControlPolicy(tool); controlled {
 		return VoiceSessionExecuteToolResult{}, errors.New("voice control tool requires current grant operation dispatch")
 	}

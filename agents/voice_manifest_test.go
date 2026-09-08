@@ -29,6 +29,7 @@ func TestAuthoredVoiceManifestConsumer(t *testing.T) {
 		t.Fatal(e)
 	}
 	golden.Revision = golden.CompiledRevision
+	golden.Tools[0].ExecutionKind = "call_control"
 	_, want, e := voicecontract.FreezeManifest(golden)
 	if e != nil {
 		t.Fatal(e)

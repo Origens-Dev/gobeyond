@@ -65,6 +65,17 @@ func matchesSchema(s map[string]any, v any) bool {
 			}
 		}
 		return true
+	case "array":
+		values, ok := v.([]any)
+		if !ok || float64(len(values)) > s["maxItems"].(float64) {
+			return false
+		}
+		for _, value := range values {
+			if !matchesSchema(s["items"].(map[string]any), value) {
+				return false
+			}
+		}
+		return true
 	case "string":
 		value, ok := v.(string)
 		if !ok || !utf8.ValidString(value) {
@@ -88,4 +99,11 @@ func matchesSchema(s map[string]any, v any) bool {
 		return true
 	}
 	return false
+}
+
+func ValidateToolOutput(tool Tool, raw []byte) ([]byte, error) {
+	if !tool.IsRead() || tool.MaxResultBytes < 1 || tool.MaxResultBytes > 4096 || len(raw) > tool.MaxResultBytes {
+		return nil, errors.New("read result exceeds policy")
+	}
+	return ValidateToolInput(Tool{InputSchema: tool.OutputSchema, SchemaDigest: tool.OutputSchemaDigest}, raw)
 }

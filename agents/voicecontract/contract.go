@@ -53,6 +53,10 @@ type Manifest struct {
 }
 
 type Tool struct {
+	ExecutionKind      string          `json:"execution_kind,omitempty"`
+	OutputSchema       json.RawMessage `json:"output_schema,omitempty"`
+	OutputSchemaDigest string          `json:"output_schema_digest,omitempty"`
+	MaxResultBytes     int             `json:"max_result_bytes,omitempty"`
 	ID                 string          `json:"id"`
 	Name               string          `json:"name"`
 	Description        string          `json:"description"`
@@ -143,3 +147,15 @@ type ScreeningContext struct {
 	AllowUnsolicitedCalls bool     `json:"allow_unsolicited_calls"`
 	VoicemailEnabled      bool     `json:"voicemail_enabled"`
 }
+
+// ReadRequest is a current-grant registry read; it cannot start an operation.
+type ReadRequest struct {
+	Version     string          `json:"version"`
+	Context     Context         `json:"context"`
+	ToolID      string          `json:"tool_id"`
+	ToolCallID  string          `json:"tool_call_id"`
+	InputDigest string          `json:"input_digest"`
+	Arguments   json.RawMessage `json:"arguments"`
+}
+
+func (t Tool) IsRead() bool { return t.ExecutionKind == "read" }

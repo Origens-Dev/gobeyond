@@ -162,3 +162,17 @@ func (s SoftphoneEvent) Validate() error {
 		return errors.New("invalid softphone state")
 	}
 }
+
+func (r ReadRequest) Validate() error {
+	if r.Version != Version || r.Context.Validate() != nil || r.Context.Scope.Kind != "operator" || !identifier(r.ToolID) || !identifier(r.ToolCallID) {
+		return errors.New("invalid remote read")
+	}
+	raw, err := CanonicalJSON(r.Arguments, 1024)
+	if err != nil {
+		return err
+	}
+	if Digest(raw) != r.InputDigest {
+		return errors.New("read input digest mismatch")
+	}
+	return nil
+}

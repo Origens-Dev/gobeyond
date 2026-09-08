@@ -63,8 +63,21 @@ func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessio
 // deployed registry. The customer tool must revalidate the opaque grant against
 // the platform owner service before placing any call. No schemas come from req.
 func executeVoiceControlActivity(ctx context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+	return executeVoiceRegistryActivity(ctx, req, false)
+}
+func executeVoiceRemoteReadActivity(ctx context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+	return executeVoiceRegistryActivity(ctx, req, true)
+}
+func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteToolInput, read bool) (VoiceSessionExecuteToolResult, error) {
 	c := req.CallControl
-	if c == nil || c.Validate() != nil || len(req.Grant) == 0 || len(req.Grant) > 8192 || c.ToolID != "dial-contact" || c.Context.Scope.Kind != "operator" {
+	if read {
+		r := req.RemoteRead
+		if r == nil || r.Validate() != nil {
+			return VoiceSessionExecuteToolResult{}, errors.New("invalid remote read")
+		}
+		c = &voicecontract.Command{Version: r.Version, Context: r.Context, ToolID: r.ToolID, ToolCallID: r.ToolCallID, InputDigest: r.InputDigest, Arguments: r.Arguments}
+	}
+	if c == nil || (!read && (c.Validate() != nil || c.ToolID != "dial-contact")) || len(req.Grant) == 0 || len(req.Grant) > 8192 || c.Context.Scope.Kind != "operator" {
 		return VoiceSessionExecuteToolResult{}, errors.New("invalid control request")
 	}
 	if req.AgentID != "" && req.AgentID != c.Context.AgentID || req.ActorID != "" && req.ActorID != c.Context.ActorID || req.ActorKind != "" && req.ActorKind != c.Context.ActorKind || req.NetworkID != "" && req.NetworkID != c.Context.NetworkID || req.ToolCallID != "" && req.ToolCallID != c.ToolCallID {
@@ -92,7 +105,7 @@ func executeVoiceControlActivity(ctx context.Context, req VoiceSessionExecuteToo
 			break
 		}
 	}
-	if spec == nil {
+	if spec == nil || spec.IsRead() != read {
 		return VoiceSessionExecuteToolResult{}, errors.New("control tool not deployed")
 	}
 	if req.ToolName != "" && req.ToolName != spec.Name {
@@ -110,10 +123,16 @@ func executeVoiceControlActivity(ctx context.Context, req VoiceSessionExecuteToo
 	if !ok || tool.Execute == nil {
 		return VoiceSessionExecuteToolResult{}, errors.New("control handler unavailable")
 	}
-	if _, ok := agents.VoiceControlPolicy(tool); !ok {
+	_, controlPolicy := agents.VoiceControlPolicy(tool)
+	_, readPolicy := agents.VoiceRemoteReadPolicy(tool)
+	if (!read && !controlPolicy) || (read && !readPolicy) {
 		return VoiceSessionExecuteToolResult{}, errors.New("control policy unavailable")
 	}
 	metadata := map[string]string{"organization_id": c.Context.OrganizationID, "project_id": c.Context.ProjectID, "environment_id": c.Context.EnvironmentID, "network_id": c.Context.NetworkID, "line_id": c.Context.Scope.LineID, "call_id": c.Context.CallID, "session_id": c.Context.SessionID, "execution_id": c.Context.ExecutionID, "agent_id": c.Context.AgentID, "agent_revision": c.Context.AgentRevision, "manifest_digest": c.Context.ManifestDigest, "generation": strconv.FormatUint(c.Context.Generation, 10), "voice_session_grant": req.Grant, "operation_id": c.OperationID, "announcement_barrier_id": strconv.FormatUint(c.AnnouncementBarrierID, 10)}
+	if read {
+		delete(metadata, "operation_id")
+		delete(metadata, "announcement_barrier_id")
+	}
 	actor := agents.Actor{ID: c.Context.ActorID, Kind: c.Context.ActorKind, Metadata: metadata}
 	if err = actor.Validate(); err != nil {
 		return VoiceSessionExecuteToolResult{}, err
@@ -125,6 +144,17 @@ func executeVoiceControlActivity(ctx context.Context, req VoiceSessionExecuteToo
 	result, err := tool.Execute(ctx, ai.ToolCall{ToolCallID: c.ToolCallID, ToolName: spec.Name, Input: args}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": actor}})
 	if err != nil {
 		return VoiceSessionExecuteToolResult{Error: "call control could not start"}, nil
+	}
+	if read {
+		raw, e := json.Marshal(result)
+		if e != nil {
+			return VoiceSessionExecuteToolResult{}, e
+		}
+		raw, e = voicecontract.ValidateToolOutput(*spec, raw)
+		if e != nil {
+			return VoiceSessionExecuteToolResult{Error: "directory result rejected"}, nil
+		}
+		return VoiceSessionExecuteToolResult{Result: raw}, nil
 	}
 	operation, ok := result.(voicecontract.Operation)
 	if !ok {
