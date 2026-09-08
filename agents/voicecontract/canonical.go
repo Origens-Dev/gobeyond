@@ -18,7 +18,7 @@ const (
 	MaxEnvelopeBytes = 16384
 	MaxSchemaBytes   = 4096
 	MaxTools         = 8
-	MaxDepth         = 8
+	MaxDepth         = 12
 	MaxKeys          = 1024
 )
 

@@ -59,3 +59,6 @@ existing version-1 fixtures retains the same call-control meaning and digest.
 no operation ID or announcement barrier. Read requests are limited to 1 KiB and
 two distinct read tool calls per session; ordinary results must match the compiled
 output schema. Only typed authored opt-in can enter this manifest.
+
+The bounded manifest JSON envelope permits depth 12 to carry nested closed output
+objects and array item schemas; byte, property, tool, and item limits still apply.
