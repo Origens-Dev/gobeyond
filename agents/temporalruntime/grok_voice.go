@@ -200,8 +200,7 @@ func (h *grokLiveHandle) writeJSON(v any) error {
 
 func (h *grokLiveHandle) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	defer h.toolWG.Wait()
+	defer func() { cancel(); h.toolWG.Wait() }()
 	writeErr := make(chan error, 1)
 	go func() { writeErr <- h.SendAudio(ctx) }()
 	go func() { <-ctx.Done(); _ = h.Close() }()

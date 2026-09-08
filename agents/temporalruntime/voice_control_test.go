@@ -119,3 +119,48 @@ func TestTerminalJSONIsNormalToolData(t *testing.T) {
 		t.Fatal("JSON terminated session")
 	}
 }
+func TestControlFailureRestoresAudioAfterResponse(t *testing.T) {
+	session := newFakeLiveSession()
+	out := make(chan voice.AudioFrame, 4)
+	entered, release := make(chan struct{}), make(chan struct{})
+	cfg := terminalConfig(t)
+	cfg.CallControl.Execute = func(context.Context, ai.ToolCall) (any, error) {
+		close(entered)
+		<-release
+		return nil, errors.New("busy")
+	}
+	h := &geminiLiveHandle{session: session, cfg: cfg, pcmOut: out}
+	_ = h.dispatchToolCall(context.Background(), &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{ID: "one", Name: "dial_contact"}}})
+	<-entered
+	_ = h.control.emit(context.Background(), out, voice.AudioFrame{Data: []byte{1}})
+	if len(out) != 0 {
+		t.Fatal("audio leaked while command pending")
+	}
+	close(release)
+	h.toolWG.Wait()
+	_ = h.control.emit(context.Background(), out, voice.AudioFrame{Data: []byte{2}})
+	if len(out) != 1 || len(session.responses) != 1 || h.control.stopped() {
+		t.Fatal("normal failure did not restore live session")
+	}
+}
+
+type blockedGrokConnection struct {
+	started, closed chan struct{}
+	once            sync.Once
+}
+
+func (f *blockedGrokConnection) WriteJSON(any) error               { close(f.started); <-f.closed; return io.EOF }
+func (f *blockedGrokConnection) ReadMessage() (int, []byte, error) { <-f.closed; return 0, nil, io.EOF }
+func (f *blockedGrokConnection) Close() error                      { f.once.Do(func() { close(f.closed) }); return nil }
+func TestTerminalCloseDoesNotWaitForWriterMutex(t *testing.T) {
+	f := &blockedGrokConnection{started: make(chan struct{}), closed: make(chan struct{})}
+	h := &grokLiveHandle{conn: f}
+	done := make(chan struct{})
+	go func() { _ = h.writeJSON(map[string]any{}); close(done) }()
+	<-f.started
+	h.control.finish(true)
+	if e := h.Close(); e != nil {
+		t.Fatal(e)
+	}
+	<-done
+}

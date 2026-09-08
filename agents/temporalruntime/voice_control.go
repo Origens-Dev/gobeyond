@@ -41,7 +41,7 @@ func (g *liveControlGate) emit(ctx context.Context, out chan<- voice.AudioFrame,
 		return ctx.Err()
 	}
 }
-func (g *liveControlGate) stopped() bool { g.mu.Lock(); defer g.mu.Unlock(); return g.terminal.Load() }
+func (g *liveControlGate) stopped() bool { return g.terminal.Load() }
 func (g *liveControlGate) begin() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
