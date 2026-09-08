@@ -3,8 +3,13 @@ package temporalruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 	"os"
 	"testing"
 )
@@ -69,5 +74,64 @@ func TestRemoteReadRegistryNormalResultAndLegacyExclusion(t *testing.T) {
 	r.Context.ManifestDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	if _, e = VoiceSessionExecuteToolActivity(context.Background(), req); e == nil || calls != 2 {
 		t.Fatal("wrong manifest executed")
+	}
+}
+
+func TestRemoteReadWorkflowReplayAndScope(t *testing.T) {
+	raw, _ := os.ReadFile("../voicecontract/testdata/remote-read.json")
+	var r voicecontract.ReadRequest
+	_ = voicecontract.Decode(raw, 16384, &r)
+	for _, wrong := range []bool{false, true} {
+		t.Run(map[bool]string{false: "replay", true: "wrong_execution"}[wrong], func(t *testing.T) {
+			var suite testsuite.WorkflowTestSuite
+			env := suite.NewTestWorkflowEnvironment()
+			id, _ := WorkflowID(r.Context.SessionID, r.Context.ExecutionID)
+			if wrong {
+				id = "gobeyond-agent-run/other/execution"
+			}
+			env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: id})
+			calls := 0
+			env.RegisterActivityWithOptions(func(context.Context, VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+				calls++
+				return VoiceSessionExecuteToolResult{Result: []byte(`{"results":[]}`)}, nil
+			}, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
+			env.ExecuteWorkflow(func(ctx workflow.Context) error {
+				state := newVoiceReadWorkflowState()
+				in := VoiceSessionInput{Context: &r.Context, AgentID: r.Context.AgentID, CallID: r.Context.CallID, SessionID: r.Context.SessionID, ExecutionID: r.Context.ExecutionID}
+				req := VoiceSessionExecuteToolInput{Grant: "opaque", RemoteRead: &r}
+				first, e := state.execute(ctx, in, req)
+				if wrong {
+					if e == nil {
+						return errors.New("wrong workflow accepted")
+					}
+					return nil
+				}
+				if e != nil {
+					return e
+				}
+				second, e := state.execute(ctx, in, req)
+				if e != nil || string(first.Result) != string(second.Result) {
+					return errors.New("read replay changed")
+				}
+				changed := r
+				changed.Arguments = []byte(`{"query":"other"}`)
+				changed.InputDigest = voicecontract.Digest(changed.Arguments)
+				req.RemoteRead = &changed
+				if _, e = state.execute(ctx, in, req); e == nil {
+					return errors.New("changed read replay accepted")
+				}
+				return nil
+			})
+			if e := env.GetWorkflowError(); e != nil {
+				t.Fatal(e)
+			}
+			want := 1
+			if wrong {
+				want = 0
+			}
+			if calls != want {
+				t.Fatalf("read executions=%d want%d", calls, want)
+			}
+		})
 	}
 }
