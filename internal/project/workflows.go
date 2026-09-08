@@ -419,6 +419,10 @@ func flattenFieldTypes(fields *ast.FieldList) []ast.Expr {
 
 func calledName(expression ast.Expr) string {
 	switch value := expression.(type) {
+	case *ast.IndexExpr:
+		return calledName(value.X)
+	case *ast.IndexListExpr:
+		return calledName(value.X)
 	case *ast.Ident:
 		return value.Name
 	case *ast.SelectorExpr:

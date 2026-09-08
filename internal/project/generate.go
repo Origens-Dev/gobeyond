@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go/format"
 	"os"
 	"path/filepath"
@@ -48,23 +49,25 @@ type AgentsManifest struct {
 }
 
 type AgentManifestDefinition struct {
-	ID          string              `json:"id"`
-	Kind        string              `json:"kind"`
-	Mode        string              `json:"mode"`
-	TaskQueue   string              `json:"taskQueue,omitempty"`
-	TaskQueues  []string            `json:"taskQueues,omitempty"`
-	Durable     bool                `json:"durable"`
-	Realtime    bool                `json:"realtime"`
-	Public      bool                `json:"public"`
-	Model       string              `json:"model,omitempty"`
-	LiveModel   string              `json:"liveModel,omitempty"`
-	ToolModel   string              `json:"toolModel,omitempty"`
-	VoiceName   string              `json:"voiceName,omitempty"`
-	MaxSteps    int                 `json:"maxSteps,omitempty"`
-	Revision    string              `json:"revision,omitempty"`
-	Slots       AgentSlots          `json:"slots"`
-	Tools       []AgentManifestTool `json:"tools"`
-	SIPHandlers []string            `json:"sipHandlers,omitempty"`
+	VoiceManifest       *voicecontract.Manifest `json:"voiceManifest,omitempty"`
+	VoiceManifestDigest string                  `json:"voiceManifestDigest,omitempty"`
+	ID                  string                  `json:"id"`
+	Kind                string                  `json:"kind"`
+	Mode                string                  `json:"mode"`
+	TaskQueue           string                  `json:"taskQueue,omitempty"`
+	TaskQueues          []string                `json:"taskQueues,omitempty"`
+	Durable             bool                    `json:"durable"`
+	Realtime            bool                    `json:"realtime"`
+	Public              bool                    `json:"public"`
+	Model               string                  `json:"model,omitempty"`
+	LiveModel           string                  `json:"liveModel,omitempty"`
+	ToolModel           string                  `json:"toolModel,omitempty"`
+	VoiceName           string                  `json:"voiceName,omitempty"`
+	MaxSteps            int                     `json:"maxSteps,omitempty"`
+	Revision            string                  `json:"revision,omitempty"`
+	Slots               AgentSlots              `json:"slots"`
+	Tools               []AgentManifestTool     `json:"tools"`
+	SIPHandlers         []string                `json:"sipHandlers,omitempty"`
 }
 
 type AgentManifestTool struct {
@@ -109,6 +112,9 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 	}
 	setAgentRevisions(agentDefinitions, buildID)
 	agentsManifest := portableAgentsManifest(agentDefinitions, buildID)
+	if err := attachVoiceManifests(&agentsManifest, agentDefinitions); err != nil {
+		return err
+	}
 	agentsManifestBytes, err := json.MarshalIndent(agentsManifest, "", "  ")
 	if err != nil {
 		return err

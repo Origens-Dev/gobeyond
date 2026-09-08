@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go/ast"
 	"go/token"
 	"os"
@@ -63,10 +64,11 @@ type AgentDefinition struct {
 // DefineAI tool. Variable is retained only for source validation; manifests
 // expose the stable map key and resolved logical queue.
 type AgentToolDefinition struct {
-	ID           string `json:"id"`
-	Variable     string `json:"-"`
-	TaskQueue    string `json:"taskQueue,omitempty"`
-	TaskQueueSet bool   `json:"-"`
+	VoiceControl *voicecontract.Tool `json:"-"`
+	ID           string              `json:"id"`
+	Variable     string              `json:"-"`
+	TaskQueue    string              `json:"taskQueue,omitempty"`
+	TaskQueueSet bool                `json:"-"`
 }
 
 // AgentSlots contains all author-visible extension references.
@@ -418,26 +420,33 @@ func parseAgentTools(config ast.Expr, kind string, files map[string]*ast.File) (
 		}
 		seen[id] = struct{}{}
 		definition := AgentToolDefinition{ID: id}
+		var voiceCall *ast.CallExpr
 		switch value := entry.Value.(type) {
 		case *ast.Ident:
 			definition.Variable = value.Name
 			call := findVariableCall(files, value.Name)
-			if call != nil && calledName(call.Fun) == "DefineTool" {
+			if call != nil && (calledName(call.Fun) == "DefineTool" || calledName(call.Fun) == "DefineToolWithCall") {
+				voiceCall = call
 				definition.TaskQueue, definition.TaskQueueSet, err = parseToolTaskQueue(call)
 				if err != nil {
 					return nil, fmt.Errorf("AI tool %q: %w", id, err)
 				}
 			}
 		case *ast.CallExpr:
-			if calledName(value.Fun) != "DefineTool" {
+			if calledName(value.Fun) != "DefineTool" && calledName(value.Fun) != "DefineToolWithCall" {
 				return nil, fmt.Errorf("AI tool %q must reference a variable or inline agents.DefineTool", id)
 			}
+			voiceCall = value
 			definition.TaskQueue, definition.TaskQueueSet, err = parseToolTaskQueue(value)
 			if err != nil {
 				return nil, fmt.Errorf("AI tool %q: %w", id, err)
 			}
 		default:
 			return nil, fmt.Errorf("AI tool %q must reference a variable or inline agents.DefineTool", id)
+		}
+		definition.VoiceControl, err = parseVoiceTool(id, voiceCall)
+		if err != nil {
+			return nil, fmt.Errorf("AI tool %q: %w", id, err)
 		}
 		definitions = append(definitions, definition)
 	}
