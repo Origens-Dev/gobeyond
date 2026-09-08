@@ -61,6 +61,7 @@ type Usage struct {
 // Instructions and VoiceName should already include any session metadata
 // overlay (agents.ResolveInstructions / ResolveVoiceName) before Start.
 type StartConfig struct {
+	CallControl      *CallControlConfig
 	AgentID          string
 	SessionID        string
 	RunID            string

@@ -73,9 +73,15 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	if model == "" {
 		return nil, voice.StartResult{}, errors.New("AI agent LiveModel is required for voice")
 	}
+	selectedTools, err := controlTools(adapter.definition, cfg)
+	if err != nil {
+		return nil, voice.StartResult{}, err
+	}
+	selectedDefinition := adapter.definition
+	selectedDefinition.AI.Tools = selectedTools
 	connectCfg := &genai.LiveConnectConfig{
 		ResponseModalities: []genai.Modality{genai.ModalityAudio},
-		Tools:              liveToolsFromDefinition(adapter.definition, cfg.EnabledToolIDs),
+		Tools:              liveToolsFromDefinition(selectedDefinition, nil),
 	}
 	// Gemini Developer API rejects system_instruction parts with an empty
 	// oneof (close 1007). Omit the field when instructions resolve empty.
@@ -136,7 +142,7 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 			session: session,
 			// Native Google Search is a server-side Live tool. Only authored
 			// function tools are dispatched back to the host.
-			tools:   clientToolsFromDefinition(adapter.definition, cfg.EnabledToolIDs),
+			tools:   clientToolsFromDefinition(selectedDefinition, nil),
 			model:   connectedModel,
 			backend: liveUsageBackend(adapter.definition.AI.Inference),
 			pcmIn:   pcmIn,
@@ -148,6 +154,7 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 }
 
 type geminiLiveHandle struct {
+	control liveControlGate
 	cfg     voice.StartConfig
 	session liveSession
 	tools   map[string]ai.Tool
@@ -273,20 +280,24 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 		}
 		message, err := handle.session.Receive()
 		if err != nil {
+			if handle.control.stopped() {
+				return nil
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return err
+		}
+		if handle.control.stopped() {
+			return nil
 		}
 		if message == nil {
 			continue
 		}
 		handle.reportUsage(message.UsageMetadata)
 		if message.ServerContent != nil && message.ServerContent.Interrupted {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case handle.pcmOut <- voice.AudioFrame{Interrupted: true}:
+			if err := handle.control.emit(ctx, handle.pcmOut, voice.AudioFrame{Interrupted: true}); err != nil {
+				return err
 			}
 			// Interruption wins over co-present model content. Do not allow
 			// stale audio from the interrupted turn into the playout queue.
@@ -303,20 +314,16 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 				if part == nil || part.InlineData == nil || len(part.InlineData.Data) == 0 {
 					continue
 				}
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case handle.pcmOut <- voice.AudioFrame{Data: append([]byte(nil), part.InlineData.Data...)}:
+				if err := handle.control.emit(ctx, handle.pcmOut, voice.AudioFrame{Data: append([]byte(nil), part.InlineData.Data...)}); err != nil {
+					return err
 				}
 			}
 		}
 		// GenerationComplete means the provider stopped generating. It is not
 		// the semantic end of a turn when a tool continuation is pending.
 		if message.ServerContent != nil && message.ServerContent.TurnComplete {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case handle.pcmOut <- voice.AudioFrame{TurnComplete: true}:
+			if err := handle.control.emit(ctx, handle.pcmOut, voice.AudioFrame{TurnComplete: true}); err != nil {
+				return err
 			}
 		}
 	}
@@ -325,6 +332,9 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *genai.LiveServerToolCall) error {
 	if call == nil || len(call.FunctionCalls) == 0 {
 		return nil
+	}
+	if handle.cfg.CallControl != nil {
+		return handle.dispatchControl(ctx, call)
 	}
 	handle.toolWG.Add(1)
 	go func() {
@@ -389,13 +399,13 @@ func compactFunctionResponses(in []*genai.FunctionResponse) []*genai.FunctionRes
 func (handle *geminiLiveHandle) sendRealtimeInput(input genai.LiveRealtimeInput) error {
 	handle.writeMu.Lock()
 	defer handle.writeMu.Unlock()
-	return handle.session.SendRealtimeInput(input)
+	return handle.control.write(func() error { return handle.session.SendRealtimeInput(input) })
 }
 
 func (handle *geminiLiveHandle) sendToolResponse(input genai.LiveToolResponseInput) error {
 	handle.writeMu.Lock()
 	defer handle.writeMu.Unlock()
-	return handle.session.SendToolResponse(input)
+	return handle.control.write(func() error { return handle.session.SendToolResponse(input) })
 }
 
 func (handle *geminiLiveHandle) reportAsyncError(err error) {
@@ -608,4 +618,36 @@ func firstEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func (h *geminiLiveHandle) dispatchControl(ctx context.Context, call *genai.LiveServerToolCall) error {
+	if len(call.FunctionCalls) != 1 || call.FunctionCalls[0] == nil {
+		return errors.New("one control call per turn required")
+	}
+	h.toolWG.Add(1)
+	go func() {
+		defer h.toolWG.Done()
+		h.control.serial.Lock()
+		defer h.control.serial.Unlock()
+		if !h.control.begin() {
+			return
+		}
+		c := call.FunctionCalls[0]
+		result, terminal, err := invokeControl(ctx, h.cfg, ai.ToolCall{ToolCallID: c.ID, ToolName: c.Name, Input: c.Args}, h.barrierSeq.Add(1))
+		if terminal {
+			h.control.finish(true)
+			_ = h.Close()
+			return
+		}
+		response := map[string]any{"result": result}
+		if err != nil {
+			response = map[string]any{"error": "call could not be completed"}
+		}
+		sendErr := h.sendToolResponse(genai.LiveToolResponseInput{FunctionResponses: []*genai.FunctionResponse{{ID: c.ID, Name: c.Name, Response: response}}})
+		h.control.finish(false)
+		if sendErr != nil {
+			h.reportAsyncError(sendErr)
+		}
+	}()
+	return nil
 }
