@@ -30,15 +30,17 @@ const (
 
 // VoiceSessionInput is the durable voice-call workflow argument.
 type VoiceSessionInput struct {
-	AgentID     string `json:"agent_id"`
-	CallID      string `json:"call_id"`
-	SessionID   string `json:"session_id"`
-	ExecutionID string `json:"execution_id"`
+	Context     *voicecontract.Context `json:"context,omitempty"`
+	AgentID     string                 `json:"agent_id"`
+	CallID      string                 `json:"call_id"`
+	SessionID   string                 `json:"session_id"`
+	ExecutionID string                 `json:"execution_id"`
 }
 
 // VoiceSessionExecuteToolInput is the Update / LocalActivity payload for one
 // Gemini Live function call.
 type VoiceSessionExecuteToolInput struct {
+	Grant string `json:"grant,omitempty"`
 	// CallControl belongs to the dedicated asynchronous current-grant path.
 	CallControl *voicecontract.Command `json:"call_control,omitempty"`
 	AgentID     string                 `json:"agent_id"`
@@ -76,10 +78,11 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 
 	toolCalls := 0
 	completed := map[string]VoiceSessionExecuteToolResult{}
+	control := newVoiceControlWorkflowState()
 	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 			if req.CallControl != nil {
-				return VoiceSessionExecuteToolResult{}, errors.New("call control requires authenticated asynchronous operation dispatch")
+				return control.execute(ctx, in, req)
 			}
 			if strings.TrimSpace(req.AgentID) == "" {
 				req.AgentID = in.AgentID
@@ -127,7 +130,7 @@ func executeVoiceSessionToolLocal(ctx workflow.Context, req VoiceSessionExecuteT
 // hold customer tools; the agent worker can.
 func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 	if req.CallControl != nil {
-		return VoiceSessionExecuteToolResult{}, errors.New("call control requires authenticated asynchronous operation dispatch")
+		return executeVoiceControlActivity(ctx, req)
 	}
 	agentID := strings.TrimSpace(req.AgentID)
 	toolName := strings.TrimSpace(req.ToolName)

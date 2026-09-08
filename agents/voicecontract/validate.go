@@ -24,7 +24,7 @@ func (s Scope) Validate() error {
 	return nil
 }
 func (c Context) Validate() error {
-	for _, s := range []string{c.OrganizationID, c.ProjectID, c.EnvironmentID, c.NetworkID, c.CallID, c.SessionID, c.ActorID, c.AgentID, c.AgentRevision} {
+	for _, s := range []string{c.ExecutionID, c.OrganizationID, c.ProjectID, c.EnvironmentID, c.NetworkID, c.CallID, c.SessionID, c.ActorID, c.AgentID, c.AgentRevision} {
 		if !identifier(s) {
 			return errors.New("invalid context identifier")
 		}

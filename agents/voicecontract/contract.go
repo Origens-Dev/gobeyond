@@ -18,6 +18,7 @@ type Scope struct {
 // Context must be constructed from a verified current grant and active owner.
 // Neither model arguments nor caller metadata may populate these fields.
 type Context struct {
+	ExecutionID    string `json:"execution_id"`
 	OrganizationID string `json:"organization_id"`
 	ProjectID      string `json:"project_id"`
 	EnvironmentID  string `json:"environment_id"`
