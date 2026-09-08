@@ -29,6 +29,8 @@ type ToolConfig struct {
 	InputSchema      any
 	OutputSchema     any
 	RequiresApproval bool
+	// VoiceControl opts an authored tool into the compiled call-control manifest.
+	VoiceControl *VoiceToolPolicy
 }
 
 type ToolHandler[Input any, Output any] func(context.Context, Actor, Input) (Output, error)
@@ -61,6 +63,19 @@ func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCa
 		metadata = ai.ProviderMetadata{
 			toolMetadataNamespace: map[string]any{toolTaskQueueKey: config.TaskQueue},
 		}
+	}
+	if config.VoiceControl != nil {
+		if metadata == nil {
+			metadata = ai.ProviderMetadata{}
+		}
+		ns, _ := metadata[toolMetadataNamespace].(map[string]any)
+		if ns == nil {
+			ns = map[string]any{}
+		}
+		policy := *config.VoiceControl
+		policy.DestinationClasses = append([]string(nil), policy.DestinationClasses...)
+		ns["voiceControl"] = policy
+		metadata[toolMetadataNamespace] = ns
 	}
 	return ai.Tool{
 		Name: config.Name, Title: config.Title, Description: config.Description,

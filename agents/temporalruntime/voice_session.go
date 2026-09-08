@@ -3,12 +3,14 @@ package temporalruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
+	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -37,13 +39,15 @@ type VoiceSessionInput struct {
 // VoiceSessionExecuteToolInput is the Update / LocalActivity payload for one
 // Gemini Live function call.
 type VoiceSessionExecuteToolInput struct {
-	AgentID    string          `json:"agent_id"`
-	ToolName   string          `json:"tool_name"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	Input      json.RawMessage `json:"input,omitempty"`
-	ActorID    string          `json:"actor_id,omitempty"`
-	ActorKind  string          `json:"actor_kind,omitempty"`
-	NetworkID  string          `json:"network_id,omitempty"`
+	// CallControl belongs to the dedicated asynchronous current-grant path.
+	CallControl *voicecontract.Command `json:"call_control,omitempty"`
+	AgentID     string                 `json:"agent_id"`
+	ToolName    string                 `json:"tool_name"`
+	ToolCallID  string                 `json:"tool_call_id,omitempty"`
+	Input       json.RawMessage        `json:"input,omitempty"`
+	ActorID     string                 `json:"actor_id,omitempty"`
+	ActorKind   string                 `json:"actor_kind,omitempty"`
+	NetworkID   string                 `json:"network_id,omitempty"`
 	// AllowedToolIDs is derived from the verified voice grant by the API. It is
 	// optional for colocated/internal tests and older direct workflow callers.
 	AllowedToolIDs []string `json:"allowed_tool_ids,omitempty"`
@@ -51,8 +55,10 @@ type VoiceSessionExecuteToolInput struct {
 
 // VoiceSessionExecuteToolResult is returned to Maglev so it can SendToolResponse.
 type VoiceSessionExecuteToolResult struct {
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  string          `json:"error,omitempty"`
+	Operation *voicecontract.Operation      `json:"operation,omitempty"`
+	Terminal  *voicecontract.TerminalResult `json:"terminal,omitempty"`
+	Result    json.RawMessage               `json:"result,omitempty"`
+	Error     string                        `json:"error,omitempty"`
 }
 
 // VoiceSessionWorkflow is the lifecycle workflow for an AI phone/softphone
@@ -72,6 +78,9 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	completed := map[string]VoiceSessionExecuteToolResult{}
 	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+			if req.CallControl != nil {
+				return VoiceSessionExecuteToolResult{}, errors.New("call control requires authenticated asynchronous operation dispatch")
+			}
 			if strings.TrimSpace(req.AgentID) == "" {
 				req.AgentID = in.AgentID
 			}
@@ -117,7 +126,9 @@ func executeVoiceSessionToolLocal(ctx workflow.Context, req VoiceSessionExecuteT
 // and runs it in-process on the realtime worker (LocalActivity). Maglev cannot
 // hold customer tools; the agent worker can.
 func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
-	_ = ctx
+	if req.CallControl != nil {
+		return VoiceSessionExecuteToolResult{}, errors.New("call control requires authenticated asynchronous operation dispatch")
+	}
 	agentID := strings.TrimSpace(req.AgentID)
 	toolName := strings.TrimSpace(req.ToolName)
 	if agentID == "" || toolName == "" {
@@ -136,6 +147,9 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("unknown tool %q", toolName)}, nil
 	}
 
+	if _, controlled := agents.VoiceControlPolicy(tool); controlled {
+		return VoiceSessionExecuteToolResult{}, errors.New("voice control tool requires current grant operation dispatch")
+	}
 	var args map[string]any
 	if len(req.Input) > 0 {
 		if err := json.Unmarshal(req.Input, &args); err != nil {
