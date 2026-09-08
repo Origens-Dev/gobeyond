@@ -1,0 +1,1 @@
+{"call_context":"{\"first_name\":\"Andrew\"}","common_context":"[{\"destination_id\":\"recipient_revision1_opaque1\",\"public_label\":\"Parker\",\"destination_class\":\"extension\"}]","grant":"opaque-platform-signed-grant","manifest_digest":"sha256:5a70748c34c1634a7991088024507e3320a177f45eb940811adfad25eebf4b83","route":"assistant","version":"1"}
