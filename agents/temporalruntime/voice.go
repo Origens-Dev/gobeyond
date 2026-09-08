@@ -138,6 +138,7 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 		}
 	}
 	return &geminiLiveHandle{
+			control: liveControlGate{maxTurns: controlTurnLimit(cfg)},
 			cfg:     cfg,
 			session: session,
 			// Native Google Search is a server-side Live tool. Only authored

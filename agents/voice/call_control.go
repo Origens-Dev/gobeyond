@@ -10,8 +10,9 @@ import (
 // from session metadata. Execute must enforce grant/owner/context/sequence and
 // schema validation, and return only after authoritative operation acceptance.
 type CallControlConfig struct {
-	ToolNames []string
-	Execute   func(context.Context, ai.ToolCall) (any, error)
+	MaxAssistantTurns int
+	ToolNames         []string
+	Execute           func(context.Context, ai.ToolCall) (any, error)
 }
 
 // TerminalHandoff is trusted only when returned by CallControlConfig.Execute.

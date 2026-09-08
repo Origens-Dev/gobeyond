@@ -164,3 +164,25 @@ func TestTerminalCloseDoesNotWaitForWriterMutex(t *testing.T) {
 	}
 	<-done
 }
+
+func TestControlTurnBudgetFencesFifthTurnAndTools(t *testing.T) {
+	gate := liveControlGate{maxTurns: 4}
+	out := make(chan voice.AudioFrame, 9)
+	for range 4 {
+		if err := gate.emit(context.Background(), out, voice.AudioFrame{Data: []byte{1}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := gate.emit(context.Background(), out, voice.AudioFrame{TurnComplete: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := gate.emit(context.Background(), out, voice.AudioFrame{Data: []byte{2}}); err == nil {
+		t.Fatal("fifth turn emitted")
+	}
+	if gate.begin() {
+		t.Fatal("tool accepted after turn budget")
+	}
+	if len(out) != 8 {
+		t.Fatalf("frames=%d", len(out))
+	}
+}

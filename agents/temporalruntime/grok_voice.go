@@ -58,7 +58,8 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 		return nil, voice.StartResult{}, fmt.Errorf("grok voice connect: %w", err)
 	}
 	h := &grokLiveHandle{
-		conn: conn, audioIn: audioIn, audioOut: audioOut,
+		control: liveControlGate{maxTurns: controlTurnLimit(cfg)},
+		conn:    conn, audioIn: audioIn, audioOut: audioOut,
 		cfg: cfg, tools: selectedTools,
 	}
 	instructions := strings.TrimSpace(cfg.Instructions)

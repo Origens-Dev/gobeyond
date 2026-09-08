@@ -17,6 +17,8 @@ type liveControlGate struct {
 	mu       sync.Mutex
 	serial   sync.Mutex
 	pending  bool
+	maxTurns int
+	turns    int
 	terminal atomic.Bool
 }
 
@@ -34,8 +36,14 @@ func (g *liveControlGate) emit(ctx context.Context, out chan<- voice.AudioFrame,
 	if g.pending || g.terminal.Load() {
 		return nil
 	}
+	if g.maxTurns > 0 && g.turns >= g.maxTurns {
+		return errors.New("voice assistant turn budget exhausted")
+	}
 	select {
 	case out <- f:
+		if f.TurnComplete {
+			g.turns++
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -45,7 +53,7 @@ func (g *liveControlGate) stopped() bool { return g.terminal.Load() }
 func (g *liveControlGate) begin() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.terminal.Load() {
+	if g.terminal.Load() || (g.maxTurns > 0 && g.turns >= g.maxTurns) {
 		return false
 	}
 	g.pending = true
@@ -65,7 +73,7 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 		return voiceToolsFromDefinition(d, cfg.EnabledToolIDs), nil
 	}
 	c := cfg.CallControl
-	if c.Execute == nil || cfg.OnPlayoutBarrier == nil || len(c.ToolNames) == 0 || len(c.ToolNames) > 8 {
+	if c.MaxAssistantTurns < 0 || c.MaxAssistantTurns > 10 || c.Execute == nil || cfg.OnPlayoutBarrier == nil || len(c.ToolNames) == 0 || len(c.ToolNames) > 8 {
 		return nil, errors.New("verified call-control executor and playout barrier required")
 	}
 	out := map[string]ai.Tool{}
@@ -104,4 +112,11 @@ func invokeControl(ctx context.Context, cfg voice.StartConfig, call ai.ToolCall,
 		return nil, true, nil
 	}
 	return result, false, err
+}
+
+func controlTurnLimit(cfg voice.StartConfig) int {
+	if cfg.CallControl == nil {
+		return 0
+	}
+	return cfg.CallControl.MaxAssistantTurns
 }
