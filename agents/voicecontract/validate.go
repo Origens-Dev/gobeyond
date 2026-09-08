@@ -1,6 +1,7 @@
 package voicecontract
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"unicode"
@@ -102,4 +103,36 @@ func safeText(s string, max int) bool {
 		}
 	}
 	return true
+}
+
+func (e Envelope) Validate() error {
+	if e.Version != Version || (e.Route != "assistant" && e.Route != "inbound_assistant/screener") || len(e.Grant) == 0 || len(e.Grant) > 4096 || !digestValid(e.ManifestDigest) || len(e.CommonContext) > 12288 || len(e.CallContext) > 1024 || !utf8.ValidString(e.CommonContext) || !utf8.ValidString(e.CallContext) {
+		return errors.New("invalid envelope")
+	}
+	if e.Route == "inbound_assistant/screener" && e.Screening == nil {
+		return errors.New("screening context required")
+	}
+	if s := e.Screening; s != nil {
+		if !identifier(s.DIDID) || len(s.RecipientIDs) > 64 {
+			return errors.New("invalid screening context")
+		}
+		switch s.IdentityClass {
+		case "unknown", "platform_internal", "active_network_connection":
+		default:
+			return errors.New("invalid identity classification")
+		}
+		for _, id := range s.RecipientIDs {
+			if !identifier(id) {
+				return errors.New("invalid recipient ID")
+			}
+		}
+	}
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	if len(raw) > MaxEnvelopeBytes {
+		return errors.New("envelope size exceeded")
+	}
+	return nil
 }

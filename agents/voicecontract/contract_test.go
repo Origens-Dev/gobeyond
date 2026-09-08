@@ -95,3 +95,30 @@ func TestSchemaSubstitution(t *testing.T) {
 		t.Fatal("accepted ref")
 	}
 }
+func TestSurrogateAliases(t *testing.T) {
+	for _, s := range []string{`"\ud800"`, `"\udfff"`, `"\ud800x"`} {
+		if _, e := CanonicalJSON([]byte(s), 100); e == nil {
+			t.Fatal("accepted surrogate", s)
+		}
+	}
+	if _, e := CanonicalJSON([]byte(`"\ud83d\ude00"`), 100); e != nil {
+		t.Fatal(e)
+	}
+}
+func TestFreezeDoesNotMutate(t *testing.T) {
+	raw, e := os.ReadFile("testdata/manifest.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var m Manifest
+	if e = Decode(raw, MaxManifestBytes, &m); e != nil {
+		t.Fatal(e)
+	}
+	original := append([]byte(nil), m.Tools[0].InputSchema...)
+	if _, _, e = FreezeManifest(m); e != nil {
+		t.Fatal(e)
+	}
+	if !bytes.Equal(original, m.Tools[0].InputSchema) {
+		t.Fatal("mutated registry")
+	}
+}

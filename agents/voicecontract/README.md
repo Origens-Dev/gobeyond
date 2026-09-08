@@ -9,8 +9,8 @@ manifest digest. `revision` identifies the manifest definition, `compiled_revisi
 identifies its deployed build. Digest is `sha256:` plus lowercase SHA256 over canonical
 JSON, with no self-digest field. Schema digests cover only canonical input_schema.
 Canonical JSON has sorted keys, compact Go encoding/json escaping, integer-only
-numbers, valid UTF-8, no duplicate keys, at most 8 nested levels, 128 total object
-keys, and 128 array entries. Manifests allow 8 tools, 32768 bytes total, 4096 bytes
+numbers, valid UTF-8, no duplicate keys, at most 8 nested levels, 1024 total object
+keys, and 1024 array entries. Manifests allow 8 tools, 32768 bytes total, 4096 bytes
 per schema, 512 description bytes, 128 identifier bytes. Schemas are closed objects,
 bounded strings, and standalone anyOf with 2–4 variants. No refs, recursive schemas,
 unknown keywords, provider metadata, or client schemas are accepted.

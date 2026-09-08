@@ -19,13 +19,13 @@ const (
 	MaxSchemaBytes   = 4096
 	MaxTools         = 8
 	MaxDepth         = 8
-	MaxKeys          = 128
+	MaxKeys          = 1024
 )
 
 // CanonicalJSON uses sorted UTF-8 keys, compact Go JSON escaping, and integer
 // numbers only. It is a deliberately restricted protocol, not RFC 8785.
 func CanonicalJSON(raw []byte, limit int) ([]byte, error) {
-	if len(raw) == 0 || len(raw) > limit || !utf8.Valid(raw) {
+	if len(raw) == 0 || len(raw) > limit || !utf8.Valid(raw) || !validEscapes(raw) {
 		return nil, errors.New("invalid JSON size or encoding")
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
@@ -142,6 +142,11 @@ func schema(v any, depth int) error {
 	}
 	switch m["type"] {
 	case "object":
+		for k := range m {
+			if k != "type" && k != "properties" && k != "required" && k != "additionalProperties" {
+				return errors.New("invalid object schema keyword")
+			}
+		}
 		if m["additionalProperties"] != false {
 			return errors.New("closed schema object required")
 		}
@@ -170,6 +175,11 @@ func schema(v any, depth int) error {
 			seen[s] = true
 		}
 	case "string":
+		for k := range m {
+			if k != "type" && k != "minLength" && k != "maxLength" && k != "enum" {
+				return errors.New("invalid string schema keyword")
+			}
+		}
 		max, ok := m["maxLength"].(float64)
 		if !ok || max < 1 || max > 500 {
 			return errors.New("bounded string required")
@@ -201,14 +211,15 @@ func schema(v any, depth int) error {
 // FreezeManifest validates the compiled registry value and returns canonical
 // bytes and its digest. Every schema digest must match; no caller schemas merge.
 func FreezeManifest(m Manifest) ([]byte, string, error) {
-	if m.Version != Version || m.Revision == "" || len(m.Revision) > 128 || len(m.Tools) == 0 || len(m.Tools) > MaxTools {
+	if m.Version != Version || !identifier(m.Revision) || !identifier(m.CompiledRevision) || len(m.Tools) == 0 || len(m.Tools) > MaxTools {
 		return nil, "", errors.New("invalid manifest header")
 	}
+	m.Tools = append([]Tool(nil), m.Tools...)
 	seen := map[string]bool{}
 	names := map[string]bool{}
 	for i := range m.Tools {
 		t := &m.Tools[i]
-		if !identifier(t.ID) || !identifier(t.Name) || seen[t.ID] || names[t.Name] || len(t.Description) == 0 || len(t.Description) > 512 {
+		if !identifier(t.ID) || !identifier(t.Name) || seen[t.ID] || names[t.Name] || len(t.Description) == 0 || !safeText(t.Description, 512) {
 			return nil, "", errors.New("invalid tool identity")
 		}
 		seen[t.ID] = true
@@ -220,6 +231,9 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 		var s any
 		if e = json.Unmarshal(c, &s); e != nil {
 			return nil, "", e
+		}
+		if obj, ok := s.(map[string]any); !ok || obj["type"] != "object" {
+			return nil, "", errors.New("tool root schema must be object")
 		}
 		if e = schema(s, 0); e != nil {
 			return nil, "", e
@@ -266,4 +280,43 @@ func classes(a []string) error {
 		seen[c] = true
 	}
 	return nil
+}
+
+// Reject isolated UTF-16 surrogate escapes before encoding/json can normalize
+// them to replacement characters. Valid surrogate pairs retain their meaning.
+func validEscapes(raw []byte) bool {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		i++
+		if i >= len(raw) {
+			return false
+		}
+		if raw[i] != 'u' {
+			continue
+		}
+		if i+4 >= len(raw) {
+			return false
+		}
+		n, e := strconv.ParseUint(string(raw[i+1:i+5]), 16, 16)
+		if e != nil {
+			return false
+		}
+		i += 4
+		if n >= 0xdc00 && n <= 0xdfff {
+			return false
+		}
+		if n >= 0xd800 && n <= 0xdbff {
+			if i+6 >= len(raw) || raw[i+1] != '\\' || raw[i+2] != 'u' {
+				return false
+			}
+			lo, e := strconv.ParseUint(string(raw[i+3:i+7]), 16, 16)
+			if e != nil || lo < 0xdc00 || lo > 0xdfff {
+				return false
+			}
+			i += 6
+		}
+	}
+	return true
 }
