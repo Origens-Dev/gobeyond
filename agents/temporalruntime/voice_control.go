@@ -9,6 +9,7 @@ import (
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/voice"
+	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 )
 
 // The same mutex linearizes terminal commit against provider writes and output.
@@ -83,6 +84,14 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 		}
 		if _, ok := out[name]; ok {
 			return nil, errors.New("duplicate control tool")
+		}
+		if name == voicecontract.ToolIDHangUp {
+			// hang_up is platform injected. It must not be supplied by the
+			// customer definition or acquire an authored handler.
+			out[name] = ai.Tool{Name: name, Description: "End the current call.", InputSchema: map[string]any{
+				"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false,
+			}}
+			continue
 		}
 		t, ok := lookupDefinitionTool(d, name)
 		if !ok {

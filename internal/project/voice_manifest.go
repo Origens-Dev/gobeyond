@@ -64,17 +64,35 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 			}
 			tool.TerminalOnSuccess = b
 		case "DestinationClasses":
-			a, ok := v.([]any)
+			a, err := literalStrings(v, "destination class")
+			if err != nil {
+				return nil, err
+			}
+			tool.DestinationClasses = a
+		case "TargetKinds":
+			a, err := literalStrings(v, "target kind")
+			if err != nil {
+				return nil, err
+			}
+			tool.TargetKinds = a
+		case "InputModes":
+			a, err := literalStrings(v, "input mode")
+			if err != nil {
+				return nil, err
+			}
+			tool.InputModes = a
+		case "HandoffMode":
+			s, ok := v.(string)
 			if !ok {
-				return nil, fmt.Errorf("destination classes must be literal strings")
+				return nil, fmt.Errorf("handoff mode must be a literal string")
 			}
-			for _, v := range a {
-				s, ok := v.(string)
-				if !ok {
-					return nil, fmt.Errorf("invalid destination class")
-				}
-				tool.DestinationClasses = append(tool.DestinationClasses, s)
+			tool.HandoffMode = s
+		case "TerminalBehavior":
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("terminal behavior must be a literal string")
 			}
+			tool.TerminalBehavior = s
 		default:
 			return nil, fmt.Errorf("unsupported voice policy field %s", key.Name)
 		}
@@ -108,6 +126,23 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 	}
 	return &tool, nil
 }
+
+func literalStrings(value any, label string) ([]string, error) {
+	values, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s values must be literal strings", label)
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid %s", label)
+		}
+		out = append(out, text)
+	}
+	return out, nil
+}
+
 func voiceLiteral(e ast.Expr, depth int) (any, error) {
 	if depth > voicecontract.MaxDepth {
 		return nil, fmt.Errorf("voice literal depth exceeded")

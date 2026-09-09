@@ -122,7 +122,7 @@ func schema(v any, depth int) error {
 	if !ok || depth > MaxDepth {
 		return errors.New("schema object required")
 	}
-	allowed := map[string]bool{"type": true, "properties": true, "required": true, "additionalProperties": true, "maxLength": true, "minLength": true, "enum": true, "anyOf": true, "items": true, "maxItems": true}
+	allowed := map[string]bool{"type": true, "properties": true, "required": true, "additionalProperties": true, "maxLength": true, "minLength": true, "enum": true, "anyOf": true, "oneOf": true, "items": true, "maxItems": true}
 	for k := range m {
 		if !allowed[k] {
 			return fmt.Errorf("unsupported schema keyword %q", k)
@@ -132,6 +132,18 @@ func schema(v any, depth int) error {
 		a, ok := alternatives.([]any)
 		if !ok || len(a) < 2 || len(a) > 4 || len(m) != 1 {
 			return errors.New("bounded standalone anyOf required")
+		}
+		for _, v := range a {
+			if e := schema(v, depth+1); e != nil {
+				return e
+			}
+		}
+		return nil
+	}
+	if alternatives, ok := m["oneOf"]; ok {
+		a, ok := alternatives.([]any)
+		if !ok || len(a) < 2 || len(a) > 4 || len(m) != 1 {
+			return errors.New("bounded standalone oneOf required")
 		}
 		for _, v := range a {
 			if e := schema(v, depth+1); e != nil {
@@ -224,7 +236,7 @@ func schema(v any, depth int) error {
 // FreezeManifest validates the compiled registry value and returns canonical
 // bytes and its digest. Every schema digest must match; no caller schemas merge.
 func FreezeManifest(m Manifest) ([]byte, string, error) {
-	if m.Version != Version || !identifier(m.Revision) || !identifier(m.CompiledRevision) || len(m.Tools) == 0 || len(m.Tools) > MaxTools {
+	if !validVersion(m.Version) || !identifier(m.Revision) || !identifier(m.CompiledRevision) || len(m.Tools) == 0 || len(m.Tools) > MaxTools {
 		return nil, "", errors.New("invalid manifest header")
 	}
 	m.Tools = append([]Tool(nil), m.Tools...)
@@ -234,6 +246,9 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 		t := &m.Tools[i]
 		if !identifier(t.ID) || !identifier(t.Name) || seen[t.ID] || names[t.Name] || len(t.Description) == 0 || !safeText(t.Description, 512) {
 			return nil, "", errors.New("invalid tool identity")
+		}
+		if m.Version == Version && (t.ID == ToolIDHangUp || t.Name == ToolIDHangUp) {
+			return nil, "", errors.New("reserved platform tool")
 		}
 		seen[t.ID] = true
 		names[t.Name] = true
@@ -245,7 +260,7 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 		if e = json.Unmarshal(c, &s); e != nil {
 			return nil, "", e
 		}
-		if obj, ok := s.(map[string]any); !ok || obj["type"] != "object" {
+		if obj, ok := s.(map[string]any); !ok || (obj["type"] != "object" && obj["oneOf"] == nil && obj["anyOf"] == nil) {
 			return nil, "", errors.New("tool root schema must be object")
 		}
 		if e = schema(s, 0); e != nil {
@@ -284,6 +299,18 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 			if e := classes(t.DestinationClasses); e != nil {
 				return nil, "", e
 			}
+			if e := targetKinds(t.TargetKinds); e != nil {
+				return nil, "", e
+			}
+			if e := inputModes(t.InputModes); e != nil {
+				return nil, "", e
+			}
+			if t.HandoffMode != "" && t.HandoffMode != "blind" {
+				return nil, "", errors.New("invalid handoff mode")
+			}
+			if t.TerminalBehavior != "" && t.TerminalBehavior != "terminal" && t.TerminalBehavior != "handoff" {
+				return nil, "", errors.New("invalid terminal behavior")
+			}
 		}
 	}
 	sort.Slice(m.Tools, func(i, j int) bool { return m.Tools[i].ID < m.Tools[j].ID })
@@ -309,15 +336,43 @@ func identifier(s string) bool {
 	return true
 }
 func classes(a []string) error {
-	if len(a) == 0 || len(a) > 3 {
+	if len(a) == 0 || len(a) > 4 {
 		return errors.New("invalid destination classes")
 	}
 	seen := map[string]bool{}
 	for _, c := range a {
-		if seen[c] || (c != "extension" && c != "managed" && c != "pstn") {
+		if seen[c] || (c != "extension" && c != "managed" && c != "pstn" && c != "outside_pstn" && c != "assistant" && c != "line" && c != "connected_line") {
 			return errors.New("invalid destination class")
 		}
 		seen[c] = true
+	}
+	return nil
+}
+
+func targetKinds(a []string) error {
+	if len(a) > 4 {
+		return errors.New("invalid target kinds")
+	}
+	seen := map[string]bool{}
+	for _, kind := range a {
+		if seen[kind] || (kind != "assistant" && kind != "line" && kind != "pstn" && kind != "connected_line") {
+			return errors.New("invalid target kind")
+		}
+		seen[kind] = true
+	}
+	return nil
+}
+
+func inputModes(a []string) error {
+	if len(a) > 2 {
+		return errors.New("invalid input modes")
+	}
+	seen := map[string]bool{}
+	for _, mode := range a {
+		if seen[mode] || (mode != "destination_id" && mode != "phone_number") {
+			return errors.New("invalid input mode")
+		}
+		seen[mode] = true
 	}
 	return nil
 }

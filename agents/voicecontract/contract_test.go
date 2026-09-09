@@ -3,8 +3,70 @@ package voicecontract
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 )
+
+func v2TestContext() Context {
+	return Context{
+		ExecutionID: "execution_2", OrganizationID: "org_1", ProjectID: "project_1", EnvironmentID: "env_1", NetworkID: "network_1",
+		CallID: "call_2", SessionID: "session_2", ActorID: "actor_1", ActorKind: "user", AgentID: "assistant_1", AgentRevision: "revision_2",
+		ManifestDigest: "sha256:" + strings.Repeat("0", 64), Generation: 1,
+		TransportCallID: "transport_1", ParentCallID: "call_2", HopID: "hop_1", HopCount: 1,
+		Scope: Scope{Kind: "agent", LineID: "line_1"},
+	}
+}
+
+func TestV2AgentContextAndTargetFence(t *testing.T) {
+	c := v2TestContext()
+	if err := c.ValidateForVersion(Version); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ValidateForVersion(LegacyVersion); err == nil {
+		t.Fatal("accepted v2 context on legacy wire")
+	}
+	for _, target := range []VoiceTarget{
+		{Kind: "assistant", Class: "assistant", DestinationID: "assistant_1", PublicLabel: "Parker"},
+		{Kind: "line", Class: "line", DestinationID: "line_2", PublicLabel: "Desk"},
+		{Kind: "pstn", Class: "pstn", PhoneNumber: "+14155552671"},
+	} {
+		if err := target.Validate(); err != nil {
+			t.Fatalf("target %+v: %v", target, err)
+		}
+	}
+	for _, target := range []VoiceTarget{
+		{Kind: "assistant", Class: "assistant", DestinationID: "a", PhoneNumber: "+14155552671"},
+		{Kind: "pstn", Class: "pstn", PhoneNumber: "+01234567"},
+		{Kind: "line", Class: "assistant", DestinationID: "line_2", PublicLabel: "Desk"},
+	} {
+		if target.Validate() == nil {
+			t.Fatalf("accepted invalid target %+v", target)
+		}
+	}
+}
+
+func TestV2OneOfInputIsClosedAndExclusive(t *testing.T) {
+	schema := []byte(`{"oneOf":[{"type":"object","properties":{"destination_id":{"type":"string","maxLength":128,"minLength":1}},"required":["destination_id"],"additionalProperties":false},{"type":"object","properties":{"phone_number":{"type":"string","maxLength":16,"minLength":8}},"required":["phone_number"],"additionalProperties":false}]}`)
+	canonicalSchema, err := CanonicalJSON(schema, MaxSchemaBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{Version: Version, Revision: "revision_2", CompiledRevision: "revision_2", Tools: []Tool{{ID: "dial-contact", Name: "dial_contact", Description: "Dial", InputSchema: canonicalSchema, SchemaDigest: Digest(canonicalSchema), DestinationClasses: []string{"assistant", "pstn"}, TargetKinds: []string{"assistant", "pstn"}, InputModes: []string{"destination_id", "phone_number"}}}}
+	if _, _, err := FreezeManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	tool := m.Tools[0]
+	for _, raw := range []string{`{"destination_id":"assistant_1"}`, `{"phone_number":"+14155552671"}`} {
+		if _, err := ValidateToolInput(tool, []byte(raw)); err != nil {
+			t.Fatalf("accepted variant input %s: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{`{"destination_id":"a","phone_number":"+14155552671"}`, `{"destination_id":"a","extra":"x"}`, `{}`} {
+		if _, err := ValidateToolInput(tool, []byte(raw)); err == nil {
+			t.Fatalf("accepted invalid oneOf input %s", raw)
+		}
+	}
+}
 
 func TestGoldenManifest(t *testing.T) {
 	raw, e := os.ReadFile("testdata/manifest.json")
