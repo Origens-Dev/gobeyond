@@ -18,6 +18,9 @@ func TestAuthoredVoiceManifestConsumer(t *testing.T) {
 	if e = voicecontract.Decode(raw, voicecontract.MaxManifestBytes, &golden); e != nil {
 		t.Fatal(e)
 	}
+	// Authored voice manifests are compiled on the current generic contract;
+	// the fixture remains a compact v1-shaped input for migration coverage.
+	golden.Version = voicecontract.Version
 	var input any
 	if e = json.Unmarshal(golden.Tools[0].InputSchema, &input); e != nil {
 		t.Fatal(e)
