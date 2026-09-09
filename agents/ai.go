@@ -115,6 +115,9 @@ func DefineAI(config AIConfig, slots ...Slots) AIDefinition {
 // either direct or durable registries until pending interactions are delivered
 // through the native session event contract.
 func (definition AIDefinition) ValidateRegistration() error {
+	if _, _, _, err := definition.CompileVoiceManifest(); err != nil {
+		return fmt.Errorf("compiled voice manifest: %w", err)
+	}
 	toolIDs := make([]string, 0, len(definition.AI.Tools))
 	for toolID := range definition.AI.Tools {
 		toolIDs = append(toolIDs, toolID)

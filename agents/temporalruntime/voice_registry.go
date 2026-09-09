@@ -15,9 +15,11 @@ import (
 // VoiceRegistry holds Live voice adapters for AI agents on a realtime worker.
 // Generated realtime-{agentId} mains register adapters alongside AIRegistry.
 type VoiceRegistry struct {
-	mu          sync.RWMutex
-	adapters    map[string]voice.Adapter
-	definitions map[string]agents.AIDefinition
+	mu              sync.RWMutex
+	adapters        map[string]voice.Adapter
+	definitions     map[string]agents.AIDefinition
+	manifests       map[string][]byte
+	manifestDigests map[string]string
 }
 
 var processVoiceRegistry atomic.Pointer[VoiceRegistry]
@@ -62,6 +64,10 @@ func RegisterVoice(registry *VoiceRegistry, agentID string, definition agents.AI
 	if err := definition.ProbeLiveModel(); err != nil {
 		return fmt.Errorf("AI agent %q: %w", agentID, err)
 	}
+	_, manifest, manifestDigest, err := definition.CompileVoiceManifest()
+	if err != nil {
+		return err
+	}
 	var adapter voice.Adapter
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("GOBEYOND_VOICE_PROVIDER"))) {
 	case "", "gemini":
@@ -82,6 +88,12 @@ func RegisterVoice(registry *VoiceRegistry, agentID string, definition agents.AI
 	if _, exists := registry.adapters[agentID]; exists {
 		return fmt.Errorf("voice adapter for agent %q is already registered", agentID)
 	}
+	if registry.manifests == nil {
+		registry.manifests = map[string][]byte{}
+		registry.manifestDigests = map[string]string{}
+	}
+	registry.manifests[agentID] = append([]byte(nil), manifest...)
+	registry.manifestDigests[agentID] = manifestDigest
 	registry.adapters[agentID] = adapter
 	registry.definitions[agentID] = definition
 	return nil
@@ -107,4 +119,20 @@ func (registry *VoiceRegistry) Definition(agentID string) (agents.AIDefinition, 
 	defer registry.mu.RUnlock()
 	definition, ok := registry.definitions[strings.TrimSpace(agentID)]
 	return definition, ok
+}
+
+// Manifest returns an immutable canonical copy for authenticated publication or
+// resolution. Publication must bind the surrounding tenant/environment registry
+// key; this accessor does not expose a public HTTP endpoint.
+func (registry *VoiceRegistry) Manifest(agentID string) ([]byte, string, bool) {
+	if registry == nil {
+		return nil, "", false
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	raw, ok := registry.manifests[strings.TrimSpace(agentID)]
+	if !ok || len(raw) == 0 {
+		return nil, "", false
+	}
+	return append([]byte(nil), raw...), registry.manifestDigests[strings.TrimSpace(agentID)], true
 }

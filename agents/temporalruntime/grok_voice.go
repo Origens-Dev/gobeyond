@@ -39,6 +39,10 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 	if err := cfg.Actor.Validate(); err != nil {
 		return nil, voice.StartResult{}, err
 	}
+	selectedTools, err := controlTools(adapter.definition, cfg)
+	if err != nil {
+		return nil, voice.StartResult{}, err
+	}
 	key := strings.TrimSpace(os.Getenv("XAI_API_KEY"))
 	if key == "" {
 		return nil, voice.StartResult{}, errors.New("XAI_API_KEY is required when GOBEYOND_VOICE_PROVIDER=grok")
@@ -56,8 +60,9 @@ func (adapter *GrokLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig
 		return nil, voice.StartResult{}, fmt.Errorf("grok voice connect: %w", err)
 	}
 	h := &grokLiveHandle{
-		conn: conn, audioIn: audioIn, audioOut: audioOut,
-		cfg: cfg, tools: voiceToolsFromDefinition(adapter.definition, cfg.EnabledToolIDs),
+		control: liveControlGate{maxTurns: controlTurnLimit(cfg)},
+		conn:    conn, audioIn: audioIn, audioOut: audioOut,
+		cfg: cfg, tools: selectedTools,
 	}
 	instructions := strings.TrimSpace(cfg.Instructions)
 	if instructions == "" {
@@ -185,8 +190,14 @@ func isWebSearchTool(name string) bool {
 	return name == "web_search" || name == "web-search" || name == "search_web"
 }
 
+type grokConnection interface {
+	WriteJSON(any) error
+	ReadMessage() (int, []byte, error)
+	Close() error
+}
 type grokLiveHandle struct {
-	conn     *websocket.Conn
+	control  liveControlGate
+	conn     grokConnection
 	audioIn  <-chan []byte
 	audioOut chan<- voice.AudioFrame
 	cfg      voice.StartConfig
@@ -199,11 +210,12 @@ type grokLiveHandle struct {
 func (h *grokLiveHandle) writeJSON(v any) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.conn.WriteJSON(v)
+	return h.control.write(func() error { return h.conn.WriteJSON(v) })
 }
 
 func (h *grokLiveHandle) Run(ctx context.Context) error {
-	defer h.toolWG.Wait()
+	ctx, cancel := context.WithCancel(ctx)
+	defer func() { cancel(); h.toolWG.Wait() }()
 	writeErr := make(chan error, 1)
 	go func() { writeErr <- h.SendAudio(ctx) }()
 	go func() { <-ctx.Done(); _ = h.Close() }()
@@ -211,6 +223,9 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 	for {
 		kind, data, err := h.conn.ReadMessage()
 		if err != nil {
+			if h.control.stopped() {
+				return nil
+			}
 			h.logReadError(err)
 			return err
 		}
@@ -223,10 +238,8 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 		default:
 		}
 		if kind == websocket.BinaryMessage {
-			select {
-			case h.audioOut <- voice.AudioFrame{Data: data}:
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := h.control.emit(ctx, h.audioOut, voice.AudioFrame{Data: data}); err != nil {
+				return err
 			}
 			continue
 		}
@@ -248,16 +261,12 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			select {
-			case h.audioOut <- voice.AudioFrame{Data: b}:
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := h.control.emit(ctx, h.audioOut, voice.AudioFrame{Data: b}); err != nil {
+				return err
 			}
 		case "input_audio_buffer.speech_started":
-			select {
-			case h.audioOut <- voice.AudioFrame{Interrupted: true}:
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := h.control.emit(ctx, h.audioOut, voice.AudioFrame{Interrupted: true}); err != nil {
+				return err
 			}
 		case "response.function_call_arguments.done":
 			call, err := decodeGrokFunctionCall(data)
@@ -281,10 +290,8 @@ func (h *grokLiveHandle) Run(ctx context.Context) error {
 			if !grokResponseCompleted(e.Response.Status) {
 				continue
 			}
-			select {
-			case h.audioOut <- voice.AudioFrame{TurnComplete: true}:
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := h.control.emit(ctx, h.audioOut, voice.AudioFrame{TurnComplete: true}); err != nil {
+				return err
 			}
 		case "error":
 			return fmt.Errorf("grok voice provider error: %s", string(data))
@@ -347,6 +354,9 @@ func decodeGrokFunctionCall(data []byte) (grokFunctionCall, error) {
 func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grokFunctionCall) error {
 	if len(calls) == 0 {
 		return nil
+	}
+	if h.cfg.CallControl != nil {
+		return h.completeControl(ctx, calls)
 	}
 	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -446,7 +456,33 @@ func (h *grokLiveHandle) Close() error {
 	if h == nil || h.conn == nil {
 		return nil
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	return h.conn.Close()
+}
+
+func (h *grokLiveHandle) completeControl(ctx context.Context, calls []grokFunctionCall) error {
+	if len(calls) != 1 {
+		return errors.New("one control call per turn required")
+	}
+	h.control.serial.Lock()
+	defer h.control.serial.Unlock()
+	if !h.control.begin() {
+		return nil
+	}
+	c := calls[0]
+	result, terminal, err := invokeControl(ctx, h.cfg, ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}, h.barrier.Add(1))
+	if terminal {
+		h.control.finish(true)
+		return h.Close()
+	}
+	output := map[string]any{"result": result}
+	if err != nil {
+		output = map[string]any{"error": "call could not be completed"}
+	}
+	if err := h.writeJSON(map[string]any{"type": "conversation.item.create", "item": map[string]any{"type": "function_call_output", "call_id": c.CallID, "output": mustJSON(output)}}); err != nil {
+		h.control.finish(false)
+		return err
+	}
+	err = h.writeJSON(map[string]any{"type": "response.create"})
+	h.control.finish(false)
+	return err
 }
