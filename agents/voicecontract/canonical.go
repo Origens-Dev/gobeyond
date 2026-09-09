@@ -308,7 +308,7 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 			if t.HandoffMode != "" && t.HandoffMode != "blind" {
 				return nil, "", errors.New("invalid handoff mode")
 			}
-			if t.TerminalBehavior != "" && t.TerminalBehavior != "terminal" {
+			if t.TerminalBehavior != "" && t.TerminalBehavior != "terminal" && t.TerminalBehavior != "handoff" {
 				return nil, "", errors.New("invalid terminal behavior")
 			}
 		}
