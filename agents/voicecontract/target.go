@@ -26,11 +26,11 @@ func (t VoiceTarget) Validate() error {
 			return errors.New("invalid assistant target")
 		}
 	case "line":
-		if t.Class != "line" || t.DestinationID == "" {
+		if t.Class != "line" && t.Class != "extension" || t.DestinationID == "" {
 			return errors.New("invalid line target")
 		}
 	case "pstn":
-		if t.Class != "pstn" || t.PhoneNumber == "" {
+		if t.Class != "pstn" && t.Class != "outside_pstn" || t.PhoneNumber == "" {
 			return errors.New("invalid pstn target")
 		}
 	case "connected_line":

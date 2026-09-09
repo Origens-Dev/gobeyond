@@ -341,7 +341,7 @@ func classes(a []string) error {
 	}
 	seen := map[string]bool{}
 	for _, c := range a {
-		if seen[c] || (c != "extension" && c != "managed" && c != "pstn" && c != "assistant" && c != "line" && c != "connected_line") {
+		if seen[c] || (c != "extension" && c != "managed" && c != "pstn" && c != "outside_pstn" && c != "assistant" && c != "line" && c != "connected_line") {
 			return errors.New("invalid destination class")
 		}
 		seen[c] = true

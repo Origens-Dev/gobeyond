@@ -37,7 +37,7 @@ func TestV2AgentContextAndTargetFence(t *testing.T) {
 	for _, target := range []VoiceTarget{
 		{Kind: "assistant", Class: "assistant", DestinationID: "a", PhoneNumber: "+14155552671"},
 		{Kind: "pstn", Class: "pstn", PhoneNumber: "+01234567"},
-		{Kind: "line", Class: "extension", DestinationID: "line_2"},
+		{Kind: "line", Class: "assistant", DestinationID: "line_2", PublicLabel: "Desk"},
 	} {
 		if target.Validate() == nil {
 			t.Fatalf("accepted invalid target %+v", target)
