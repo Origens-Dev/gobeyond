@@ -4,7 +4,17 @@ package voicecontract
 
 import "encoding/json"
 
-const Version = "1"
+const (
+	// LegacyVersion is the frozen operator/screener wire contract. It remains
+	// accepted only by fenced compatibility paths.
+	LegacyVersion = "1"
+	// Version is the current generic agent call-control contract.
+	Version      = "2"
+	VersionV1    = LegacyVersion
+	VersionV2    = Version
+	MaxHops      = 8
+	ToolIDHangUp = "hang_up"
+)
 
 // Scope is a tagged union. SelectedLineID is added only by a fenced transition.
 type Scope struct {
@@ -18,20 +28,24 @@ type Scope struct {
 // Context must be constructed from a verified current grant and active owner.
 // Neither model arguments nor caller metadata may populate these fields.
 type Context struct {
-	ExecutionID    string `json:"execution_id"`
-	OrganizationID string `json:"organization_id"`
-	ProjectID      string `json:"project_id"`
-	EnvironmentID  string `json:"environment_id"`
-	NetworkID      string `json:"network_id"`
-	CallID         string `json:"call_id"`
-	SessionID      string `json:"session_id"`
-	ActorID        string `json:"actor_id"`
-	ActorKind      string `json:"actor_kind"`
-	AgentID        string `json:"agent_id"`
-	AgentRevision  string `json:"agent_revision"`
-	ManifestDigest string `json:"manifest_digest"`
-	Generation     uint64 `json:"generation"`
-	Scope          Scope  `json:"scope"`
+	ExecutionID     string `json:"execution_id"`
+	OrganizationID  string `json:"organization_id"`
+	ProjectID       string `json:"project_id"`
+	EnvironmentID   string `json:"environment_id"`
+	NetworkID       string `json:"network_id"`
+	CallID          string `json:"call_id"`
+	SessionID       string `json:"session_id"`
+	ActorID         string `json:"actor_id"`
+	ActorKind       string `json:"actor_kind"`
+	AgentID         string `json:"agent_id"`
+	AgentRevision   string `json:"agent_revision"`
+	ManifestDigest  string `json:"manifest_digest"`
+	Generation      uint64 `json:"generation"`
+	TransportCallID string `json:"transport_call_id,omitempty"`
+	ParentCallID    string `json:"parent_call_id,omitempty"`
+	HopID           string `json:"hop_id,omitempty"`
+	HopCount        uint32 `json:"hop_count,omitempty"`
+	Scope           Scope  `json:"scope"`
 }
 
 type GrantClaims struct {
@@ -43,6 +57,7 @@ type GrantClaims struct {
 	Nonce              string   `json:"nonce"`
 	ExpiresAt          int64    `json:"expires_at"`
 	DestinationClasses []string `json:"destination_classes"`
+	TargetKinds        []string `json:"target_kinds,omitempty"`
 }
 
 type Manifest struct {
@@ -63,6 +78,10 @@ type Tool struct {
 	InputSchema        json.RawMessage `json:"input_schema"`
 	SchemaDigest       string          `json:"schema_digest"`
 	DestinationClasses []string        `json:"destination_classes"`
+	TargetKinds        []string        `json:"target_kinds,omitempty"`
+	InputModes         []string        `json:"input_modes,omitempty"`
+	HandoffMode        string          `json:"handoff_mode,omitempty"`
+	TerminalBehavior   string          `json:"terminal_behavior,omitempty"`
 	TerminalOnSuccess  bool            `json:"terminal_on_success"`
 }
 
@@ -88,6 +107,16 @@ type Operation struct {
 	FailureCode string  `json:"failure_code,omitempty"`
 }
 
+// VoiceTarget is the typed, server-resolved destination projection. A model
+// may provide either an opaque destination ID or a canonical E.164 number.
+type VoiceTarget struct {
+	Kind          string `json:"kind"`
+	Class         string `json:"class"`
+	DestinationID string `json:"destination_id,omitempty"`
+	PhoneNumber   string `json:"phone_number,omitempty"`
+	PublicLabel   string `json:"public_label,omitempty"`
+}
+
 // TerminalResult suppresses provider tools, continuations and audio only after
 // announcement drain and authoritative ringing/answered event acceptance.
 type TerminalResult struct {
@@ -97,6 +126,7 @@ type TerminalResult struct {
 	Generation  uint64  `json:"generation"`
 	Sequence    uint64  `json:"sequence"`
 	State       string  `json:"state"`
+	ToolID      string  `json:"tool_id,omitempty"`
 	Terminal    bool    `json:"terminal"`
 }
 
@@ -118,13 +148,16 @@ type RemoteParty struct {
 }
 
 type SoftphoneEvent struct {
-	Version     string      `json:"version"`
-	Type        string      `json:"type"`
-	CallID      string      `json:"call_id"`
-	Generation  uint64      `json:"generation"`
-	Sequence    uint64      `json:"sequence"`
-	State       string      `json:"state"`
-	RemoteParty RemoteParty `json:"remote_party"`
+	Version         string      `json:"version"`
+	Type            string      `json:"type"`
+	CallID          string      `json:"call_id"`
+	TransportCallID string      `json:"transport_call_id,omitempty"`
+	ParentCallID    string      `json:"parent_call_id,omitempty"`
+	HopID           string      `json:"hop_id,omitempty"`
+	Generation      uint64      `json:"generation"`
+	Sequence        uint64      `json:"sequence"`
+	State           string      `json:"state"`
+	RemoteParty     RemoteParty `json:"remote_party"`
 }
 
 // ScopeTransition is a server-authorized recipient selection CAS. The old full

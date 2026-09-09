@@ -29,18 +29,24 @@ const (
 // HostedStartRequest is POST /v1/agents/voice/start JSON (client → gbhost).
 // Shared with gobeyond-internal G5b; keep field names stable.
 type HostedStartRequest struct {
-	AgentID          string            `json:"agent_id"`
-	SessionID        string            `json:"session_id"`
-	RunID            string            `json:"run_id"`
-	CallID           string            `json:"call_id,omitempty"`
-	NetworkID        string            `json:"network_id,omitempty"`
-	VoiceProvider    string            `json:"voice_provider,omitempty"`
-	VoiceModel       string            `json:"voice_model,omitempty"`
-	CompiledRevision string            `json:"compiled_revision,omitempty"`
-	VoiceName        string            `json:"voice_name,omitempty"`
-	Instructions     string            `json:"instructions,omitempty"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
-	Actor            ActorDTO          `json:"actor"`
+	AgentID              string            `json:"agent_id"`
+	SessionID            string            `json:"session_id"`
+	RunID                string            `json:"run_id"`
+	CallID               string            `json:"call_id,omitempty"`
+	NetworkID            string            `json:"network_id,omitempty"`
+	VoiceProvider        string            `json:"voice_provider,omitempty"`
+	VoiceModel           string            `json:"voice_model,omitempty"`
+	CompiledRevision     string            `json:"compiled_revision,omitempty"`
+	ManifestDigest       string            `json:"manifest_digest,omitempty"`
+	VoiceContractVersion string            `json:"voice_contract_version,omitempty"`
+	TransportCallID      string            `json:"transport_call_id,omitempty"`
+	ParentCallID         string            `json:"parent_call_id,omitempty"`
+	HopID                string            `json:"hop_id,omitempty"`
+	HopCount             uint32            `json:"hop_count,omitempty"`
+	VoiceName            string            `json:"voice_name,omitempty"`
+	Instructions         string            `json:"instructions,omitempty"`
+	Metadata             map[string]string `json:"metadata,omitempty"`
+	Actor                ActorDTO          `json:"actor"`
 	// EnabledToolIDs is a canonical allowlist; hosts map IDs to fixed schemas.
 	EnabledToolIDs []string `json:"enabled_tool_ids,omitempty"`
 	// PCMProtocolVersion 3 enables explicit telephone playout barriers.

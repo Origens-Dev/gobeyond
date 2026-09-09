@@ -8,6 +8,28 @@ import (
 	"unicode/utf8"
 )
 
+func validVersion(v string) bool { return v == Version || v == LegacyVersion }
+func v2(v string) bool           { return v == Version }
+
+// ValidateForVersion applies the version fence in addition to structural
+// context validation. Context.Validate remains useful for callers that only
+// have a decoded value and therefore accepts both generations.
+func (c Context) ValidateForVersion(version string) error {
+	if !validVersion(version) || c.Validate() != nil {
+		return errors.New("invalid context version")
+	}
+	if v2(version) {
+		if c.Scope.Kind != "agent" || !identifier(c.TransportCallID) || !identifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops {
+			return errors.New("invalid agent context identity")
+		}
+		return nil
+	}
+	if c.Scope.Kind == "agent" || c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
+		return errors.New("v2 context on legacy wire")
+	}
+	return nil
+}
+
 func (s Scope) Validate() error {
 	switch s.Kind {
 	case "operator":
@@ -17,6 +39,10 @@ func (s Scope) Validate() error {
 	case "screener":
 		if s.LineID != "" || !identifier(s.DIDID) || !identifier(s.RecipientSetRevision) || (s.SelectedLineID != "" && !identifier(s.SelectedLineID)) {
 			return errors.New("invalid screener scope")
+		}
+	case "agent":
+		if !identifier(s.LineID) || s.DIDID != "" || s.RecipientSetRevision != "" || s.SelectedLineID != "" {
+			return errors.New("invalid agent scope")
 		}
 	default:
 		return errors.New("unknown scope kind")
@@ -35,7 +61,15 @@ func (c Context) Validate() error {
 	if c.Generation == 0 || !digestValid(c.ManifestDigest) {
 		return errors.New("invalid context fence")
 	}
-	return c.Scope.Validate()
+	if err := c.Scope.Validate(); err != nil {
+		return err
+	}
+	if c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
+		if !identifier(c.TransportCallID) || !identifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops || c.Scope.Kind != "agent" {
+			return errors.New("invalid per-hop identity")
+		}
+	}
+	return nil
 }
 func digestValid(s string) bool {
 	if len(s) != 71 || !strings.HasPrefix(s, "sha256:") {
@@ -49,7 +83,7 @@ func digestValid(s string) bool {
 	return true
 }
 func (s ScopeTransition) Validate() error {
-	if s.Version != Version || s.Context.Validate() != nil || s.Context.Scope.Kind != "screener" || s.Context.Scope.SelectedLineID != "" || s.ExpectedGeneration != s.Context.Generation || s.NextGeneration != s.ExpectedGeneration+1 || s.NextGeneration == 0 || !identifier(s.SelectedLineID) {
+	if s.Version != LegacyVersion || s.Context.ValidateForVersion(LegacyVersion) != nil || s.Context.Scope.Kind != "screener" || s.Context.Scope.SelectedLineID != "" || s.ExpectedGeneration != s.Context.Generation || s.NextGeneration != s.ExpectedGeneration+1 || s.NextGeneration == 0 || !identifier(s.SelectedLineID) {
 		return errors.New("invalid scope transition")
 	}
 	return nil
@@ -58,7 +92,7 @@ func (c Command) Validate() error {
 	if c.ToolID == "dial-contact" && c.AnnouncementBarrierID == 0 {
 		return errors.New("announcement drain barrier required")
 	}
-	if c.Version != Version || c.Context.Validate() != nil || !identifier(c.OperationID) || !identifier(c.ToolID) || !identifier(c.ToolCallID) {
+	if !validVersion(c.Version) || c.Context.ValidateForVersion(c.Version) != nil || !identifier(c.OperationID) || !identifier(c.ToolID) || !identifier(c.ToolCallID) {
 		return errors.New("invalid command")
 	}
 	v, e := CanonicalJSON(c.Arguments, MaxSchemaBytes)
@@ -71,7 +105,7 @@ func (c Command) Validate() error {
 	return nil
 }
 func (o Operation) Validate() error {
-	if o.Version != Version || o.Context.Validate() != nil || !identifier(o.OperationID) || o.Sequence == 0 {
+	if !validVersion(o.Version) || o.Context.ValidateForVersion(o.Version) != nil || !identifier(o.OperationID) || o.Sequence == 0 {
 		return errors.New("invalid operation")
 	}
 	switch o.State {
@@ -91,8 +125,11 @@ func (o Operation) Validate() error {
 	return nil
 }
 func (t TerminalResult) Validate() error {
-	if t.Version != Version || t.Context.Validate() != nil || !identifier(t.OperationID) || t.Generation != t.Context.Generation || t.Sequence == 0 || !t.Terminal || (t.State != "ringing" && t.State != "answered") {
+	if !validVersion(t.Version) || t.Context.ValidateForVersion(t.Version) != nil || !identifier(t.OperationID) || t.Generation != t.Context.Generation || t.Sequence == 0 || !t.Terminal || (t.State != "ringing" && t.State != "answered" && (t.Version != Version || t.State != "ended")) {
 		return errors.New("invalid terminal result")
+	}
+	if t.ToolID != "" && !identifier(t.ToolID) {
+		return errors.New("invalid terminal tool")
 	}
 	return nil
 }
@@ -109,7 +146,7 @@ func safeText(s string, max int) bool {
 }
 
 func (e Envelope) Validate() error {
-	if e.Version != Version || (e.Route != "assistant" && e.Route != "inbound_assistant/screener") || len(e.Grant) == 0 || len(e.Grant) > 4096 || !digestValid(e.ManifestDigest) || len(e.CommonContext) > 12288 || len(e.CallContext) > 1024 || !utf8.ValidString(e.CommonContext) || !utf8.ValidString(e.CallContext) {
+	if !validVersion(e.Version) || (e.Route != "assistant" && e.Route != "inbound_assistant/screener") || len(e.Grant) == 0 || len(e.Grant) > 4096 || !digestValid(e.ManifestDigest) || len(e.CommonContext) > 12288 || len(e.CallContext) > 1024 || !utf8.ValidString(e.CommonContext) || !utf8.ValidString(e.CallContext) {
 		return errors.New("invalid envelope")
 	}
 	if e.Route == "inbound_assistant/screener" && e.Screening == nil {
@@ -143,17 +180,27 @@ func (e Envelope) Validate() error {
 // Validate checks current structural claims only. Cryptographic verification and
 // time, registration, nonce, owner and registry checks remain mandatory upstream.
 func (g GrantClaims) Validate() error {
-	if g.Version != Version || g.GrantVersion != 3 || !identifier(g.KeyID) || g.Context.Validate() != nil || !identifier(g.Nonce) || g.ExpiresAt <= 0 {
+	if !validVersion(g.Version) || g.GrantVersion != 3 || !identifier(g.KeyID) || g.Context.ValidateForVersion(g.Version) != nil || !identifier(g.Nonce) || g.ExpiresAt <= 0 {
 		return errors.New("invalid current grant")
 	}
 	if len(g.Capabilities) != 3 || g.Capabilities[0] != "start" || g.Capabilities[1] != "cancel" || g.Capabilities[2] != "execute" {
 		return errors.New("invalid current capabilities")
 	}
-	return classes(g.DestinationClasses)
+	if err := classes(g.DestinationClasses); err != nil {
+		return err
+	}
+	return targetKinds(g.TargetKinds)
 }
 func (s SoftphoneEvent) Validate() error {
-	if s.Version != Version || s.Type != "call_state" || !identifier(s.CallID) || s.Generation == 0 || s.Sequence == 0 || !identifier(s.RemoteParty.DestinationID) || len(s.RemoteParty.PublicLabel) == 0 || !safeText(s.RemoteParty.PublicLabel, 128) {
+	if !validVersion(s.Version) || s.Type != "call_state" || !identifier(s.CallID) || s.Generation == 0 || s.Sequence == 0 || !identifier(s.RemoteParty.DestinationID) || len(s.RemoteParty.PublicLabel) == 0 || !safeText(s.RemoteParty.PublicLabel, 128) {
 		return errors.New("invalid softphone event")
+	}
+	if v2(s.Version) {
+		if !identifier(s.TransportCallID) || !identifier(s.ParentCallID) || !identifier(s.HopID) {
+			return errors.New("invalid softphone hop identity")
+		}
+	} else if s.TransportCallID != "" || s.ParentCallID != "" || s.HopID != "" {
+		return errors.New("v2 softphone identity on legacy wire")
 	}
 	switch s.State {
 	case "ringing", "answered", "failed", "cancelled":
@@ -164,7 +211,7 @@ func (s SoftphoneEvent) Validate() error {
 }
 
 func (r ReadRequest) Validate() error {
-	if r.Version != Version || r.Context.Validate() != nil || r.Context.Scope.Kind != "operator" || !identifier(r.ToolID) || !identifier(r.ToolCallID) {
+	if !validVersion(r.Version) || r.Context.ValidateForVersion(r.Version) != nil || (r.Version == LegacyVersion && r.Context.Scope.Kind != "operator") || (r.Version == Version && r.Context.Scope.Kind != "agent") || !identifier(r.ToolID) || !identifier(r.ToolCallID) {
 		return errors.New("invalid remote read")
 	}
 	raw, err := CanonicalJSON(r.Arguments, 1024)

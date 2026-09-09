@@ -86,6 +86,8 @@ func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCa
 		}
 		policy := *config.VoiceControl
 		policy.DestinationClasses = append([]string(nil), policy.DestinationClasses...)
+		policy.TargetKinds = append([]string(nil), policy.TargetKinds...)
+		policy.InputModes = append([]string(nil), policy.InputModes...)
 		ns["voiceControl"] = policy
 		metadata[toolMetadataNamespace] = ns
 	}

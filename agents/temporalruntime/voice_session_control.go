@@ -30,7 +30,9 @@ func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessio
 		return VoiceSessionExecuteToolResult{}, errors.New("call control workflow scope mismatch")
 	}
 	// No sensitive screening/voicemail inputs may enter this durable tool path.
-	if c.ToolID != "dial-contact" || c.Context.Scope.Kind != "operator" {
+	legacyControl := c.Version == voicecontract.LegacyVersion && c.ToolID == "dial-contact" && c.Context.Scope.Kind == "operator"
+	genericControl := c.Version == voicecontract.Version && c.Context.Scope.Kind == "agent"
+	if !legacyControl && !genericControl {
 		return VoiceSessionExecuteToolResult{}, errors.New("unsupported durable control phase")
 	}
 	key := c.ToolID + "/" + c.ToolCallID
@@ -77,7 +79,9 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 		}
 		c = &voicecontract.Command{Version: r.Version, Context: r.Context, ToolID: r.ToolID, ToolCallID: r.ToolCallID, InputDigest: r.InputDigest, Arguments: r.Arguments}
 	}
-	if c == nil || (!read && (c.Validate() != nil || c.ToolID != "dial-contact")) || len(req.Grant) == 0 || len(req.Grant) > 8192 || c.Context.Scope.Kind != "operator" {
+	validControl := c != nil && c.Validate() == nil && ((c.Version == voicecontract.LegacyVersion && c.Context.Scope.Kind == "operator" && c.ToolID == "dial-contact") || (c.Version == voicecontract.Version && c.Context.Scope.Kind == "agent"))
+	validRead := c != nil && c.Context.Scope.Kind == "agent" && c.Version == voicecontract.Version || c != nil && c.Context.Scope.Kind == "operator" && c.Version == voicecontract.LegacyVersion
+	if c == nil || (!read && !validControl) || (read && !validRead) || len(req.Grant) == 0 || len(req.Grant) > 8192 {
 		return VoiceSessionExecuteToolResult{}, errors.New("invalid control request")
 	}
 	if req.AgentID != "" && req.AgentID != c.Context.AgentID || req.ActorID != "" && req.ActorID != c.Context.ActorID || req.ActorKind != "" && req.ActorKind != c.Context.ActorKind || req.NetworkID != "" && req.NetworkID != c.Context.NetworkID || req.ToolCallID != "" && req.ToolCallID != c.ToolCallID {
@@ -165,7 +169,7 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 			ok = true
 		}
 	}
-	if !ok || operation.Validate() != nil || operation.Context != c.Context || operation.OperationID != c.OperationID || operation.State != "accepted" || operation.Sequence != 1 {
+	if !ok || operation.Validate() != nil || operation.Version != c.Version || operation.Context != c.Context || operation.OperationID != c.OperationID || operation.State != "accepted" || operation.Sequence != 1 {
 		return VoiceSessionExecuteToolResult{}, errors.New("invalid operation acknowledgement")
 	}
 	return VoiceSessionExecuteToolResult{Operation: &operation}, nil

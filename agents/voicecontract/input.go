@@ -32,15 +32,26 @@ func ValidateToolInput(tool Tool, raw []byte) ([]byte, error) {
 	if err = json.Unmarshal(canonical, &value); err != nil {
 		return nil, err
 	}
-	if !matchesSchema(definition.(map[string]any), value) {
+	root, ok := definition.(map[string]any)
+	if !ok || !matchesSchema(root, value) {
 		return nil, errors.New("tool input does not match deployed schema")
 	}
 	return canonical, nil
 }
 func matchesSchema(s map[string]any, v any) bool {
+	if union, ok := s["oneOf"].([]any); ok {
+		matches := 0
+		for _, variant := range union {
+			variantSchema, ok := variant.(map[string]any)
+			if ok && matchesSchema(variantSchema, v) {
+				matches++
+			}
+		}
+		return matches == 1
+	}
 	if union, ok := s["anyOf"].([]any); ok {
 		for _, variant := range union {
-			if matchesSchema(variant.(map[string]any), v) {
+			if variantSchema, ok := variant.(map[string]any); ok && matchesSchema(variantSchema, v) {
 				return true
 			}
 		}

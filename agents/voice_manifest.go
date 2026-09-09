@@ -23,6 +23,10 @@ func VoiceRemoteReadPolicy(tool AITool) (VoiceReadPolicy, bool) {
 
 type VoiceToolPolicy struct {
 	DestinationClasses []string
+	TargetKinds        []string
+	InputModes         []string
+	HandoffMode        string
+	TerminalBehavior   string
 	TerminalOnSuccess  bool
 }
 
@@ -35,6 +39,8 @@ func VoiceControlPolicy(tool AITool) (VoiceToolPolicy, bool) {
 	}
 	p, ok := ns["voiceControl"].(VoiceToolPolicy)
 	p.DestinationClasses = append([]string(nil), p.DestinationClasses...)
+	p.TargetKinds = append([]string(nil), p.TargetKinds...)
+	p.InputModes = append([]string(nil), p.InputModes...)
 	return p, ok
 }
 
@@ -64,7 +70,7 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		if e != nil {
 			return m, nil, "", e
 		}
-		spec := voicecontract.Tool{ID: id, Name: name, Description: t.Description, InputSchema: c, SchemaDigest: voicecontract.Digest(c), DestinationClasses: p.DestinationClasses, TerminalOnSuccess: p.TerminalOnSuccess, ExecutionKind: "call_control"}
+		spec := voicecontract.Tool{ID: id, Name: name, Description: t.Description, InputSchema: c, SchemaDigest: voicecontract.Digest(c), DestinationClasses: p.DestinationClasses, TargetKinds: p.TargetKinds, InputModes: p.InputModes, HandoffMode: p.HandoffMode, TerminalBehavior: p.TerminalBehavior, TerminalOnSuccess: p.TerminalOnSuccess, ExecutionKind: "call_control"}
 		if isRead {
 			output, e := json.Marshal(t.OutputSchema)
 			if e != nil {
