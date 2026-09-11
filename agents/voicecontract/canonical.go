@@ -235,11 +235,14 @@ func schema(v any, depth int) error {
 
 // FreezeManifest validates the compiled registry value and returns canonical
 // bytes and its digest. Every schema digest must match; no caller schemas merge.
+// Identity-only manifests (zero tools) are valid for voice-channel agents that
+// publish no authored VoiceControl tools; hang_up remains platform-injected only.
 func FreezeManifest(m Manifest) ([]byte, string, error) {
-	if !validVersion(m.Version) || !identifier(m.Revision) || !identifier(m.CompiledRevision) || len(m.Tools) == 0 || len(m.Tools) > MaxTools {
+	if !validVersion(m.Version) || !identifier(m.Revision) || !identifier(m.CompiledRevision) || len(m.Tools) > MaxTools {
 		return nil, "", errors.New("invalid manifest header")
 	}
-	m.Tools = append([]Tool(nil), m.Tools...)
+	// Identity-only manifests keep an explicit empty tools array in canonical JSON.
+	m.Tools = append(make([]Tool, 0, len(m.Tools)), m.Tools...)
 	seen := map[string]bool{}
 	names := map[string]bool{}
 	for i := range m.Tools {
