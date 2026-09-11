@@ -12,7 +12,7 @@ const (
 	Version      = "2"
 	VersionV1    = LegacyVersion
 	VersionV2    = Version
-	MaxHops      = 8
+	MaxHops      = 20
 	ToolIDHangUp = "hang_up"
 )
 

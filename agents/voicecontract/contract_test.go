@@ -206,6 +206,53 @@ func TestAllGoldenContracts(t *testing.T) {
 		})
 	}
 }
+func TestIdentityOnlyManifestFreeze(t *testing.T) {
+	m := Manifest{Version: Version, Revision: "build-1", CompiledRevision: "build-1", Tools: []Tool{}}
+	raw, digest, err := FreezeManifest(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest == "" || !strings.Contains(string(raw), `"tools":[]`) {
+		t.Fatalf("identity manifest: %s digest=%s", raw, digest)
+	}
+	var roundtrip Manifest
+	if err = Decode(raw, MaxManifestBytes, &roundtrip); err != nil {
+		t.Fatal(err)
+	}
+	if len(roundtrip.Tools) != 0 {
+		t.Fatalf("tools=%d", len(roundtrip.Tools))
+	}
+}
+
+func TestAuthoredHangUpStillRejected(t *testing.T) {
+	schema := []byte(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`)
+	canonical, err := CanonicalJSON(schema, MaxSchemaBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{Version: Version, Revision: "build-1", CompiledRevision: "build-1", Tools: []Tool{{
+		ID: ToolIDHangUp, Name: ToolIDHangUp, Description: "Hang up", InputSchema: canonical, SchemaDigest: Digest(canonical), DestinationClasses: []string{"extension"},
+	}}}
+	if _, _, err := FreezeManifest(m); err == nil {
+		t.Fatal("accepted authored hang_up")
+	}
+}
+
+func TestMaxHopsIsTwenty(t *testing.T) {
+	if MaxHops != 20 {
+		t.Fatalf("MaxHops=%d want 20", MaxHops)
+	}
+	c := v2TestContext()
+	c.HopCount = 20
+	if err := c.ValidateForVersion(Version); err != nil {
+		t.Fatal(err)
+	}
+	c.HopCount = 21
+	if err := c.ValidateForVersion(Version); err == nil {
+		t.Fatal("accepted hop 21")
+	}
+}
+
 func TestSchemaKeywordMismatch(t *testing.T) {
 	raw, e := os.ReadFile("testdata/manifest.json")
 	if e != nil {

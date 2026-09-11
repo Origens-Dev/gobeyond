@@ -205,13 +205,15 @@ func voiceLiteral(e ast.Expr, depth int) (any, error) {
 
 func attachVoiceManifests(manifest *AgentsManifest, definitions []AgentDefinition) error {
 	for i, d := range definitions {
-		m := voicecontract.Manifest{Version: voicecontract.Version, Revision: d.Revision, CompiledRevision: d.Revision}
+		m := voicecontract.Manifest{Version: voicecontract.Version, Revision: d.Revision, CompiledRevision: d.Revision, Tools: []voicecontract.Tool{}}
 		for _, tool := range d.Tools {
 			if tool.VoiceControl != nil {
 				m.Tools = append(m.Tools, *tool.VoiceControl)
 			}
 		}
-		if len(m.Tools) == 0 {
+		// Voice-channel agents publish an identity-only manifest even with zero
+		// authored VoiceControl tools so platform mint can resolve admission.
+		if len(m.Tools) == 0 && !hasVoiceChannel(d.Slots) {
 			continue
 		}
 		raw, digest, err := voicecontract.FreezeManifest(m)

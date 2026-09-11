@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
@@ -45,6 +46,22 @@ func TestAuthoredVoiceManifestConsumer(t *testing.T) {
 		t.Fatal("missing compiled revision accepted")
 	}
 }
+func TestIdentityVoiceManifestForVoiceChannel(t *testing.T) {
+	d := DefineAI(AIConfig{Revision: "build-1", Tools: map[string]AITool{"web-search": {Name: "web_search", Description: "Search"}}}, Slots{Channels: []Channel{{ID: "voice"}}})
+	m, raw, digest, err := d.CompileVoiceManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tools) != 0 || digest == "" || !strings.Contains(string(raw), `"tools":[]`) {
+		t.Fatalf("identity compile: tools=%d digest=%s raw=%s", len(m.Tools), digest, raw)
+	}
+	d.Slots = Slots{Channels: []Channel{{ID: "web"}}}
+	m, raw, digest, err = d.CompileVoiceManifest()
+	if err != nil || len(m.Tools) != 0 || digest != "" || len(raw) != 0 {
+		t.Fatalf("non-voice empty: tools=%d digest=%q raw=%q err=%v", len(m.Tools), digest, raw, err)
+	}
+}
+
 func TestClientMetadataCannotOptInVoiceControl(t *testing.T) {
 	tool := DefineTool(ToolConfig{Name: "dial"}, func(context.Context, Actor, map[string]any) (string, error) { return "", nil })
 	if tool.ToolMetadata == nil {

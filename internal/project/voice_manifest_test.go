@@ -43,6 +43,47 @@ func TestVoiceManifestCompilerArtifact(t *testing.T) {
 		t.Fatalf("publication missing: %s %v", encoded, err)
 	}
 }
+func TestIdentityVoiceManifestForVoiceChannelWithoutControlTools(t *testing.T) {
+	defs := []AgentDefinition{{
+		ID: "trainer", Revision: "build-1",
+		Slots: AgentSlots{Channels: []AgentChannel{{ID: "web"}, {ID: "voice", Connector: "assistant-line"}}},
+		Tools: []AgentToolDefinition{{ID: "web-search"}},
+	}}
+	m := portableAgentsManifest(defs, "build-1")
+	if err := attachVoiceManifests(&m, defs); err != nil {
+		t.Fatal(err)
+	}
+	got := m.Agents[0]
+	if got.VoiceManifest == nil || got.VoiceManifestDigest == "" {
+		t.Fatal("expected identity voice manifest")
+	}
+	if len(got.VoiceManifest.Tools) != 0 {
+		t.Fatalf("tools=%d want identity-only", len(got.VoiceManifest.Tools))
+	}
+	raw, digest, err := voicecontract.FreezeManifest(*got.VoiceManifest)
+	if err != nil || digest != got.VoiceManifestDigest {
+		t.Fatalf("freeze identity: digest=%s err=%v", digest, err)
+	}
+	if !strings.Contains(string(raw), `"tools":[]`) {
+		t.Fatalf("raw=%s", raw)
+	}
+}
+
+func TestNoVoiceManifestWithoutVoiceChannelOrControlTools(t *testing.T) {
+	defs := []AgentDefinition{{
+		ID: "text-only", Revision: "build-1",
+		Slots: AgentSlots{Channels: []AgentChannel{{ID: "web"}}},
+		Tools: []AgentToolDefinition{{ID: "web-search"}},
+	}}
+	m := portableAgentsManifest(defs, "build-1")
+	if err := attachVoiceManifests(&m, defs); err != nil {
+		t.Fatal(err)
+	}
+	if m.Agents[0].VoiceManifest != nil || m.Agents[0].VoiceManifestDigest != "" {
+		t.Fatal("unexpected voice manifest for non-voice agent")
+	}
+}
+
 func TestVoiceManifestRejectsDynamicAndUnboundedSchemas(t *testing.T) {
 	for _, src := range []string{strings.Replace(voiceToolSource, `"maxLength":128`, `"maxLength":limit`, 1), strings.Replace(voiceToolSource, `"maxLength":128,`, ``, 1), strings.Replace(voiceToolSource, `"additionalProperties":false`, `"additionalProperties":true`, 1), strings.Replace(voiceToolSource, `"type":"object"`, `"$ref":"private"`, 1)} {
 		expr, err := parser.ParseExpr(src)

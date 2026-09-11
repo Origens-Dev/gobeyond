@@ -47,8 +47,10 @@ func VoiceControlPolicy(tool AITool) (VoiceToolPolicy, bool) {
 // CompileVoiceManifest freezes opt-in tools from the compiled definition. The
 // generated registration injects AI.Revision before this function is called.
 // Unmarked tools (including native search) never enter the remote manifest.
+// Voice-channel agents with zero VoiceControl tools still freeze an
+// identity-only manifest for platform admission.
 func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, string, error) {
-	m := voicecontract.Manifest{Version: voicecontract.Version, Revision: d.AI.Revision, CompiledRevision: d.AI.Revision}
+	m := voicecontract.Manifest{Version: voicecontract.Version, Revision: d.AI.Revision, CompiledRevision: d.AI.Revision, Tools: []voicecontract.Tool{}}
 	for id, t := range d.AI.Tools {
 		p, ok := VoiceControlPolicy(t)
 		read, isRead := VoiceRemoteReadPolicy(t)
@@ -87,7 +89,7 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		}
 		m.Tools = append(m.Tools, spec)
 	}
-	if len(m.Tools) == 0 {
+	if len(m.Tools) == 0 && !definitionHasVoiceChannel(d.Slots) {
 		return m, nil, "", nil
 	}
 	if d.AI.Revision == "" {
@@ -101,4 +103,13 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		return m, nil, "", e
 	}
 	return m, raw, digest, nil
+}
+
+func definitionHasVoiceChannel(slots Slots) bool {
+	for _, channel := range slots.Channels {
+		if channel.ID == "voice" {
+			return true
+		}
+	}
+	return false
 }
