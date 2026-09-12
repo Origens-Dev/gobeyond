@@ -43,6 +43,12 @@ func TestControlActivityRegistryAndAcknowledgement(t *testing.T) {
 		if actor.Metadata["voice_session_grant"] != "opaque" || actor.Metadata["execution_id"] != command.Context.ExecutionID || actor.Metadata["announcement_barrier_id"] != "1" || actor.Metadata["operation_id"] != command.OperationID {
 			t.Fatal("grant-derived metadata lost")
 		}
+		if command.Context.HopID != "" && actor.Metadata["hop_id"] != command.Context.HopID {
+			t.Fatalf("hop_id metadata lost: got %q want %q", actor.Metadata["hop_id"], command.Context.HopID)
+		}
+		if command.Context.TransportCallID != "" && actor.Metadata["transport_call_id"] != command.Context.TransportCallID {
+			t.Fatalf("transport_call_id metadata lost: got %q", actor.Metadata["transport_call_id"])
+		}
 		return voicecontract.Operation{Version: "1", Context: command.Context, OperationID: command.OperationID, Sequence: 1, State: "accepted"}, nil
 	})
 	definition := agents.DefineAI(agents.AIConfig{Revision: command.Context.AgentRevision, Tools: map[string]ai.Tool{"dial-contact": tool}})

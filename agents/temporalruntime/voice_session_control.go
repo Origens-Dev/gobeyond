@@ -55,7 +55,11 @@ func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessio
 	result, err := executeVoiceSessionToolLocal(ctx, req)
 	s.pending[key] = false
 	if err != nil {
-		result = VoiceSessionExecuteToolResult{Error: "call control could not start"}
+		msg := "call control could not start"
+		if err.Error() != "" {
+			msg = msg + ": " + err.Error()
+		}
+		result = VoiceSessionExecuteToolResult{Error: msg}
 	}
 	s.results[key] = result
 	return result, err
@@ -133,6 +137,22 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 		return VoiceSessionExecuteToolResult{}, errors.New("control policy unavailable")
 	}
 	metadata := map[string]string{"organization_id": c.Context.OrganizationID, "project_id": c.Context.ProjectID, "environment_id": c.Context.EnvironmentID, "network_id": c.Context.NetworkID, "line_id": c.Context.Scope.LineID, "call_id": c.Context.CallID, "session_id": c.Context.SessionID, "execution_id": c.Context.ExecutionID, "agent_id": c.Context.AgentID, "agent_revision": c.Context.AgentRevision, "manifest_digest": c.Context.ManifestDigest, "generation": strconv.FormatUint(c.Context.Generation, 10), "voice_session_grant": req.Grant, "operation_id": c.OperationID, "announcement_barrier_id": strconv.FormatUint(c.AnnouncementBarrierID, 10)}
+	// v2 agent sessions bind transport/hop identity into the signed grant.
+	// Customer tools re-verify Claims.Context == expected; omitting these keys
+	// caused call-operator to synthesize hop_<session_id> and fail closed as
+	// "call control could not start" before operations/start.
+	if c.Context.TransportCallID != "" {
+		metadata["transport_call_id"] = c.Context.TransportCallID
+	}
+	if c.Context.ParentCallID != "" {
+		metadata["parent_call_id"] = c.Context.ParentCallID
+	}
+	if c.Context.HopID != "" {
+		metadata["hop_id"] = c.Context.HopID
+	}
+	if c.Context.HopCount != 0 {
+		metadata["hop_count"] = strconv.FormatUint(uint64(c.Context.HopCount), 10)
+	}
 	if read {
 		delete(metadata, "operation_id")
 		delete(metadata, "announcement_barrier_id")
@@ -147,7 +167,9 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 	}
 	result, err := tool.Execute(ctx, ai.ToolCall{ToolCallID: c.ToolCallID, ToolName: spec.Name, Input: args}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": actor}})
 	if err != nil {
-		return VoiceSessionExecuteToolResult{Error: "call control could not start"}, nil
+		// Keep the stable operator-facing prefix; append the concrete cause so
+		// Temporal Update payloads and Maglev logs stop swallowing the failure.
+		return VoiceSessionExecuteToolResult{Error: "call control could not start: " + err.Error()}, nil
 	}
 	if read {
 		raw, e := json.Marshal(result)
