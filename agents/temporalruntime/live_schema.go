@@ -1,8 +1,6 @@
 package temporalruntime
 
 import (
-	"encoding/json"
-	"strconv"
 	"strings"
 
 	"google.golang.org/genai"
@@ -72,10 +70,9 @@ func liveSchemaFromMap(m map[string]any) *genai.Schema {
 			}
 		}
 	}
-	schema.MinLength = liveSchemaInt64(m["minLength"])
-	schema.MaxLength = liveSchemaInt64(m["maxLength"])
-	schema.MinItems = liveSchemaInt64(m["minItems"])
-	schema.MaxItems = liveSchemaInt64(m["maxItems"])
+	// Omit minLength/maxLength/minItems/maxItems on the Live wire. Hosted Live
+	// has rejected or ignored several JSON Schema constraints; Maglev already
+	// validates authored bounds after the model call.
 	return schema
 }
 
@@ -84,7 +81,15 @@ func liveSchemaFromMap(m map[string]any) *genai.Schema {
 // Maglev dial_contact handler already enforces exclusive destination_id /
 // phone_number selection after the model call.
 func liveFlattenObjectUnion(alts []any) *genai.Schema {
-	out := &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{}}
+	minProps := int64(1)
+	out := &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{},
+		// Flattened unions cannot keep per-variant required. Require at least
+		// one property so the model does not emit empty FunctionCalls.
+		MinProperties: &minProps,
+		Description:   "Provide exactly one of the listed properties.",
+	}
 	for _, raw := range alts {
 		m, ok := raw.(map[string]any)
 		if !ok {
@@ -109,7 +114,11 @@ func liveFlattenObjectUnion(alts []any) *genai.Schema {
 			if !ok {
 				continue
 			}
-			out.Properties[name] = liveSchemaFromMap(child)
+			prop := liveSchemaFromMap(child)
+			if prop != nil && strings.TrimSpace(prop.Description) == "" {
+				prop.Description = "Exclusive alternative; omit the other properties."
+			}
+			out.Properties[name] = prop
 		}
 	}
 	if len(out.Properties) == 0 {
@@ -140,27 +149,5 @@ func liveSchemaType(raw any) genai.Type {
 		return genai.TypeNULL
 	default:
 		return ""
-	}
-}
-
-func liveSchemaInt64(raw any) *int64 {
-	switch v := raw.(type) {
-	case int:
-		n := int64(v)
-		return &n
-	case int64:
-		n := v
-		return &n
-	case float64:
-		n := int64(v)
-		return &n
-	case json.Number:
-		n, err := strconv.ParseInt(string(v), 10, 64)
-		if err != nil {
-			return nil
-		}
-		return &n
-	default:
-		return nil
 	}
 }

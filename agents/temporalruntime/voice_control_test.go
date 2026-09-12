@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -277,8 +278,14 @@ func TestLiveParametersSchemaFlattensDialOneOf(t *testing.T) {
 	if len(got.Required) != 0 {
 		t.Fatalf("flattened union must leave required empty: %v", got.Required)
 	}
+	if got.MinProperties == nil || *got.MinProperties != 1 {
+		t.Fatalf("minProperties=%v", got.MinProperties)
+	}
 	if got.Properties["destination_id"] == nil || got.Properties["destination_id"].Type != genai.TypeString {
 		t.Fatalf("destination_id=%#v", got.Properties["destination_id"])
+	}
+	if got.Properties["destination_id"].MinLength != nil || got.Properties["destination_id"].MaxLength != nil {
+		t.Fatalf("Live schema must omit string length bounds: %#v", got.Properties["destination_id"])
 	}
 	if got.Properties["phone_number"] == nil || got.Properties["phone_number"].Type != genai.TypeString {
 		t.Fatalf("phone_number=%#v", got.Properties["phone_number"])
@@ -297,5 +304,48 @@ func TestLiveParametersSchemaFlattensDialOneOf(t *testing.T) {
 	}
 	if decl.Parameters == nil || decl.Parameters.Properties["destination_id"] == nil {
 		t.Fatalf("parameters=%#v", decl.Parameters)
+	}
+}
+
+func TestCallControlSkipsDefaultOpeningKick(t *testing.T) {
+	t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "")
+	fake := &fakeLiveSession{}
+	dial := agents.DefineTool(agents.ToolConfig{
+		Name: "dial_contact", Description: "dial",
+		InputSchema:  map[string]any{"type": "object", "properties": map[string]any{}},
+		VoiceControl: &agents.VoiceToolPolicy{DestinationClasses: []string{"extension"}, TargetKinds: []string{"line"}, InputModes: []string{"destination_id"}, HandoffMode: "blind"},
+	}, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		return nil, errors.New("not via authored execute")
+	})
+	def := agents.DefineAI(agents.AIConfig{
+		LiveModel: "gemini-live-test",
+		Tools:     map[string]agents.AITool{"dial_contact": dial},
+	})
+	adapter := &GeminiLiveAdapter{
+		definition: def,
+		dial: func(_ context.Context, _ agents.AIDefinition, _ string, cfg *genai.LiveConnectConfig) (liveSession, error) {
+			if cfg == nil || len(cfg.Tools) == 0 {
+				t.Fatal("expected Live tools")
+			}
+			return fake, nil
+		},
+	}
+	pcmIn := make(chan []byte)
+	pcmOut := make(chan voice.AudioFrame, 1)
+	cfg := terminalConfig(t)
+	cfg.Instructions = "Open with a greeting."
+	cfg.AgentID = "call-operator"
+	cfg.SessionID = "vs_test"
+	cfg.Actor = agents.Actor{ID: "line-1", Kind: "line"}
+	_, _, err := adapter.Start(context.Background(), cfg, pcmIn, pcmOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, input := range fake.inputs {
+		if strings.TrimSpace(input.Text) != "" {
+			t.Fatalf("CallControl must not send default opening text: %#v", input.Text)
+		}
 	}
 }
