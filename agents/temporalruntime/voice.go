@@ -142,13 +142,12 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	// subsequent SendRealtimeInput audio (mixing client_content + realtime
 	// after TurnComplete leaves the session deaf to the mic).
 	//
-	// CallControl Operator sessions already instruct an opening greeting.
-	// A second kick burns the authored spoken-turn budget and can script the
-	// failure goodbye before any FunctionCall.
+	// CallControl Operator prompts also instruct a name greeting; the kick
+	// is what makes that speak on connect instead of waiting for VAD. Spoken
+	// turn budget must leave room for this kick plus "Connecting you now"
+	// (Maglev sets MaxAssistantTurns to 8). Set GOBEYOND_LIVE_OPENING_TURN=-
+	// to disable.
 	opening := strings.TrimSpace(os.Getenv("GOBEYOND_LIVE_OPENING_TURN"))
-	if cfg.CallControl != nil && opening == "" {
-		opening = "-"
-	}
 	if opening == "" {
 		opening = "Please greet the caller briefly now."
 	}
@@ -507,7 +506,7 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		}
 		// Remote-read tools (directory search) are not announcement barriers.
 		// Waiting on PCM flush ack before SendToolResponse can drop the result
-		// when the model has not spoken yet (CallControl skips the opening kick).
+		// when the model has not spoken yet (softphone playout ack can stall).
 		if handle.cfg.OnPlayoutBarrier != nil && !liveToolBatchAllRemoteReads(handle, call) {
 			barrierID := handle.barrierSeq.Add(1)
 			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
@@ -807,10 +806,11 @@ func (h *geminiLiveHandle) dispatchControl(ctx context.Context, call *genai.Live
 		defer h.toolWG.Done()
 		h.control.serial.Lock()
 		defer h.control.serial.Unlock()
+		c := call.FunctionCalls[0]
 		if !h.control.begin() {
+			log.Printf("gemini live control begin rejected name=%s (turn budget or terminal)", strings.TrimSpace(c.Name))
 			return
 		}
-		c := call.FunctionCalls[0]
 		result, terminal, err := invokeControl(ctx, h.cfg, ai.ToolCall{ToolCallID: c.ID, ToolName: c.Name, Input: c.Args}, h.barrierSeq.Add(1))
 		if terminal {
 			h.control.finish(true)

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.90 - 2026-09-12
+
+- Restore CallControl Live opening kick so Operator greets on connect (set
+  `GOBEYOND_LIVE_OPENING_TURN=-` to disable). Keep remote-read tool responses
+  free of playout-barrier waits from alpha.89.
+- Log when CallControl `begin()` rejects a tool (turn budget / terminal).
+
 ## 0.1.0-alpha.62 - 2026-09-02
 
 - Omit empty Gemini Live `system_instruction` (Developer API close 1007 when

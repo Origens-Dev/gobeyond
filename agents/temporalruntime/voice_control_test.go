@@ -307,7 +307,7 @@ func TestLiveParametersSchemaFlattensDialOneOf(t *testing.T) {
 	}
 }
 
-func TestCallControlSkipsDefaultOpeningKick(t *testing.T) {
+func TestCallControlSendsDefaultOpeningKick(t *testing.T) {
 	t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "")
 	fake := &fakeLiveSession{}
 	dial := agents.DefineTool(agents.ToolConfig{
@@ -343,10 +343,15 @@ func TestCallControlSkipsDefaultOpeningKick(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	found := false
 	for _, input := range fake.inputs {
-		if strings.TrimSpace(input.Text) != "" {
-			t.Fatalf("CallControl must not send default opening text: %#v", input.Text)
+		if strings.TrimSpace(input.Text) == "Please greet the caller briefly now." {
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Fatalf("CallControl must send default opening kick; inputs=%#v", fake.inputs)
 	}
 }
 
