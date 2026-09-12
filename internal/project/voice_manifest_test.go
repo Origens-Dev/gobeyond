@@ -95,3 +95,74 @@ func TestVoiceManifestRejectsDynamicAndUnboundedSchemas(t *testing.T) {
 		}
 	}
 }
+
+const voiceReadToolSource = `agents.DefineTool[Input, Output](agents.ToolConfig{
+Name:"search_operator_directory", Description:"Find one callable destination by public label.",
+InputSchema:map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{"query":map[string]any{"type":"string","minLength":1,"maxLength":64}},"required":[]string{"query"}},
+OutputSchema:map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{"entries":map[string]any{"type":"array","maxItems":5,"items":map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{"destination_id":map[string]any{"type":"string","maxLength":128},"public_label":map[string]any{"type":"string","maxLength":128},"destination_class":map[string]any{"type":"string","maxLength":32,"enum":[]string{"extension","assistant","outside_pstn"}}},"required":[]string{"destination_id","public_label","destination_class"}}}},"required":[]string{"entries"}},
+VoiceRemoteRead:&agents.VoiceReadPolicy{MaxResultBytes:4096},
+}, handler)`
+
+func TestVoiceManifestIncludesRemoteReadTools(t *testing.T) {
+	dialExpr, err := parser.ParseExpr(voiceToolSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dial, err := parseVoiceTool("dial-contact", dialExpr.(*ast.CallExpr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readExpr, err := parser.ParseExpr(voiceReadToolSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := parseVoiceTool("search-operator-directory", readExpr.(*ast.CallExpr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read == nil || !read.IsRead() || read.Name != "search_operator_directory" || read.MaxResultBytes != 4096 {
+		t.Fatalf("read tool=%+v", read)
+	}
+	defs := []AgentDefinition{{
+		ID: "operator", Revision: "build-1",
+		Slots: AgentSlots{Channels: []AgentChannel{{ID: "voice", Connector: "assistant-line"}}},
+		Tools: []AgentToolDefinition{
+			{ID: "dial-contact", VoiceControl: dial},
+			{ID: "search-operator-directory", VoiceControl: read},
+		},
+	}}
+	m := portableAgentsManifest(defs, "build-1")
+	if err = attachVoiceManifests(&m, defs); err != nil {
+		t.Fatal(err)
+	}
+	got := m.Agents[0].VoiceManifest
+	if got == nil || len(got.Tools) != 2 {
+		t.Fatalf("tools=%v", got)
+	}
+	var sawDial, sawRead bool
+	for _, tool := range got.Tools {
+		switch tool.ID {
+		case "dial-contact":
+			sawDial = !tool.IsRead()
+		case "search-operator-directory":
+			sawRead = tool.IsRead() && tool.Name == "search_operator_directory"
+		}
+	}
+	if !sawDial || !sawRead {
+		t.Fatalf("dial=%v read=%v tools=%+v", sawDial, sawRead, got.Tools)
+	}
+}
+
+func TestVoiceManifestRejectsControlAndReadOnSameTool(t *testing.T) {
+	src := strings.Replace(voiceToolSource,
+		`VoiceControl:&agents.VoiceToolPolicy{DestinationClasses:[]string{"extension"},TerminalOnSuccess:true},`,
+		`VoiceControl:&agents.VoiceToolPolicy{DestinationClasses:[]string{"extension"},TerminalOnSuccess:true},VoiceRemoteRead:&agents.VoiceReadPolicy{MaxResultBytes:4096},`,
+		1)
+	expr, err := parser.ParseExpr(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = parseVoiceTool("dial-contact", expr.(*ast.CallExpr)); err == nil {
+		t.Fatal("accepted dual voice policy")
+	}
+}

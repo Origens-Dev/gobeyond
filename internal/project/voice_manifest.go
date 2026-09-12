@@ -28,21 +28,35 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 			}
 		}
 	}
-	policy, ok := fields["VoiceControl"]
-	if !ok {
+	controlExpr, hasControl := fields["VoiceControl"]
+	readExpr, hasRead := fields["VoiceRemoteRead"]
+	if hasControl && hasRead {
+		return nil, fmt.Errorf("tool cannot be read and call control")
+	}
+	if !hasControl && !hasRead {
 		return nil, nil
 	}
-	if ident, ok := policy.(*ast.Ident); ok && ident.Name == "nil" {
+	policyExpr := controlExpr
+	if hasRead {
+		policyExpr = readExpr
+	}
+	if ident, ok := policyExpr.(*ast.Ident); ok && ident.Name == "nil" {
 		return nil, nil
 	}
-	if u, ok := policy.(*ast.UnaryExpr); ok && u.Op == token.AND {
-		policy = u.X
+	if u, ok := policyExpr.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		policyExpr = u.X
 	}
-	pl, ok := policy.(*ast.CompositeLit)
+	pl, ok := policyExpr.(*ast.CompositeLit)
 	if !ok {
+		if hasRead {
+			return nil, fmt.Errorf("voice remote read policy must be an inline literal")
+		}
 		return nil, fmt.Errorf("voice control policy must be an inline literal")
 	}
-	tool := voicecontract.Tool{ID: id, Name: id}
+	tool := voicecontract.Tool{ID: id, Name: id, ExecutionKind: "call_control"}
+	if hasRead {
+		tool.ExecutionKind = "read"
+	}
 	for _, e := range pl.Elts {
 		kv, ok := e.(*ast.KeyValueExpr)
 		if !ok {
@@ -55,6 +69,19 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 		v, err := voiceLiteral(kv.Value, 0)
 		if err != nil {
 			return nil, err
+		}
+		if hasRead {
+			switch key.Name {
+			case "MaxResultBytes":
+				n, ok := v.(int64)
+				if !ok || n < 1 || n > 4096 {
+					return nil, fmt.Errorf("max result bytes must be an int between 1 and 4096")
+				}
+				tool.MaxResultBytes = int(n)
+			default:
+				return nil, fmt.Errorf("unsupported voice read policy field %s", key.Name)
+			}
+			continue
 		}
 		switch key.Name {
 		case "TerminalOnSuccess":
@@ -120,6 +147,25 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 	}
 	tool.InputSchema = raw
 	tool.SchemaDigest = voicecontract.Digest(raw)
+	if hasRead {
+		if tool.MaxResultBytes < 1 {
+			return nil, fmt.Errorf("voice remote read requires MaxResultBytes")
+		}
+		output, err := voiceLiteral(fields["OutputSchema"], 0)
+		if err != nil {
+			return nil, fmt.Errorf("voice output schema: %w", err)
+		}
+		outRaw, err := json.Marshal(output)
+		if err != nil {
+			return nil, err
+		}
+		outRaw, err = voicecontract.CanonicalJSON(outRaw, voicecontract.MaxSchemaBytes)
+		if err != nil {
+			return nil, err
+		}
+		tool.OutputSchema = outRaw
+		tool.OutputSchemaDigest = voicecontract.Digest(outRaw)
+	}
 	_, _, err = voicecontract.FreezeManifest(voicecontract.Manifest{Version: voicecontract.Version, Revision: "validation", CompiledRevision: "validation", Tools: []voicecontract.Tool{tool}})
 	if err != nil {
 		return nil, err
@@ -207,12 +253,14 @@ func attachVoiceManifests(manifest *AgentsManifest, definitions []AgentDefinitio
 	for i, d := range definitions {
 		m := voicecontract.Manifest{Version: voicecontract.Version, Revision: d.Revision, CompiledRevision: d.Revision, Tools: []voicecontract.Tool{}}
 		for _, tool := range d.Tools {
+			// VoiceControl holds either a call-control or remote-read tool after
+			// parseVoiceTool; ExecutionKind distinguishes them for FreezeManifest.
 			if tool.VoiceControl != nil {
 				m.Tools = append(m.Tools, *tool.VoiceControl)
 			}
 		}
 		// Voice-channel agents publish an identity-only manifest even with zero
-		// authored VoiceControl tools so platform mint can resolve admission.
+		// authored VoiceControl/VoiceRemoteRead tools so platform mint can resolve admission.
 		if len(m.Tools) == 0 && !hasVoiceChannel(d.Slots) {
 			continue
 		}
