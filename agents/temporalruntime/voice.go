@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -92,6 +93,10 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 		ResponseModalities: []genai.Modality{genai.ModalityAudio},
 		Tools:              liveTools,
 	}
+	if len(liveTools) > 0 {
+		names := liveToolNames(liveTools)
+		log.Printf("gemini live tools declared count=%d names=%s", len(names), strings.Join(names, ","))
+	}
 	// Gemini Developer API rejects system_instruction parts with an empty
 	// oneof (close 1007). Omit the field when instructions resolve empty.
 	if instr := strings.TrimSpace(cfg.Instructions); instr != "" {
@@ -136,7 +141,14 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	// SendClientContent — so gemini-3.1-flash-live-preview keeps accepting
 	// subsequent SendRealtimeInput audio (mixing client_content + realtime
 	// after TurnComplete leaves the session deaf to the mic).
+	//
+	// CallControl Operator sessions already instruct an opening greeting.
+	// A second kick burns the authored spoken-turn budget and can script the
+	// failure goodbye before any FunctionCall.
 	opening := strings.TrimSpace(os.Getenv("GOBEYOND_LIVE_OPENING_TURN"))
+	if cfg.CallControl != nil && opening == "" {
+		opening = "-"
+	}
 	if opening == "" {
 		opening = "Please greet the caller briefly now."
 	}
@@ -326,11 +338,24 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 			continue
 		}
 		if message.ServerContent != nil && message.ServerContent.ModelTurn != nil {
+			var embedded []*genai.FunctionCall
 			for _, part := range message.ServerContent.ModelTurn.Parts {
-				if part == nil || part.InlineData == nil || len(part.InlineData.Data) == 0 {
+				if part == nil {
+					continue
+				}
+				if part.FunctionCall != nil {
+					embedded = append(embedded, part.FunctionCall)
+					continue
+				}
+				if part.InlineData == nil || len(part.InlineData.Data) == 0 {
 					continue
 				}
 				if err := handle.control.emit(ctx, handle.pcmOut, voice.AudioFrame{Data: append([]byte(nil), part.InlineData.Data...)}); err != nil {
+					return err
+				}
+			}
+			if len(embedded) > 0 {
+				if err := handle.dispatchToolCall(ctx, &genai.LiveServerToolCall{FunctionCalls: embedded}); err != nil {
 					return err
 				}
 			}
@@ -338,6 +363,9 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 		// GenerationComplete means the provider stopped generating. It is not
 		// the semantic end of a turn when a tool continuation is pending.
 		if message.ServerContent != nil && message.ServerContent.TurnComplete {
+			if reason := strings.TrimSpace(string(message.ServerContent.TurnCompleteReason)); reason != "" {
+				log.Printf("gemini live turn_complete_reason=%s", reason)
+			}
 			if err := handle.control.emit(ctx, handle.pcmOut, voice.AudioFrame{TurnComplete: true}); err != nil {
 				return err
 			}
@@ -345,10 +373,41 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 	}
 }
 
+func liveToolNames(tools []*genai.Tool) []string {
+	var names []string
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		for _, decl := range tool.FunctionDeclarations {
+			if decl == nil {
+				continue
+			}
+			name := strings.TrimSpace(decl.Name)
+			if name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
 func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *genai.LiveServerToolCall) error {
 	if call == nil || len(call.FunctionCalls) == 0 {
 		return nil
 	}
+	names := make([]string, 0, len(call.FunctionCalls))
+	for _, c := range call.FunctionCalls {
+		if c == nil {
+			continue
+		}
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			name = "(unnamed)"
+		}
+		names = append(names, name)
+	}
+	log.Printf("gemini live function_call names=%s", strings.Join(names, ","))
 	if handle.cfg.CallControl != nil {
 		if len(call.FunctionCalls) == 1 && call.FunctionCalls[0] != nil &&
 			callControlAllows(handle.cfg, strings.TrimSpace(call.FunctionCalls[0].Name)) {
