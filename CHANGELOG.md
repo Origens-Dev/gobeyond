@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.91 - 2026-09-12
+
+- Inject v2 transport/parent/hop identity into voice control LocalActivity
+  actor metadata so Operator `dial_contact` can re-verify the signed grant
+  before `operations/start`.
+- Surface the concrete Execute failure under
+  `call control could not start: …` in Temporal Update payloads.
+
 ## 0.1.0-alpha.90 - 2026-09-12
 
 - Restore CallControl Live opening kick so Operator greets on connect (set
