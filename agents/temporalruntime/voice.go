@@ -505,8 +505,10 @@ func liveToolsFromSelected(tools map[string]ai.Tool) []*genai.Tool {
 		decl := &genai.FunctionDeclaration{
 			Name: name, Description: tool.Description,
 		}
-		if schema, ok := tool.InputSchema.(map[string]any); ok {
-			decl.ParametersJsonSchema = schema
+		// Gemini Live ignores ParametersJsonSchema (empty args / undeclared
+		// usable tools). Use typed Parameters and flatten oneOf/anyOf.
+		if tool.InputSchema != nil {
+			decl.Parameters = liveParametersSchema(tool.InputSchema)
 		}
 		declarations = append(declarations, decl)
 	}
