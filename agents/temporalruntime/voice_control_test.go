@@ -237,8 +237,65 @@ func TestCallControlLiveToolsDeclareDialAndRead(t *testing.T) {
 	names := map[string]bool{}
 	for _, d := range live[0].FunctionDeclarations {
 		names[d.Name] = true
+		if d.ParametersJsonSchema != nil {
+			t.Fatalf("%s still uses ParametersJsonSchema", d.Name)
+		}
+		if d.Parameters == nil || d.Parameters.Type != genai.TypeObject {
+			t.Fatalf("%s missing typed Parameters: %#v", d.Name, d.Parameters)
+		}
 	}
 	if !names["dial_contact"] || !names["search_operator_directory"] {
 		t.Fatalf("declared=%v", names)
+	}
+}
+
+func TestLiveParametersSchemaFlattensDialOneOf(t *testing.T) {
+	schema := map[string]any{
+		"oneOf": []any{
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"destination_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+				},
+				"required": []string{"destination_id"},
+			},
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"phone_number": map[string]any{"type": "string", "maxLength": 16},
+				},
+				"required": []string{"phone_number"},
+			},
+		},
+	}
+	got := liveParametersSchema(schema)
+	if got == nil || got.Type != genai.TypeObject {
+		t.Fatalf("schema=%#v", got)
+	}
+	if len(got.Required) != 0 {
+		t.Fatalf("flattened union must leave required empty: %v", got.Required)
+	}
+	if got.Properties["destination_id"] == nil || got.Properties["destination_id"].Type != genai.TypeString {
+		t.Fatalf("destination_id=%#v", got.Properties["destination_id"])
+	}
+	if got.Properties["phone_number"] == nil || got.Properties["phone_number"].Type != genai.TypeString {
+		t.Fatalf("phone_number=%#v", got.Properties["phone_number"])
+	}
+	live := liveToolsFromSelected(map[string]ai.Tool{
+		"dial_contact": {Name: "dial_contact", Description: "dial", InputSchema: schema, Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+			return nil, nil
+		}},
+	})
+	if live == nil || len(live) == 0 || len(live[0].FunctionDeclarations) != 1 {
+		t.Fatalf("live=%#v", live)
+	}
+	decl := live[0].FunctionDeclarations[0]
+	if decl.ParametersJsonSchema != nil {
+		t.Fatal("ParametersJsonSchema must not be set for Live")
+	}
+	if decl.Parameters == nil || decl.Parameters.Properties["destination_id"] == nil {
+		t.Fatalf("parameters=%#v", decl.Parameters)
 	}
 }
