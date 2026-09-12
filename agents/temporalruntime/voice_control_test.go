@@ -349,3 +349,40 @@ func TestCallControlSkipsDefaultOpeningKick(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveFunctionArgFieldsReportsEmpty(t *testing.T) {
+	got := liveFunctionArgFields(&genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{
+		{Name: "search_operator_directory", Args: map[string]any{}},
+		{Name: "search_operator_directory", Args: map[string]any{"query": "Trainer"}},
+	}})
+	if len(got) != 2 || got[0] != "empty" || got[1] != "query" {
+		t.Fatalf("arg fields=%v", got)
+	}
+}
+
+func TestLiveToolBatchAllRemoteReads(t *testing.T) {
+	read := agents.DefineToolWithCall(agents.ToolConfig{
+		Name: "search_operator_directory", Description: "lookup",
+		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}},
+		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024},
+	}, func(context.Context, agents.Actor, ai.ToolCall, map[string]any) (any, error) {
+		return map[string]any{"entries": []any{}}, nil
+	})
+	dial := agents.DefineTool(agents.ToolConfig{
+		Name: "dial_contact", Description: "dial",
+		InputSchema:  map[string]any{"type": "object", "properties": map[string]any{}},
+		VoiceControl: &agents.VoiceToolPolicy{DestinationClasses: []string{"extension"}, TargetKinds: []string{"line"}, InputModes: []string{"destination_id"}, HandoffMode: "blind"},
+	}, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		return nil, errors.New("not via authored execute")
+	})
+	handle := &geminiLiveHandle{tools: map[string]ai.Tool{
+		"search_operator_directory": read,
+		"dial_contact":              dial,
+	}}
+	if !liveToolBatchAllRemoteReads(handle, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{Name: "search_operator_directory"}}}) {
+		t.Fatal("search batch must count as remote-read")
+	}
+	if liveToolBatchAllRemoteReads(handle, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{Name: "dial_contact"}}}) {
+		t.Fatal("dial must not count as remote-read")
+	}
+}
