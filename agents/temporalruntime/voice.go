@@ -79,9 +79,18 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	}
 	selectedDefinition := adapter.definition
 	selectedDefinition.AI.Tools = selectedTools
+	// CallControl selections already include verified dial tools (and remote
+	// reads). Do not re-filter VoiceControl/VoiceRemoteRead metadata or Gemini
+	// never sees dial_contact / search_operator_directory.
+	var liveTools []*genai.Tool
+	if cfg.CallControl != nil {
+		liveTools = liveToolsFromSelected(selectedTools)
+	} else {
+		liveTools = liveToolsFromDefinition(selectedDefinition, nil)
+	}
 	connectCfg := &genai.LiveConnectConfig{
 		ResponseModalities: []genai.Modality{genai.ModalityAudio},
-		Tools:              liveToolsFromDefinition(selectedDefinition, nil),
+		Tools:              liveTools,
 	}
 	// Gemini Developer API rejects system_instruction parts with an empty
 	// oneof (close 1007). Omit the field when instructions resolve empty.
@@ -137,13 +146,19 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 			return nil, voice.StartResult{}, fmt.Errorf("gemini live opening turn: %w", sendErr)
 		}
 	}
+	clientTools := clientToolsFromDefinition(selectedDefinition, nil)
+	if cfg.CallControl != nil {
+		// Remote-read tools keep Execute handlers; declare them for dispatch
+		// even though VoiceRemoteRead would be stripped by the ordinary filter.
+		clientTools = clientToolsFromSelected(selectedTools)
+	}
 	return &geminiLiveHandle{
 			control: liveControlGate{maxTurns: controlTurnLimit(cfg)},
 			cfg:     cfg,
 			session: session,
 			// Native Google Search is a server-side Live tool. Only authored
 			// function tools are dispatched back to the host.
-			tools:   clientToolsFromDefinition(selectedDefinition, nil),
+			tools:   clientTools,
 			model:   connectedModel,
 			backend: liveUsageBackend(adapter.definition.AI.Inference),
 			pcmIn:   pcmIn,
@@ -335,7 +350,12 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		return nil
 	}
 	if handle.cfg.CallControl != nil {
-		return handle.dispatchControl(ctx, call)
+		if len(call.FunctionCalls) == 1 && call.FunctionCalls[0] != nil &&
+			callControlAllows(handle.cfg, strings.TrimSpace(call.FunctionCalls[0].Name)) {
+			return handle.dispatchControl(ctx, call)
+		}
+		// Directory/search reads share the CallControl session but execute via
+		// ordinary tool handlers, not the verified dial executor.
 	}
 	handle.toolWG.Add(1)
 	go func() {
@@ -464,7 +484,10 @@ func liveUsageBackend(inference string) string {
 }
 
 func liveToolsFromDefinition(definition agents.AIDefinition, enabled []string) []*genai.Tool {
-	tools := voiceToolsFromDefinition(definition, enabled)
+	return liveToolsFromSelected(voiceToolsFromDefinition(definition, enabled))
+}
+
+func liveToolsFromSelected(tools map[string]ai.Tool) []*genai.Tool {
 	if len(tools) == 0 {
 		return nil
 	}
@@ -498,6 +521,39 @@ func liveToolsFromDefinition(definition agents.AIDefinition, enabled []string) [
 		result = append(result, &genai.Tool{FunctionDeclarations: declarations})
 	}
 	return result
+}
+
+func clientToolsFromSelected(tools map[string]ai.Tool) map[string]ai.Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make(map[string]ai.Tool, len(tools))
+	for key, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			name = key
+		}
+		if isWebSearchTool(name) || tool.Execute == nil {
+			continue
+		}
+		out[key] = tool
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func callControlAllows(cfg voice.StartConfig, name string) bool {
+	if cfg.CallControl == nil || name == "" {
+		return false
+	}
+	for _, allowed := range cfg.CallControl.ToolNames {
+		if allowed == name {
+			return true
+		}
+	}
+	return false
 }
 
 // clientToolsFromDefinition returns authored callback tools for Gemini's

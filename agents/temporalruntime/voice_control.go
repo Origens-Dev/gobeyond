@@ -3,6 +3,7 @@ package temporalruntime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -54,7 +55,10 @@ func (g *liveControlGate) stopped() bool { return g.terminal.Load() }
 func (g *liveControlGate) begin() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.terminal.Load() || (g.maxTurns > 0 && g.turns >= g.maxTurns) {
+	// Speech turn budget fences further model audio via emit. Call-control
+	// tools must still run after that budget so transfers are not silently
+	// dropped once the opening kick and a short dialogue consume MaxAssistantTurns.
+	if g.terminal.Load() {
 		return false
 	}
 	g.pending = true
@@ -98,6 +102,25 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 			return nil, errors.New("control tool absent from resolved definition")
 		}
 		out[name] = t
+	}
+	// Directory/search reads are not CallControl ToolNames, but they must remain
+	// model-visible beside verified dial tools. Include typed remote-read tools
+	// from the resolved definition without widening the control executor set.
+	for id, tool := range d.AI.Tools {
+		if _, read := agents.VoiceRemoteReadPolicy(tool); !read {
+			continue
+		}
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			name = id
+		}
+		if name == "" {
+			continue
+		}
+		if _, exists := out[name]; exists {
+			continue
+		}
+		out[name] = tool
 	}
 	return out, nil
 }

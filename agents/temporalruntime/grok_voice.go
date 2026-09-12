@@ -356,7 +356,10 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 		return nil
 	}
 	if h.cfg.CallControl != nil {
-		return h.completeControl(ctx, calls)
+		if len(calls) == 1 && callControlAllows(h.cfg, strings.TrimSpace(calls[0].Name)) {
+			return h.completeControl(ctx, calls)
+		}
+		// Remote-read tools fall through to ordinary Execute handlers.
 	}
 	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
