@@ -373,6 +373,57 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 	}
 }
 
+
+func liveToolBatchAllRemoteReads(handle *geminiLiveHandle, call *genai.LiveServerToolCall) bool {
+	if handle == nil || call == nil || len(call.FunctionCalls) == 0 {
+		return false
+	}
+	for _, functionCall := range call.FunctionCalls {
+		if functionCall == nil {
+			return false
+		}
+		name := strings.TrimSpace(functionCall.Name)
+		tool, ok := handle.lookupTool(name)
+		if !ok {
+			return false
+		}
+		if _, read := agents.VoiceRemoteReadPolicy(tool); !read {
+			return false
+		}
+	}
+	return true
+}
+
+func liveFunctionArgFields(call *genai.LiveServerToolCall) []string {
+	if call == nil {
+		return nil
+	}
+	fields := make([]string, 0, len(call.FunctionCalls))
+	for _, c := range call.FunctionCalls {
+		if c == nil {
+			fields = append(fields, "-")
+			continue
+		}
+		if len(c.Args) == 0 {
+			fields = append(fields, "empty")
+			continue
+		}
+		keys := make([]string, 0, len(c.Args))
+		for key := range c.Args {
+			key = strings.TrimSpace(key)
+			if key != "" {
+				keys = append(keys, key)
+			}
+		}
+		if len(keys) == 0 {
+			fields = append(fields, "empty")
+			continue
+		}
+		fields = append(fields, strings.Join(keys, "+"))
+	}
+	return fields
+}
+
 func liveToolNames(tools []*genai.Tool) []string {
 	var names []string
 	for _, tool := range tools {
@@ -407,7 +458,7 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		}
 		names = append(names, name)
 	}
-	log.Printf("gemini live function_call names=%s", strings.Join(names, ","))
+	log.Printf("gemini live function_call names=%s arg_fields=%s", strings.Join(names, ","), strings.Join(liveFunctionArgFields(call), ","))
 	if handle.cfg.CallControl != nil {
 		if len(call.FunctionCalls) == 1 && call.FunctionCalls[0] != nil &&
 			callControlAllows(handle.cfg, strings.TrimSpace(call.FunctionCalls[0].Name)) {
@@ -433,6 +484,7 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 				name := strings.TrimSpace(functionCall.Name)
 				tool, ok := handle.lookupTool(name)
 				if !ok || tool.Execute == nil {
+					log.Printf("gemini live tool missing name=%s registered=%d", name, len(handle.tools))
 					responses[i] = &genai.FunctionResponse{ID: functionCall.ID, Name: name,
 						Response: map[string]any{"error": fmt.Sprintf("unknown tool %q", name)}}
 					return
@@ -442,6 +494,7 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 				}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": handle.cfg.Actor}})
 				response := map[string]any{"result": result}
 				if err != nil {
+					log.Printf("gemini live tool execute name=%s err=%v", name, err)
 					response = map[string]any{"error": err.Error()}
 				}
 				responses[i] = &genai.FunctionResponse{ID: functionCall.ID, Name: name, Response: response}
@@ -452,7 +505,10 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		if len(responses) == 0 || callCtx.Err() != nil {
 			return
 		}
-		if handle.cfg.OnPlayoutBarrier != nil {
+		// Remote-read tools (directory search) are not announcement barriers.
+		// Waiting on PCM flush ack before SendToolResponse can drop the result
+		// when the model has not spoken yet (CallControl skips the opening kick).
+		if handle.cfg.OnPlayoutBarrier != nil && !liveToolBatchAllRemoteReads(handle, call) {
 			barrierID := handle.barrierSeq.Add(1)
 			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
 				handle.reportAsyncError(err)
