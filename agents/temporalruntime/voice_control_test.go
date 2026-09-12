@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
+	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/voice"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"google.golang.org/genai"
@@ -179,10 +180,65 @@ func TestControlTurnBudgetFencesFifthTurnAndTools(t *testing.T) {
 	if err := gate.emit(context.Background(), out, voice.AudioFrame{Data: []byte{2}}); err == nil {
 		t.Fatal("fifth turn emitted")
 	}
-	if gate.begin() {
-		t.Fatal("tool accepted after turn budget")
+	// Speech budget must not silently drop dial_contact after the opening kick
+	// and a short operator dialogue.
+	if !gate.begin() {
+		t.Fatal("control tool blocked after speech turn budget")
 	}
+	gate.finish(false)
 	if len(out) != 8 {
 		t.Fatalf("frames=%d", len(out))
+	}
+}
+
+func TestCallControlLiveToolsDeclareDialAndRead(t *testing.T) {
+	read := agents.DefineToolWithCall(agents.ToolConfig{
+		Name: "search_operator_directory", Description: "lookup",
+		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{}},
+		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024},
+	}, func(context.Context, agents.Actor, ai.ToolCall, map[string]any) (any, error) {
+		return map[string]any{"results": []any{}}, nil
+	})
+	dial := agents.DefineTool(agents.ToolConfig{
+		Name: "dial_contact", Description: "dial",
+		InputSchema:  map[string]any{"type": "object", "properties": map[string]any{}},
+		VoiceControl: &agents.VoiceToolPolicy{DestinationClasses: []string{"extension"}, TargetKinds: []string{"line"}, InputModes: []string{"destination_id"}, HandoffMode: "blind"},
+	}, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		return nil, errors.New("not via authored execute")
+	})
+	def := agents.DefineAI(agents.AIConfig{
+		Tools: map[string]agents.AITool{"search_operator_directory": read, "dial_contact": dial},
+	})
+	selected, err := controlTools(def, voice.StartConfig{
+		OnPlayoutBarrier: func(context.Context, uint64) error { return nil },
+		CallControl: &voice.CallControlConfig{
+			MaxAssistantTurns: 4,
+			ToolNames:         []string{"dial_contact"},
+			Execute:           func(context.Context, ai.ToolCall) (any, error) { return nil, nil },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := selected["dial_contact"]; !ok {
+		t.Fatal("dial_contact missing from control selection")
+	}
+	if _, ok := selected["search_operator_directory"]; !ok {
+		t.Fatal("search_operator_directory missing from control selection")
+	}
+	// Ordinary filter strips both policies; CallControl Live path must not.
+	if tools := liveToolsFromDefinition(agents.AIDefinition{AI: agents.AIConfig{Tools: selected}}, nil); tools != nil {
+		t.Fatal("ordinary liveToolsFromDefinition must strip control/read tools")
+	}
+	live := liveToolsFromSelected(selected)
+	if live == nil || len(live) == 0 || live[0].FunctionDeclarations == nil {
+		t.Fatal("selected live tools missing declarations")
+	}
+	names := map[string]bool{}
+	for _, d := range live[0].FunctionDeclarations {
+		names[d.Name] = true
+	}
+	if !names["dial_contact"] || !names["search_operator_directory"] {
+		t.Fatalf("declared=%v", names)
 	}
 }
