@@ -2,6 +2,7 @@ package voicecontract
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -221,6 +222,32 @@ func TestIdentityOnlyManifestFreeze(t *testing.T) {
 	}
 	if len(roundtrip.Tools) != 0 {
 		t.Fatalf("tools=%d", len(roundtrip.Tools))
+	}
+}
+
+func TestIdentityGrantAllowsEmptyDestinationClasses(t *testing.T) {
+	raw, err := os.ReadFile("testdata/grant.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims GrantClaims
+	if err = json.Unmarshal(raw, &claims); err != nil {
+		t.Fatal(err)
+	}
+	claims.Version = Version
+	claims.Context.Scope.Kind = "agent"
+	claims.Context.TransportCallID = claims.Context.CallID
+	claims.Context.ParentCallID = claims.Context.CallID
+	claims.Context.HopID = "hop_root_1"
+	claims.Context.HopCount = 1
+	claims.DestinationClasses = nil
+	claims.TargetKinds = nil
+	if err = claims.Validate(); err != nil {
+		t.Fatalf("identity grant rejected: %v", err)
+	}
+	claims.DestinationClasses = []string{"not-a-class"}
+	if claims.Validate() == nil {
+		t.Fatal("accepted invalid destination class")
 	}
 }
 
