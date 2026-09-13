@@ -46,32 +46,41 @@ const (
 // docs/spikes/gemini-live-g4a.md.
 var _ = genai.LiveConnectConfig{}
 
-// Usage is one Gemini Live UsageMetadata snapshot (typically per model turn).
-// PromptTokens maps prompt_token_count; CompletionTokens maps
-// response_token_count. Hosts emit this as usage.llm.
+// Usage reports a provider usage snapshot. Token counts describe one backend
+// response. DurationSeconds is a cumulative session total, not a delta; hosts
+// must not sum repeated snapshots. Final distinguishes an authoritative final
+// provider report from interim totals retained after an incomplete close.
 type Usage struct {
-	PromptTokens     int64
-	CompletionTokens int64
-	TotalTokens      int64
-	Model            string
-	Backend          string
+	// WebSearchCalls counts completed native searches in one backend response.
+	WebSearchCalls     int64
+	DurationSeconds    float64
+	ProviderSessionID  string
+	ProviderResponseID string
+	Final              bool
+	PromptTokens       int64
+	CompletionTokens   int64
+	TotalTokens        int64
+	Model              string
+	Backend            string
 }
 
 // StartConfig is the transport-neutral input to a Live voice session.
 // Instructions and VoiceName should already include any session metadata
 // overlay (agents.ResolveInstructions / ResolveVoiceName) before Start.
 type StartConfig struct {
-	CallControl      *CallControlConfig
-	AgentID          string
-	SessionID        string
-	RunID            string
-	CompiledRevision string
-	Actor            agents.Actor
-	VoiceProvider    string
-	VoiceModel       string
-	VoiceName        string
-	Instructions     string
-	Metadata         map[string]string
+	CallControl              *CallControlConfig
+	AgentID                  string
+	SessionID                string
+	RunID                    string
+	CompiledRevision         string
+	Actor                    agents.Actor
+	VoiceProvider            string
+	VoiceModel               string
+	VoiceBackendModel        string
+	ConversationInstructions string
+	VoiceName                string
+	Instructions             string
+	Metadata                 map[string]string
 	// EnabledToolIDs is the canonical platform capability allowlist. Empty
 	// means use the authored definition's tools for direct/local adapters.
 	EnabledToolIDs   []string
