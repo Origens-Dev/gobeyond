@@ -72,10 +72,12 @@ func RegisterVoice(registry *VoiceRegistry, agentID string, definition agents.AI
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("GOBEYOND_VOICE_PROVIDER"))) {
 	case "", "gemini":
 		adapter = NewGeminiLiveAdapter(definition)
+	case "openai":
+		adapter = NewOpenAILiveAdapter(definition)
 	case "grok":
 		adapter = NewGrokLiveAdapter(definition)
 	default:
-		return fmt.Errorf("unsupported GOBEYOND_VOICE_PROVIDER %q (use gemini or grok)", os.Getenv("GOBEYOND_VOICE_PROVIDER"))
+		return fmt.Errorf("unsupported GOBEYOND_VOICE_PROVIDER %q (use gemini, grok, or openai)", os.Getenv("GOBEYOND_VOICE_PROVIDER"))
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
