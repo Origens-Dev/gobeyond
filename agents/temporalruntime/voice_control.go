@@ -6,12 +6,18 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/voice"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 )
+
+// hangUpPlayoutGate is how long hang_up waits for softphone drain before cutting
+// the call. Dial/transfer keep the full caller-supplied barrier; hang_up should
+// not leave the caller in multi-second dead air after the model decides to end.
+const hangUpPlayoutGate = 400 * time.Millisecond
 
 // The same mutex linearizes terminal commit against provider writes and output.
 // No network Close occurs while this mutex is held.
@@ -132,8 +138,18 @@ func invokeControl(ctx context.Context, cfg voice.StartConfig, call ai.ToolCall,
 	if !allowed {
 		return nil, false, errors.New("tool outside verified control manifest")
 	}
-	if err := cfg.OnPlayoutBarrier(ctx, barrier); err != nil {
-		return nil, false, err
+	barrierCtx := ctx
+	if call.ToolName == voicecontract.ToolIDHangUp {
+		var cancel context.CancelFunc
+		barrierCtx, cancel = context.WithTimeout(ctx, hangUpPlayoutGate)
+		defer cancel()
+	}
+	if err := cfg.OnPlayoutBarrier(barrierCtx, barrier); err != nil {
+		// hang_up treats drain deadline as "cut now" so a stalled softphone
+		// playout ack cannot keep the call alive. Parent cancel still aborts.
+		if call.ToolName != voicecontract.ToolIDHangUp || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+			return nil, false, err
+		}
 	}
 	result, err := cfg.CallControl.Execute(ctx, call)
 	var terminal *voice.TerminalHandoff
