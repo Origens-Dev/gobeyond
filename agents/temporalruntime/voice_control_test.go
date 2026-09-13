@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -143,6 +144,39 @@ func TestControlFailureRestoresAudioAfterResponse(t *testing.T) {
 	_ = h.control.emit(context.Background(), out, voice.AudioFrame{Data: []byte{2}})
 	if len(out) != 1 || len(session.responses) != 1 || h.control.stopped() {
 		t.Fatal("normal failure did not restore live session")
+	}
+}
+
+func TestHangUpPlayoutGateTimesOutAndStillExecutes(t *testing.T) {
+	started := make(chan struct{})
+	cfg := voice.StartConfig{
+		OnPlayoutBarrier: func(ctx context.Context, id uint64) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		CallControl: &voice.CallControlConfig{
+			ToolNames: []string{voicecontract.ToolIDHangUp},
+			Execute: func(context.Context, ai.ToolCall) (any, error) {
+				return nil, &voice.TerminalHandoff{Result: terminalFixture(t)}
+			},
+		},
+	}
+	start := time.Now()
+	_, terminal, err := invokeControl(context.Background(), cfg, ai.ToolCall{
+		ToolCallID: "hang-1", ToolName: voicecontract.ToolIDHangUp, Input: map[string]any{},
+	}, 1)
+	elapsed := time.Since(start)
+	if err != nil || !terminal {
+		t.Fatalf("hang_up after short gate: terminal=%v err=%v", terminal, err)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("playout barrier was not entered")
+	}
+	if elapsed < hangUpPlayoutGate/2 || elapsed > hangUpPlayoutGate+time.Second {
+		t.Fatalf("hang_up gate elapsed=%v want ~%v", elapsed, hangUpPlayoutGate)
 	}
 }
 
