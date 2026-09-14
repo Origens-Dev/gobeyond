@@ -25,15 +25,24 @@ and duration. Consumers must compute positive duration deltas rather than sum
 cumulative snapshots. Closing a session retains a bounded window for final
 usage; abrupt provider or network loss can prevent final accounting.
 
-## Current control limitation
+## Call controls
 
-Conversation and `hang_up` are supported by this implementation. Sessions with
-transfer or dial controls fail at startup: Live's continuous audio does not
-provide a verified announcement-completion barrier for the current call-control
-contract. Backend response completion is not treated as speech completion.
-Applications must retain Gemini or Grok for these assistants until a reliable
-barrier is implemented and tested. Provider voice previews must be real samples
-or explicitly unavailable; browser speech synthesis is not a provider preview.
+Conversation and `hang_up` are supported. Dial/transfer additionally require a
+trusted `CallControlConfig.Announcement` callback returning finite audio in the
+negotiated output format (at most five seconds). The adapter suppresses provider
+audio, clears unfinished speech, plays the application clip, and requires the
+existing `OnPlayoutBarrier` before executing the verified control. The callback
+must not execute the action itself. Do not treat discarded or timed-out media as
+successful playout. A failed announcement or drain returns a tool failure and
+allows the conversation to continue; a trusted terminal handoff closes Live and
+suppresses remaining controls and output. `hang_up` uses its existing bounded
+400 ms drain gate without requiring a separate announcement.
+
+This is application-controlled playback, not a GPT-Live speech-completion event.
+Backend response completion is not speech completion. Applications must provide
+a suitable announcement and verify the actual media/control path before enabling
+transfer. Provider voice previews must be real samples or explicitly unavailable;
+browser speech synthesis is not a provider preview.
 
 Protocol references: [Live API](https://developers.openai.com/api/docs/guides/live),
 [Responses delegation](https://developers.openai.com/api/docs/guides/live-delegation).
