@@ -199,11 +199,11 @@ func (g GrantClaims) Validate() error {
 	return targetKinds(g.TargetKinds)
 }
 func (s SoftphoneEvent) Validate() error {
-	if !validVersion(s.Version) || s.Type != "call_state" || !identifier(s.CallID) || s.Generation == 0 || s.Sequence == 0 || !identifier(s.RemoteParty.DestinationID) || len(s.RemoteParty.PublicLabel) == 0 || !safeText(s.RemoteParty.PublicLabel, 128) {
+	if !validVersion(s.Version) || s.Type != "call_state" || !callIdentifier(s.CallID) || s.Generation == 0 || s.Sequence == 0 || !identifier(s.RemoteParty.DestinationID) || len(s.RemoteParty.PublicLabel) == 0 || !safeText(s.RemoteParty.PublicLabel, 128) {
 		return errors.New("invalid softphone event")
 	}
 	if v2(s.Version) {
-		if !identifier(s.TransportCallID) || !identifier(s.ParentCallID) || !identifier(s.HopID) {
+		if !callIdentifier(s.TransportCallID) || !callIdentifier(s.ParentCallID) || !identifier(s.HopID) {
 			return errors.New("invalid softphone hop identity")
 		}
 	} else if s.TransportCallID != "" || s.ParentCallID != "" || s.HopID != "" {
