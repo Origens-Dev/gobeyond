@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
@@ -87,13 +88,12 @@ func (a *OpenAILiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, in
 	if err := cfg.Actor.Validate(); err != nil {
 		return nil, voice.StartResult{}, err
 	}
-	// Live supplies no authoritative speech-complete boundary. Until the
-	// announcement contract is proven with this protocol, do not advertise
-	// transfer controls that could cut off speech or transfer without announcing.
+	// Live has no authoritative output-audio-done event. A transfer requires
+	// finite application audio plus the verified downstream playout barrier.
 	if cfg.CallControl != nil {
 		for _, name := range cfg.CallControl.ToolNames {
-			if name != "hang_up" {
-				return nil, voice.StartResult{}, errors.New("OpenAI Live transfer controls unavailable: announcement completion is not verified")
+			if name != "hang_up" && cfg.CallControl.Announcement == nil {
+				return nil, voice.StartResult{}, errors.New("OpenAI Live transfer requires an application-controlled announcement")
 			}
 		}
 	}
@@ -241,6 +241,10 @@ type openAILiveEvent struct {
 }
 
 type openAILiveBatch struct{ calls []grokFunctionCall }
+type openAILiveAudio struct {
+	frame voice.AudioFrame
+	epoch uint64
+}
 type openAILiveHandle struct {
 	conn                       *websocket.Conn
 	cfg                        voice.StartConfig
@@ -253,6 +257,8 @@ type openAILiveHandle struct {
 	closeOnce                  sync.Once
 	closed                     chan struct{}
 	control                    liveControlGate
+	audioEpoch                 atomic.Uint64
+	barrierSeq                 atomic.Uint64
 	seen                       map[string]string // reader-owned call-id -> immutable argument fingerprint
 }
 
@@ -281,7 +287,7 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 	defer h.conn.Close()
 	defer close(h.closed)
 	batches := make(chan openAILiveBatch, 8)
-	frames := make(chan voice.AudioFrame, 128)
+	frames := make(chan openAILiveAudio, 128)
 	errs := make(chan error, 2)
 	report := func(err error) {
 		if err != nil {
@@ -306,7 +312,7 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 			case <-ctx.Done():
 				return
 			case frame := <-frames:
-				if err := h.control.emit(ctx, h.out, frame); err != nil {
+				if err := h.emitAudio(ctx, frame); err != nil {
 					report(err)
 					return
 				}
@@ -402,7 +408,7 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 				return err
 			}
 			select {
-			case frames <- voice.AudioFrame{Data: b}:
+			case frames <- openAILiveAudio{frame: voice.AudioFrame{Data: b}, epoch: h.audioEpoch.Load()}:
 			default:
 				return errors.New("OpenAI audio queue full")
 			}
@@ -534,7 +540,17 @@ func (h *openAILiveHandle) execute(ctx context.Context, calls []grokFunctionCall
 				cancel()
 				return nil
 			}
-			result, terminal, err = invokeControl(toolCtx, h.cfg, ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}, uint64(time.Now().UnixNano()))
+			h.audioEpoch.Add(1)
+			call := ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}
+			if c.Name != "hang_up" {
+				err = h.announce(toolCtx, call)
+			}
+			if err == nil {
+				result, terminal, err = invokeControl(toolCtx, h.cfg, call, h.barrierSeq.Add(1))
+			}
+			// Invalidate speech generated while the announcement/control was in
+			// progress, including queued frames after a failed transfer.
+			h.audioEpoch.Add(1)
 			h.control.finish(terminal)
 		} else if selected.Execute == nil {
 			err = errors.New("tool unavailable")
@@ -567,4 +583,57 @@ func openAILiveToolOutput(output any) string {
 		return `{"error":"tool result unavailable or too large"}`
 	}
 	return string(b)
+}
+
+// emitAudio fences queued provider audio against an application announcement.
+func (h *openAILiveHandle) emitAudio(ctx context.Context, f openAILiveAudio) error {
+	h.control.mu.Lock()
+	defer h.control.mu.Unlock()
+	if h.control.pending || h.control.stopped() || f.epoch != h.audioEpoch.Load() {
+		return nil
+	}
+	select {
+	case h.out <- f.frame:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *openAILiveHandle) announce(ctx context.Context, call ai.ToolCall) error {
+	if h.cfg.CallControl.Announcement == nil {
+		return errors.New("control announcement unavailable")
+	}
+	audio, err := h.cfg.CallControl.Announcement(ctx, call, h.format)
+	if err != nil {
+		return err
+	}
+	bytesPerSecond := h.format.SampleRate
+	if h.format.Encoding == voice.EncodingPCM16LE {
+		bytesPerSecond *= 2
+	}
+	if len(audio) == 0 || len(audio) > bytesPerSecond*5 || (h.format.Encoding == voice.EncodingPCM16LE && len(audio)%2 != 0) {
+		return errors.New("invalid control announcement audio")
+	}
+	// Replace any unfinished model speech with the finite application clip.
+	select {
+	case h.out <- voice.AudioFrame{Interrupted: true}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	// 20ms frames keep the media bridge's queue bounded and preserve framing.
+	frameSize := bytesPerSecond / 50
+	for len(audio) > 0 {
+		n := frameSize
+		if n > len(audio) {
+			n = len(audio)
+		}
+		select {
+		case h.out <- voice.AudioFrame{Data: append([]byte(nil), audio[:n]...)}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		audio = audio[n:]
+	}
+	return nil
 }
