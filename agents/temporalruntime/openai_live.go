@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -455,6 +456,7 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 					return errors.New("OpenAI delegation budget exhausted")
 				}
 				activeResponses[e.DelegationID] = n.Response.ID
+				h.logControlStage("response_created", "", "")
 			}
 			responseID := activeResponses[e.DelegationID]
 			if n.Type == "response.output_item.done" && responseID == "" {
@@ -488,6 +490,7 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 				}
 				h.seen[item.CallID] = fingerprint
 				pending[responseID] = append(pending[responseID], grokFunctionCall{CallID: item.CallID, Name: item.Name, Arguments: args})
+				h.logControlStage("function_received", item.Name, "")
 			}
 			if n.Type == "response.completed" || n.Type == "response.failed" || n.Type == "response.incomplete" {
 				if n.Response.ID == "" {
@@ -503,6 +506,7 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 					return errors.New("OpenAI response budget exhausted")
 				}
 				completed[n.Response.ID] = true
+				h.logControlStage(n.Type, "", "")
 				if h.cfg.OnUsage != nil {
 					u := n.Response.Usage
 					model := n.Response.Model
@@ -550,8 +554,10 @@ func (h *openAILiveHandle) execute(ctx context.Context, calls []grokFunctionCall
 			}
 		}
 		if !known {
+			h.logControlStage("tool_rejected", "", "unknown_tool")
 			err = errors.New("tool unavailable")
 		} else if validation := ai.ValidateToolInput(selected, c.Arguments); validation != nil {
+			h.logControlStage("tool_rejected", c.Name, "invalid_arguments")
 			err = errors.New("invalid tool arguments")
 		} else if h.cfg.CallControl != nil && callControlAllows(h.cfg, c.Name) {
 			if !h.control.begin() {
@@ -561,10 +567,20 @@ func (h *openAILiveHandle) execute(ctx context.Context, calls []grokFunctionCall
 			h.audioEpoch.Add(1)
 			call := ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}
 			if c.Name != "hang_up" {
+				h.logControlStage("announcement_started", c.Name, "")
 				err = h.announce(toolCtx, call)
+				if err != nil {
+					h.logControlStage("announcement_failed", c.Name, "announcement_error")
+				}
 			}
 			if err == nil {
+				h.logControlStage("control_started", c.Name, "")
 				result, terminal, err = invokeControl(toolCtx, h.cfg, call, h.barrierSeq.Add(1))
+				stage, code := "control_completed", ""
+				if err != nil {
+					stage, code = "control_failed", "executor_or_playout_error"
+				}
+				h.logControlStage(stage, c.Name, code)
 			}
 			// Invalidate speech generated while the announcement/control was in
 			// progress, including queued frames after a failed transfer.
@@ -654,4 +670,16 @@ func (h *openAILiveHandle) announce(ctx context.Context, call ai.ToolCall) error
 		audio = audio[n:]
 	}
 	return nil
+}
+
+// Log lifecycle metadata only. Never include provider arguments, results,
+// transcripts, credentials, or raw executor errors in this diagnostic path.
+func (h *openAILiveHandle) logControlStage(stage, tool, code string) {
+	if h.cfg.CallControl == nil {
+		return
+	}
+	if _, ok := h.tools[tool]; !ok {
+		tool = ""
+	}
+	log.Printf("openai live control session=%q stage=%s tool=%q code=%s", h.cfg.SessionID, stage, tool, code)
 }
