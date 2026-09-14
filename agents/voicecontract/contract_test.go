@@ -298,3 +298,23 @@ func TestSchemaKeywordMismatch(t *testing.T) {
 		}
 	}
 }
+
+func TestSIPCallIDContext(t *testing.T) {
+	c := v2TestContext()
+	c.CallID = "1185739104-49383-3@BHD.CCI.HC.GC"
+	c.TransportCallID, c.ParentCallID = c.CallID, c.CallID
+	if err := c.ValidateForVersion(Version); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"a\r\nX: injected", "a b", "@host", "a@", "a@b@c"} {
+		c.CallID = bad
+		if c.Validate() == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	c = v2TestContext()
+	c.AgentID = "agent@host"
+	if c.Validate() == nil {
+		t.Fatal("relaxed agent identity")
+	}
+}
