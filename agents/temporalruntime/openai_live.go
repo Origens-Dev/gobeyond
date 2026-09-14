@@ -589,10 +589,16 @@ func (h *openAILiveHandle) execute(ctx context.Context, calls []grokFunctionCall
 		} else if selected.Execute == nil {
 			err = errors.New("tool unavailable")
 		} else {
+			h.logControlStage("tool_started", c.Name, "")
 			result, err = selected.Execute(toolCtx, ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": h.cfg.Actor}})
 			if err == nil {
 				err = ai.ValidateToolOutput(selected, result)
 			}
+			stage, code := "tool_completed", ""
+			if err != nil {
+				stage, code = "tool_failed", "executor_or_output_error"
+			}
+			h.logControlStage(stage, c.Name, code)
 		}
 		cancel()
 		if terminal {
