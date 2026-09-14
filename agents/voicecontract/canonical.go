@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -417,4 +418,18 @@ func validEscapes(raw []byte) bool {
 		}
 	}
 	return true
+}
+
+// callIdentifier preserves opaque SIP Call-IDs, including the conventional
+// local@host form. Other scoped identifiers retain their stricter alphabet.
+func callIdentifier(s string) bool {
+	if len(s) == 0 || len(s) > 128 {
+		return false
+	}
+	for _, part := range strings.Split(s, "@") {
+		if !identifier(part) {
+			return false
+		}
+	}
+	return strings.Count(s, "@") <= 1
 }

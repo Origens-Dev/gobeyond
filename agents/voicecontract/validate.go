@@ -19,7 +19,7 @@ func (c Context) ValidateForVersion(version string) error {
 		return errors.New("invalid context version")
 	}
 	if v2(version) {
-		if c.Scope.Kind != "agent" || !identifier(c.TransportCallID) || !identifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops {
+		if c.Scope.Kind != "agent" || !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops {
 			return errors.New("invalid agent context identity")
 		}
 		return nil
@@ -50,7 +50,10 @@ func (s Scope) Validate() error {
 	return nil
 }
 func (c Context) Validate() error {
-	for _, s := range []string{c.ExecutionID, c.OrganizationID, c.ProjectID, c.EnvironmentID, c.NetworkID, c.CallID, c.SessionID, c.ActorID, c.AgentID, c.AgentRevision} {
+	if !callIdentifier(c.CallID) {
+		return errors.New("invalid call identifier")
+	}
+	for _, s := range []string{c.ExecutionID, c.OrganizationID, c.ProjectID, c.EnvironmentID, c.NetworkID, c.SessionID, c.ActorID, c.AgentID, c.AgentRevision} {
 		if !identifier(s) {
 			return errors.New("invalid context identifier")
 		}
@@ -65,7 +68,7 @@ func (c Context) Validate() error {
 		return err
 	}
 	if c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
-		if !identifier(c.TransportCallID) || !identifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops || c.Scope.Kind != "agent" {
+		if !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops || c.Scope.Kind != "agent" {
 			return errors.New("invalid per-hop identity")
 		}
 	}
@@ -196,11 +199,11 @@ func (g GrantClaims) Validate() error {
 	return targetKinds(g.TargetKinds)
 }
 func (s SoftphoneEvent) Validate() error {
-	if !validVersion(s.Version) || s.Type != "call_state" || !identifier(s.CallID) || s.Generation == 0 || s.Sequence == 0 || !identifier(s.RemoteParty.DestinationID) || len(s.RemoteParty.PublicLabel) == 0 || !safeText(s.RemoteParty.PublicLabel, 128) {
+	if !validVersion(s.Version) || s.Type != "call_state" || !callIdentifier(s.CallID) || s.Generation == 0 || s.Sequence == 0 || !identifier(s.RemoteParty.DestinationID) || len(s.RemoteParty.PublicLabel) == 0 || !safeText(s.RemoteParty.PublicLabel, 128) {
 		return errors.New("invalid softphone event")
 	}
 	if v2(s.Version) {
-		if !identifier(s.TransportCallID) || !identifier(s.ParentCallID) || !identifier(s.HopID) {
+		if !callIdentifier(s.TransportCallID) || !callIdentifier(s.ParentCallID) || !identifier(s.HopID) {
 			return errors.New("invalid softphone hop identity")
 		}
 	} else if s.TransportCallID != "" || s.ParentCallID != "" || s.HopID != "" {
