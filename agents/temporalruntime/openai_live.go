@@ -175,7 +175,7 @@ func (a *OpenAILiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, in
 		}
 		if event.Type == "error" || event.Type == "session.closed" {
 			_ = conn.Close()
-			return nil, voice.StartResult{}, fmt.Errorf("openai live startup rejected: %s", event.Error.Code)
+			return nil, voice.StartResult{}, fmt.Errorf("openai live startup rejected: %s (model=%s voice=%s backend=%s)", event.Error.Code, model, name, backend)
 		}
 		if event.Type == "session.started" {
 			if event.Session.ID == "" || event.Session.Model != model || event.Session.Audio.Format.Type != wire["type"] || event.Session.Audio.Format.Rate != format.SampleRate || event.Session.Audio.Output.Voice != name {
@@ -194,10 +194,11 @@ func (a *OpenAILiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, in
 }
 
 type openAILiveEvent struct {
-	Type         string `json:"type"`
-	Delta        string `json:"delta"`
-	DelegationID string `json:"delegation_id"`
-	Session      struct {
+	Type          string `json:"type"`
+	ClientEventID string `json:"client_event_id"`
+	Delta         string `json:"delta"`
+	DelegationID  string `json:"delegation_id"`
+	Session       struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Audio struct {
@@ -365,11 +366,13 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 	}()
 	defer cancel() // cancel workers before waiting for them
 	opening := strings.TrimSpace(os.Getenv("GOBEYOND_LIVE_OPENING_TURN"))
+	openingPending := opening != "-"
+	openingSpeech := false
 	if opening != "-" {
 		if opening == "" {
-			opening = "Greet the caller briefly now, then listen."
+			opening = "Greet the caller briefly and immediately, without waiting for caller speech, following the application instructions and language. Then pause and listen."
 		}
-		if err := h.write(map[string]any{"type": "session.instructions.append", "delegation_id": nil, "content": opening}); err != nil {
+		if err := h.write(map[string]any{"type": "session.instructions.append", "event_id": "gobeyond_opening", "delegation_id": nil, "content": opening}); err != nil {
 			return err
 		}
 	}
@@ -399,6 +402,21 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 			return err
 		}
 		switch e.Type {
+		case "session.output_transcript.delta":
+			if strings.TrimSpace(e.Delta) != "" {
+				openingSpeech = true
+			}
+		case "session.instructions.appended":
+			if openingPending && e.ClientEventID == "gobeyond_opening" {
+				openingPending = false
+				// An instruction acknowledgment only confirms context injection. Prompt
+				// speech explicitly if the model has not already begun its greeting.
+				if !openingSpeech {
+					if err := h.write(map[string]any{"type": "session.commentary.append", "event_id": "gobeyond_opening_begin", "delegation_id": nil, "content": "Begin the conversation now, following the instructions provided."}); err != nil {
+						return err
+					}
+				}
+			}
 		case "session.output_audio.delta":
 			if ctx.Err() != nil || h.control.stopped() {
 				continue

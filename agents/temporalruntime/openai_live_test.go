@@ -3,6 +3,7 @@ package temporalruntime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -189,4 +190,73 @@ func openAITestStartedSession(start map[string]any, id string) map[string]any {
 	session := start["session"].(map[string]any)
 	session["id"] = id
 	return session
+}
+
+func TestOpenAILiveOpeningPromptsSpeechAfterAcknowledgment(t *testing.T) {
+	for _, alreadySpeaking := range []bool{false, true} {
+		t.Run(fmt.Sprintf("already-speaking-%t", alreadySpeaking), func(t *testing.T) {
+			t.Setenv("OPENAI_API_KEY", "test-key")
+			t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "")
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			commands := make(chan map[string]any, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer c.Close()
+				var start, opening map[string]any
+				if c.ReadJSON(&start) != nil {
+					return
+				}
+				c.WriteJSON(map[string]any{"type": "session.started", "session": openAITestStartedSession(start, "opening-test")})
+				if c.ReadJSON(&opening) != nil {
+					return
+				}
+				commands <- opening
+				if alreadySpeaking {
+					c.WriteJSON(map[string]any{"type": "session.output_transcript.delta", "delta": "Hello"})
+				}
+				c.WriteJSON(map[string]any{"type": "session.instructions.appended", "client_event_id": "unrelated"})
+				c.WriteJSON(map[string]any{"type": "session.instructions.appended", "client_event_id": "gobeyond_opening"})
+				c.WriteJSON(map[string]any{"type": "session.instructions.appended", "client_event_id": "gobeyond_opening"})
+				c.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+				for {
+					var cmd map[string]any
+					if c.ReadJSON(&cmd) != nil {
+						break
+					}
+					commands <- cmd
+				}
+				close(commands)
+			}))
+			defer server.Close()
+			a := NewOpenAILiveAdapter(agents.DefineAI(agents.AIConfig{}))
+			a.endpoint = "ws" + strings.TrimPrefix(server.URL, "http")
+			h, _, err := a.Start(ctx, voice.StartConfig{Actor: agents.Actor{ID: "test", Kind: "service"}}, make(chan []byte), make(chan voice.AudioFrame, 4))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Close()
+			_ = h.Run(ctx)
+			var got []map[string]any
+			for cmd := range commands {
+				got = append(got, cmd)
+			}
+			want := 2
+			if alreadySpeaking {
+				want = 1
+			}
+			if len(got) != want {
+				t.Fatalf("commands=%v want count=%d", got, want)
+			}
+			if got[0]["type"] != "session.instructions.append" || got[0]["event_id"] != "gobeyond_opening" {
+				t.Fatalf("opening=%v", got[0])
+			}
+			if !alreadySpeaking && got[1]["type"] != "session.commentary.append" {
+				t.Fatalf("speech trigger=%v", got[1])
+			}
+		})
+	}
 }
