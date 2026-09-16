@@ -36,8 +36,9 @@ APIs stabilize; bump deliberately when adopting newer Live features.
 
 | Role | Model id (candidate) | Notes |
 | --- | --- | --- |
-| Primary Live | `gemini-3.1-flash-live-preview` | Must be verified in Vertex Model Garden for the chosen region |
-| Fallback Live | Vertex: `gemini-live-2.5-flash-native-audio`; Google API: `gemini-2.5-flash-native-audio-preview-12-2025` | Vertex id is rejected on Gemini Developer API `bidiGenerateContent`; Google id verified 2026-09-02 |
+| Primary Live (Gemini API) | `gemini-3.8-live` | Official Gemini 3.8 audio↔audio Live id ([docs](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live)); replaces `gemini-3.1-flash-live-preview`. Constant: `temporalruntime.DefaultGeminiLiveModel`. |
+| Optional reasoning Live | `gemini-3.8-live-extended-thinking` | Same Live API; higher background reasoning |
+| Fallback Live | Vertex: `gemini-live-2.5-flash-native-audio`; Google API: `gemini-2.5-flash-native-audio-preview-12-2025` | Vertex id is rejected on Gemini Developer API `bidiGenerateContent`; Google id verified 2026-09-02. Vertex still lacks Live 3.x GA as of 2026-09. |
 
 These ids are **not** guaranteed. Before enabling prod traffic:
 
