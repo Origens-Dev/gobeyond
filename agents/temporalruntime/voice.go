@@ -19,6 +19,11 @@ import (
 )
 
 const (
+	// DefaultGeminiLiveModel is the Gemini Developer API Live audio↔audio model
+	// (https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live). Agents
+	// should set AIConfig.LiveModel to this id for Google inference; Vertex
+	// still uses the 2.5 native-audio fallbacks below until Live 3.x is GA there.
+	DefaultGeminiLiveModel = "gemini-3.8-live"
 	// Vertex-oriented Live id; Gemini Developer API rejects this for bidiGenerateContent.
 	defaultLiveModelFallbackVertex = "gemini-live-2.5-flash-native-audio"
 	// Verified on generativelanguage.googleapis.com v1alpha (2026-09-02).
@@ -138,9 +143,10 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	}
 	// Kick an opening model turn so duplex/smoke gets downlink without
 	// waiting on VAD over silence/tones. Use realtime text — not
-	// SendClientContent — so gemini-3.1-flash-live-preview keeps accepting
-	// subsequent SendRealtimeInput audio (mixing client_content + realtime
-	// after TurnComplete leaves the session deaf to the mic).
+	// SendClientContent — so Live models (gemini-3.8-live and prior
+	// gemini-3.1-flash-live-preview) keep accepting subsequent
+	// SendRealtimeInput audio (mixing client_content + realtime after
+	// TurnComplete leaves the session deaf to the mic).
 	//
 	// CallControl Operator prompts also instruct a name greeting; the kick
 	// is what makes that speak on connect instead of waiting for VAD. Spoken

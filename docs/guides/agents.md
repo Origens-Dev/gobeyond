@@ -187,13 +187,18 @@ Gemini Live voice requires a `voice` channel plus:
 var Agent = gbagents.DefineAI(gbagents.AIConfig{
   Model:     "google/gemini-2.5-flash",
   Inference: "google", // or "vertex"; Live reuses Inference (no LiveInference field)
-  LiveModel: "gemini-3.1-flash-live-preview",
+  LiveModel: "gemini-3.8-live", // Gemini Developer API audio↔audio; see temporalruntime.DefaultGeminiLiveModel
   ToolModel: "gemini-3.1-flash-lite-preview",
   VoiceName: "Kore",
   Durable:   true,
   Realtime:  true,
 })
 ```
+
+For Gemini Developer API (`Inference: "google"`), prefer Live model id
+`gemini-3.8-live` (migration from `gemini-3.1-flash-live-preview`). The sibling
+reasoning Live id is `gemini-3.8-live-extended-thinking`. Vertex Live still uses
+`gemini-live-2.5-flash-native-audio` until Live 3.x is available there.
 
 The compiler rejects a `voice` channel without `LiveModel`, or `LiveModel`
 without `ToolModel`. Manifest version is `v1alpha4` (`liveModel`, `toolModel`,

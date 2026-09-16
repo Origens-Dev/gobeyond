@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Document and export `temporalruntime.DefaultGeminiLiveModel`
+  (`gemini-3.8-live`) as the Gemini Developer API Live audio↔audio model id
+  (replaces `gemini-3.1-flash-live-preview` in guides).
+
 ## 0.1.0-alpha.91 - 2026-09-12
 
 - Inject v2 transport/parent/hop identity into voice control LocalActivity
