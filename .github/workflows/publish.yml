@@ -31,9 +31,8 @@ concurrency:
 
 jobs:
   publish:
-    # npm Trusted Publishing currently requires a GitHub-hosted runner for
-    # provenance verification. Verification remains on Blacksmith in
-    # verify.yml; this release job is the intentional exception.
+    # npm Trusted Publishing requires a GitHub-hosted runner for provenance.
+    # (verify.yml temporarily also uses GitHub-hosted runners while Blacksmith is off.)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
