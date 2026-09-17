@@ -29,8 +29,11 @@ func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessio
 	if err != nil || c.Validate() != nil || in.Context == nil || *in.Context != c.Context || c.Context.AgentID != in.AgentID || c.Context.CallID != in.CallID || c.Context.SessionID != in.SessionID || c.Context.ExecutionID != in.ExecutionID || expected != workflow.GetInfo(ctx).WorkflowExecution.ID {
 		return VoiceSessionExecuteToolResult{}, errors.New("call control workflow scope mismatch")
 	}
-	// No sensitive screening/voicemail inputs may enter this durable tool path.
-	legacyControl := c.Version == voicecontract.LegacyVersion && c.ToolID == "dial-contact" && c.Context.Scope.Kind == "operator"
+	// Phase C screener dial-contact is legacy-scoped (did_id + recipient set),
+	// same durable path as operator dial-contact. No screening/voicemail
+	// payloads enter this Update — only the frozen dial-contact command.
+	legacyControl := c.Version == voicecontract.LegacyVersion && c.ToolID == "dial-contact" &&
+		(c.Context.Scope.Kind == "operator" || c.Context.Scope.Kind == "screener")
 	genericControl := c.Version == voicecontract.Version && c.Context.Scope.Kind == "agent"
 	if !legacyControl && !genericControl {
 		return VoiceSessionExecuteToolResult{}, errors.New("unsupported durable control phase")
@@ -83,7 +86,9 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 		}
 		c = &voicecontract.Command{Version: r.Version, Context: r.Context, ToolID: r.ToolID, ToolCallID: r.ToolCallID, InputDigest: r.InputDigest, Arguments: r.Arguments}
 	}
-	validControl := c != nil && c.Validate() == nil && ((c.Version == voicecontract.LegacyVersion && c.Context.Scope.Kind == "operator" && c.ToolID == "dial-contact") || (c.Version == voicecontract.Version && c.Context.Scope.Kind == "agent"))
+	legacyDial := c != nil && c.Version == voicecontract.LegacyVersion && c.ToolID == "dial-contact" &&
+		(c.Context.Scope.Kind == "operator" || c.Context.Scope.Kind == "screener")
+	validControl := c != nil && c.Validate() == nil && (legacyDial || (c.Version == voicecontract.Version && c.Context.Scope.Kind == "agent"))
 	validRead := c != nil && c.Context.Scope.Kind == "agent" && c.Version == voicecontract.Version || c != nil && c.Context.Scope.Kind == "operator" && c.Version == voicecontract.LegacyVersion
 	if c == nil || (!read && !validControl) || (read && !validRead) || len(req.Grant) == 0 || len(req.Grant) > 8192 {
 		return VoiceSessionExecuteToolResult{}, errors.New("invalid control request")
@@ -137,6 +142,14 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 		return VoiceSessionExecuteToolResult{}, errors.New("control policy unavailable")
 	}
 	metadata := map[string]string{"organization_id": c.Context.OrganizationID, "project_id": c.Context.ProjectID, "environment_id": c.Context.EnvironmentID, "network_id": c.Context.NetworkID, "line_id": c.Context.Scope.LineID, "call_id": c.Context.CallID, "session_id": c.Context.SessionID, "execution_id": c.Context.ExecutionID, "agent_id": c.Context.AgentID, "agent_revision": c.Context.AgentRevision, "manifest_digest": c.Context.ManifestDigest, "generation": strconv.FormatUint(c.Context.Generation, 10), "voice_session_grant": req.Grant, "operation_id": c.OperationID, "announcement_barrier_id": strconv.FormatUint(c.AnnouncementBarrierID, 10)}
+	// Screener LocalActivity tools rehydrate scope from actor metadata
+	// (did_id + recipient set revision). Operator keeps line_id only.
+	if c.Context.Scope.DIDID != "" {
+		metadata["did_id"] = c.Context.Scope.DIDID
+	}
+	if c.Context.Scope.RecipientSetRevision != "" {
+		metadata["did_recipient_set_revision"] = c.Context.Scope.RecipientSetRevision
+	}
 	// v2 agent sessions bind transport/hop identity into the signed grant.
 	// Customer tools re-verify Claims.Context == expected; omitting these keys
 	// caused call-operator to synthesize hop_<session_id> and fail closed as

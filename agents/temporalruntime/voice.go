@@ -825,6 +825,7 @@ func (h *geminiLiveHandle) dispatchControl(ctx context.Context, call *genai.Live
 		}
 		response := map[string]any{"result": result}
 		if err != nil {
+			log.Printf("gemini live control execute name=%s err=%v", strings.TrimSpace(c.Name), err)
 			response = map[string]any{"error": "call could not be completed"}
 		}
 		sendErr := h.sendToolResponse(genai.LiveToolResponseInput{FunctionResponses: []*genai.FunctionResponse{{ID: c.ID, Name: c.Name, Response: response}}})

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Allow Phase C screener `dial-contact` on the durable voice-session Update path
+  (legacy scope kind `screener`, same fence as operator). Inject `did_id` and
+  `did_recipient_set_revision` into LocalActivity actor metadata so call-screener
+  tools can rehydrate the grant scope.
 - Document and export `temporalruntime.DefaultGeminiLiveModel`
   (`gemini-3.8-live`) as the Gemini Developer API Live audio↔audio model id
   (replaces `gemini-3.1-flash-live-preview` in guides).

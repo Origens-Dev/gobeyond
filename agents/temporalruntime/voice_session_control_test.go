@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
@@ -150,5 +151,113 @@ func TestControlWorkflowReplayAndExactExecution(t *testing.T) {
 				t.Fatalf("activity calls=%d want=%d", calls, want)
 			}
 		})
+	}
+}
+
+func TestScreenerDialContactAcceptedByWorkflowAndActivity(t *testing.T) {
+	raw, e := os.ReadFile("../voicecontract/testdata/command.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var command voicecontract.Command
+	if e = voicecontract.Decode(raw, voicecontract.MaxManifestBytes, &command); e != nil {
+		t.Fatal(e)
+	}
+	command.Context.AgentID = "call-screener"
+	command.Context.ActorID = "external_call_1"
+	command.Context.ActorKind = "external_call"
+	command.Context.Scope = voicecontract.Scope{Kind: "screener", DIDID: "did_1", RecipientSetRevision: "recipients_1"}
+	if command.Validate() != nil {
+		t.Fatalf("screener command invalid: %v", command.Validate())
+	}
+
+	raw, e = os.ReadFile("../voicecontract/testdata/manifest.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var fixture voicecontract.Manifest
+	if e = voicecontract.Decode(raw, voicecontract.MaxManifestBytes, &fixture); e != nil {
+		t.Fatal(e)
+	}
+	var schema any
+	if e = json.Unmarshal(fixture.Tools[0].InputSchema, &schema); e != nil {
+		t.Fatal(e)
+	}
+	calls := 0
+	tool := agents.DefineTool(agents.ToolConfig{Name: "dial_contact", Description: fixture.Tools[0].Description, InputSchema: schema, VoiceControl: &agents.VoiceToolPolicy{DestinationClasses: []string{"extension"}, TerminalOnSuccess: true}}, func(_ context.Context, actor agents.Actor, input map[string]any) (voicecontract.Operation, error) {
+		calls++
+		if actor.Metadata["did_id"] != "did_1" || actor.Metadata["did_recipient_set_revision"] != "recipients_1" {
+			t.Fatalf("screener DID metadata lost: %+v", actor.Metadata)
+		}
+		if actor.Metadata["voice_session_grant"] != "opaque" || actor.Metadata["operation_id"] != command.OperationID {
+			t.Fatal("grant-derived metadata lost")
+		}
+		return voicecontract.Operation{Version: voicecontract.LegacyVersion, Context: command.Context, OperationID: command.OperationID, Sequence: 1, State: "accepted"}, nil
+	})
+	definition := agents.DefineAI(agents.AIConfig{Revision: command.Context.AgentRevision, Tools: map[string]ai.Tool{"dial-contact": tool}})
+	_, manifest, digest, e := definition.CompileVoiceManifest()
+	if e != nil {
+		t.Fatal(e)
+	}
+	command.Context.ManifestDigest = digest
+	reg := NewVoiceRegistry()
+	reg.definitions[command.Context.AgentID] = definition
+	reg.manifests = map[string][]byte{command.Context.AgentID: manifest}
+	reg.manifestDigests = map[string]string{command.Context.AgentID: digest}
+	old := ProcessVoiceRegistry()
+	RetainVoiceRegistry(reg)
+	defer RetainVoiceRegistry(old)
+
+	out, e := VoiceSessionExecuteToolActivity(context.Background(), VoiceSessionExecuteToolInput{Grant: "opaque", CallControl: &command})
+	if e != nil || out.Operation == nil || out.Operation.State != "accepted" || calls != 1 {
+		t.Fatalf("activity out=%+v err=%v calls=%d", out, e, calls)
+	}
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	id, _ := WorkflowID(command.Context.SessionID, command.Context.ExecutionID)
+	env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: id})
+	env.RegisterActivityWithOptions(func(context.Context, VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+		return VoiceSessionExecuteToolResult{Operation: &voicecontract.Operation{Version: voicecontract.LegacyVersion, Context: command.Context, OperationID: command.OperationID, Sequence: 1, State: "accepted"}}, nil
+	}, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		state := newVoiceControlWorkflowState()
+		in := VoiceSessionInput{Context: &command.Context, AgentID: command.Context.AgentID, CallID: command.Context.CallID, SessionID: command.Context.SessionID, ExecutionID: command.Context.ExecutionID}
+		_, err := state.execute(ctx, in, VoiceSessionExecuteToolInput{Grant: "opaque", CallControl: &command})
+		return err
+	})
+	if e := env.GetWorkflowError(); e != nil {
+		t.Fatalf("workflow rejected screener dial-contact: %v", e)
+	}
+}
+
+func TestUnsupportedDurableControlPhaseRejectsNonDialLegacy(t *testing.T) {
+	raw, e := os.ReadFile("../voicecontract/testdata/command.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var command voicecontract.Command
+	if e = voicecontract.Decode(raw, voicecontract.MaxManifestBytes, &command); e != nil {
+		t.Fatal(e)
+	}
+	command.ToolID = "hang_up"
+	if command.Validate() != nil {
+		t.Fatalf("hang_up command invalid: %v", command.Validate())
+	}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	id, _ := WorkflowID(command.Context.SessionID, command.Context.ExecutionID)
+	env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: id})
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		state := newVoiceControlWorkflowState()
+		in := VoiceSessionInput{Context: &command.Context, AgentID: command.Context.AgentID, CallID: command.Context.CallID, SessionID: command.Context.SessionID, ExecutionID: command.Context.ExecutionID}
+		_, err := state.execute(ctx, in, VoiceSessionExecuteToolInput{Grant: "opaque", CallControl: &command})
+		if err == nil || err.Error() != "unsupported durable control phase" {
+			return fmt.Errorf("want unsupported durable control phase, got %v", err)
+		}
+		return nil
+	})
+	if e := env.GetWorkflowError(); e != nil {
+		t.Fatal(e)
 	}
 }
