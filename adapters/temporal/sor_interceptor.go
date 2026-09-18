@@ -343,6 +343,7 @@ func (s *sorActivityInbound) ExecuteActivity(
 	if workflowTQ != "" {
 		startedPayload["workflow_task_queue"] = workflowTQ
 	}
+	stampVoiceToolName(info.ActivityType.Name, in.Args, startedPayload)
 	_ = postSorIngest(ctx, ReportSorEventInput{
 		WorkflowID:   info.WorkflowExecution.ID,
 		RunID:        info.WorkflowExecution.RunID,
@@ -388,6 +389,7 @@ func (s *sorActivityInbound) ExecuteActivity(
 			}
 		}
 	}
+	stampVoiceToolName(info.ActivityType.Name, in.Args, payload)
 	_ = postSorIngest(ctx, ReportSorEventInput{
 		WorkflowID:   info.WorkflowExecution.ID,
 		RunID:        info.WorkflowExecution.RunID,
