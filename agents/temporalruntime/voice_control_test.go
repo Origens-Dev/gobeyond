@@ -284,6 +284,59 @@ func TestCallControlLiveToolsDeclareDialAndRead(t *testing.T) {
 	}
 }
 
+func TestCallControlKeepsEnabledWebSearchForGeminiLive(t *testing.T) {
+	search := agents.DefineToolWithCall(agents.ToolConfig{
+		Name: "web-search", Description: "Search current public-web facts.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+			},
+			"required": []string{"query"},
+		},
+	}, func(context.Context, agents.Actor, ai.ToolCall, map[string]any) (any, error) {
+		return map[string]any{"searched": true}, nil
+	})
+	def := agents.DefineAI(agents.AIConfig{
+		Tools: map[string]agents.AITool{"web-search": search},
+	})
+	selected, err := controlTools(def, voice.StartConfig{
+		EnabledToolIDs:   []string{"web_search"},
+		OnPlayoutBarrier: func(context.Context, uint64) error { return nil },
+		CallControl: &voice.CallControlConfig{
+			MaxAssistantTurns: 4,
+			ToolNames:         []string{"hang_up"},
+			Execute:           func(context.Context, ai.ToolCall) (any, error) { return nil, nil },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := selected["hang_up"]; !ok {
+		t.Fatal("hang_up missing from control selection")
+	}
+	if _, ok := selected["web-search"]; !ok {
+		t.Fatal("web-search dropped under CallControl")
+	}
+	live := liveToolsFromSelected(selected)
+	var nativeSearch bool
+	var functionNames []string
+	for _, tool := range live {
+		if tool.GoogleSearch != nil {
+			nativeSearch = true
+		}
+		for _, declaration := range tool.FunctionDeclarations {
+			functionNames = append(functionNames, declaration.Name)
+		}
+	}
+	if !nativeSearch {
+		t.Fatalf("Gemini Live tools missing native Google Search: %#v", live)
+	}
+	if len(functionNames) != 1 || functionNames[0] != "hang_up" {
+		t.Fatalf("Gemini function declarations = %#v", functionNames)
+	}
+}
+
 func TestLiveParametersSchemaFlattensDialOneOf(t *testing.T) {
 	schema := map[string]any{
 		"oneOf": []any{

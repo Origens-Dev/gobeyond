@@ -128,7 +128,68 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 		}
 		out[name] = tool
 	}
+	// Hosted web search is likewise not a CallControl ToolName. Platform voice
+	// sessions always inject hang_up CallControl, which previously dropped
+	// web-search from Gemini Live (only hang_up was declared). Re-attach
+	// definition web-search tools when EnabledToolIDs admits them so Live can
+	// declare native Google Search / provider web_search.
+	enabledSearch := enabledWebSearchIDs(cfg.EnabledToolIDs)
+	for id, tool := range d.AI.Tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			name = id
+		}
+		if !isWebSearchTool(name) && !isWebSearchTool(id) {
+			continue
+		}
+		if len(enabledSearch) > 0 && !webSearchEnabled(enabledSearch, name, id) {
+			continue
+		}
+		if _, exists := out[name]; exists {
+			continue
+		}
+		if _, exists := out[id]; exists {
+			continue
+		}
+		out[id] = tool
+	}
 	return out, nil
+}
+
+func enabledWebSearchIDs(enabled []string) map[string]struct{} {
+	if len(enabled) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(enabled))
+	for _, id := range enabled {
+		id = strings.TrimSpace(id)
+		if !isWebSearchTool(id) {
+			continue
+		}
+		out[id] = struct{}{}
+		out[strings.ReplaceAll(id, "-", "_")] = struct{}{}
+		out[strings.ReplaceAll(id, "_", "-")] = struct{}{}
+	}
+	return out
+}
+
+func webSearchEnabled(enabled map[string]struct{}, names ...string) bool {
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := enabled[name]; ok {
+			return true
+		}
+		if _, ok := enabled[strings.ReplaceAll(name, "-", "_")]; ok {
+			return true
+		}
+		if _, ok := enabled[strings.ReplaceAll(name, "_", "-")]; ok {
+			return true
+		}
+	}
+	return false
 }
 func invokeControl(ctx context.Context, cfg voice.StartConfig, call ai.ToolCall, barrier uint64) (any, bool, error) {
 	allowed := false
