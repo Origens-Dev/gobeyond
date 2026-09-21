@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: verify-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   go:
     name: Go tests, vet, and race detector
@@ -50,7 +54,7 @@ jobs:
       - run: pnpm --filter @go-beyond/schema --filter @go-beyond/compiler --filter @go-beyond/react --filter @go-beyond/vite --filter @go-beyond/oidc --filter @go-beyond/oidc-aws-credentials-provider build
       - run: pnpm --recursive typecheck
       - run: pnpm --recursive test
-      - run: pnpm generate:check
+      - run: ./scripts/verify-generated.sh
 
   production-artifact:
     name: Node-free production artifact audit

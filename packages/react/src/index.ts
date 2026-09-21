@@ -39,3 +39,5 @@ export type {
   RouteMetadata,
   TwitterMetadata,
 } from "./seo.js";
+
+export { publicEnv, readRuntimeConfiguration, type RuntimeConfiguration } from "./runtime-config.js";

@@ -5,7 +5,7 @@ export class CreateProjectError extends Error {}
 
 // Keep the Go module and every published JavaScript package on the exact same
 // release line in a starter.
-const GOBEYOND_VERSION = '0.1.0-alpha.80'
+const GOBEYOND_VERSION = '0.1.0-alpha.100'
 const REACT_VERSION = '19.2.8'
 
 /**
@@ -82,7 +82,7 @@ function projectFiles(projectName, { tailwind }) {
       },
     }),
     'go.mod': `module ${modulePath}\n\ngo 1.24.0\n\nrequire github.com/Origens-Dev/gobeyond v${GOBEYOND_VERSION}\n`,
-    '.gitignore': `.gobeyond/\n**/generated/routes/*/\n**/generated/api/\n**/generated/workflows/\n**/generated/agents/\n**/generated/cmd/\n**/generated/registry/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n**/app/**/go.mod\n**/workflows/**/go.mod\n**/agents/**/go.mod\n`,
+    '.gitignore': `.gobeyond/\n/generated/\ndist/\nnode_modules/\n.env\n.env.local\n.env.*.local\n**/app/**/go.mod\n**/workflows/**/go.mod\n**/agents/**/go.mod\n`,
     '.env.example': `GOBEYOND_PUBLIC_ORIGIN=http://localhost:8080\n`,
     'tsconfig.json': json({
       compilerOptions: {

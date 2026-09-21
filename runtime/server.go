@@ -155,6 +155,8 @@ type APIRoute struct {
 type PublicOriginResolver func(*http.Request) (string, error)
 
 type Config struct {
+	DeploymentRevision  string
+	PublicConfig        map[string]string
 	BuildID             string
 	PublicOrigin        string
 	ResolvePublicOrigin PublicOriginResolver
@@ -229,6 +231,14 @@ type Server struct {
 }
 
 func New(config Config) (*Server, error) {
+	if err := loadDeploymentConfig(&config); err != nil {
+		return nil, err
+	}
+	if config.DeploymentRevision != "" && config.Cache != nil {
+		cacheConfig := *config.Cache
+		cacheConfig.Generation += ":deployment:" + config.DeploymentRevision
+		config.Cache = &cacheConfig
+	}
 	if config.BuildID == "" {
 		return nil, errors.New("runtime build ID is required")
 	}
@@ -791,6 +801,7 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 		Metadata:     loaded.Metadata,
 		Body:         document.BodyHTML(body),
 		Hydration: document.HydrationData{
+			DeploymentRevision: s.config.DeploymentRevision, PublicConfig: s.config.PublicConfig,
 			BuildID:      s.config.BuildID,
 			RouteID:      route.ID,
 			Props:        loaded.Props,
@@ -851,6 +862,13 @@ func (s *Server) loadPage(parent context.Context, request *http.Request, params 
 }
 
 func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request, requestID string) {
+	if s.config.DeploymentRevision != "" && request.Header.Get(DeploymentRevisionHeader) != s.config.DeploymentRevision {
+		writer.Header().Set(DeploymentRevisionHeader, s.config.DeploymentRevision)
+		writer.Header().Set("X-GoBeyond-Error", "deployment_mismatch")
+		s.writeJSON(writer, http.StatusConflict, map[string]any{"error": "deployment_mismatch", "deploymentRevision": s.config.DeploymentRevision})
+		return
+	}
+
 	buildID, routeID, ok := buildpaths.ParseRuntimePath(request.URL.Path)
 	if !ok {
 		s.writeError(writer, http.StatusNotFound, "not_found", requestID)
@@ -897,10 +915,11 @@ func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request,
 			status = http.StatusOK
 		}
 		return jsonPageResponse(status, map[string]any{
-			"apiVersion": gb.RenderAPIVersion,
-			"buildId":    s.config.BuildID,
-			"routeId":    route.ID,
-			"result":     loaded,
+			"deploymentRevision": s.config.DeploymentRevision,
+			"apiVersion":         gb.RenderAPIVersion,
+			"buildId":            s.config.BuildID,
+			"routeId":            route.ID,
+			"result":             loaded,
 		}, loaded, ctx)
 	})
 	if err != nil {
@@ -915,6 +934,13 @@ func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request,
 }
 
 func (s *Server) serveAction(writer http.ResponseWriter, request *http.Request, requestID string) {
+	if s.config.DeploymentRevision != "" && request.Header.Get(DeploymentRevisionHeader) != s.config.DeploymentRevision {
+		writer.Header().Set(DeploymentRevisionHeader, s.config.DeploymentRevision)
+		writer.Header().Set("X-GoBeyond-Error", "deployment_mismatch")
+		s.writeJSON(writer, http.StatusConflict, map[string]any{"error": "deployment_mismatch", "deploymentRevision": s.config.DeploymentRevision})
+		return
+	}
+
 	if request.Method != http.MethodPost {
 		writer.Header().Set("Allow", http.MethodPost)
 		s.writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed", requestID)

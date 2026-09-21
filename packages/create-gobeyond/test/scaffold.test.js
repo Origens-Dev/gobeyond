@@ -64,8 +64,8 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
   const gitignore = await readFile(join(destination, '.gitignore'), 'utf8')
   assert.match(gitignore, /^\.env\.local$/m)
   assert.match(gitignore, /^\.env\.\*\.local$/m)
-  assert.match(gitignore, /generated\/workflows/)
-  assert.match(gitignore, /generated\/agents/)
+  assert.match(gitignore, /\/generated\//)
+  assert.match(gitignore, /\/generated\//)
   assert.doesNotMatch(gitignore, /generated\/workers/)
 
   const goMod = await readFile(join(destination, 'go.mod'), 'utf8')
@@ -105,7 +105,7 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
   assert.equal(proxyPolicy.apiVersion, 'gobeyond.proxy-policy/v1alpha1')
   assert.equal(proxyPolicy.redirects[0].status, 308)
   const gitignoreFull = await readFile(join(destination, '.gitignore'), 'utf8')
-  assert.match(gitignoreFull, /generated\/cmd\//)
+  assert.match(gitignoreFull, /\/generated\//)
 
   const homeMetadata = await readFile(join(destination, 'app/page.metadata.ts'), 'utf8')
   assert.match(homeMetadata, /export function metadata/)

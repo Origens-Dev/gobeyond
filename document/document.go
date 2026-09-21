@@ -22,10 +22,12 @@ type Asset struct {
 }
 
 type HydrationData struct {
-	APIVersion string `json:"apiVersion"`
-	BuildID    string `json:"buildId"`
-	RouteID    string `json:"routeId"`
-	Props      any    `json:"props"`
+	DeploymentRevision string            `json:"deploymentRevision,omitempty"`
+	PublicConfig       map[string]string `json:"publicConfig,omitempty"`
+	APIVersion         string            `json:"apiVersion"`
+	BuildID            string            `json:"buildId"`
+	RouteID            string            `json:"routeId"`
+	Props              any               `json:"props"`
 	// RenderNow is the UTC RFC3339Nano instant used for render-snapshot Date
 	// projections in the Go plan. The browser must use this same instant on
 	// first paint (via Vite rewrites), not new Date() at hydrate time.
@@ -148,7 +150,7 @@ func Render(writer io.Writer, input Input) error {
 	}
 	output.WriteString("</head><body><div id=\"__gobeyond\">")
 	output.WriteString(string(input.Body))
-	output.WriteString("</div><script id=\"__GOBEYOND_DATA__\" type=\"application/json\"")
+	output.WriteString("</div><script id=\"__GOBEYOND_DATA__\" type=\"application/json\" data-gobeyond-bootstrap")
 	writeNonce(&output, input.Nonce)
 	output.WriteByte('>')
 	output.Write(hydration)

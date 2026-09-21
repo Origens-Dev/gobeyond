@@ -14,6 +14,25 @@ import (
 // accidentally leak values into its caller or overwrite explicitly supplied
 // environment variables.
 func projectEnvironment(projectRoot, mode string) ([]string, error) {
+	if os.Getenv("GOBEYOND_PORTABLE_BUILD") == "1" {
+		config, err := readPortableBuildConfig(projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		if !config.PortableBuild {
+			return nil, fmt.Errorf("project is not enrolled in portable builds")
+		}
+		var controlled []string
+		for _, entry := range os.Environ() {
+			key, _, _ := strings.Cut(entry, "=")
+			switch key {
+			case "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "GOCACHE", "GOMODCACHE", "GOPATH", "GOPROXY", "GOSUMDB", "GOOS", "GOARCH", "CGO_ENABLED", "GOBEYOND_PORTABLE_BUILD", "GOBEYOND_COMPILER_CLI", "NODE_OPTIONS", "PNPM_HOME":
+				controlled = append(controlled, entry)
+			}
+		}
+		controlled = append(controlled, "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local")
+		return controlled, nil
+	}
 	process := make(map[string]struct{})
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")

@@ -412,6 +412,11 @@ func startDevBackend(ctx context.Context, root, buildDirectory, publicOrigin str
 		"GOBEYOND_AGENT_DEV_LOOPBACK=1",
 	}
 	runtimeEnvironment = append(runtimeEnvironment, "GOBEYOND_PROXY_POLICY="+filepath.Join(buildDirectory, "deploy", "proxy-policy.json"))
+	publicConfiguration, err := developmentPublicConfig(websiteRoot(root), environment)
+	if err != nil {
+		return nil, err
+	}
+	runtimeEnvironment = append(runtimeEnvironment, publicConfiguration...)
 	command.Env = withEnvironment(environment, runtimeEnvironment...)
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	site, err := startDevProcess("Go server", command)

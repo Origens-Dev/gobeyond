@@ -152,3 +152,15 @@ test("build-aware fetch sends the build and never replays a mismatched action", 
   assert.equal(requests, 1);
   assert.equal(env.reloads(), 1);
 });
+
+test("same compiled build hydration preserves stale deployment reload guard", () => {
+ const env = environment();
+ handleBuildMismatch("deployment:old", "deployment:new", { environment: env.value });
+ markBuildHealthy("build-unchanged", env.value);
+ markBuildHealthy("deployment:old", env.value);
+ const result = handleBuildMismatch("deployment:old", "deployment:new", { environment: env.value });
+ assert.equal(result.disposition, "update-required");
+ assert.equal(env.reloads(), 1);
+ markBuildHealthy("deployment:new", env.value);
+ assert.equal(env.value.sessionStorage.length, 0);
+});
