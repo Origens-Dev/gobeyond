@@ -139,7 +139,15 @@ func Serve(ctx context.Context, options Options) error {
 
 	runStart := time.Now()
 	tracker := &healthTracker{maxConcurrent: 100}
-	w := worker.New(c, options.TaskQueue, temporalWorkerOptions(options, tracker))
+	errCh := make(chan error, 1)
+	workerOptions := temporalWorkerOptions(options, tracker)
+	workerOptions.OnFatalError = func(err error) {
+		select {
+		case errCh <- err:
+		default:
+		}
+	}
+	w := worker.New(c, options.TaskQueue, workerOptions)
 	registerSorActivities(w)
 	options.Register(w)
 	startHealthReporter(runCtx, tracker)
@@ -154,11 +162,9 @@ func Serve(ctx context.Context, options Options) error {
 	}
 	log.Printf("temporal adapter: worker started in %s", time.Since(runStart).Round(time.Millisecond))
 
-	errCh := make(chan error, 1)
-	go func() {
-		// Already started; nil interrupt waits for Stop() or a fatal poller error.
-		errCh <- w.Run(nil)
-	}()
+	// Start exactly once. Run calls Start again and can panic if cancellation
+	// stops the worker before the Run goroutine gets scheduled.
+	defer w.Stop()
 
 	if err := waitProbeOrWorker(runCtx, probeCh, errCh, w); err != nil {
 		return err
@@ -171,12 +177,10 @@ func Serve(ctx context.Context, options Options) error {
 	readinessSignal := os.Getenv(EnvReadinessSignal)
 	if readinessNonce != "" && strings.TrimSpace(readinessSignal) == "" {
 		w.Stop()
-		<-errCh
 		return fmt.Errorf("temporal adapter: %s is required when %s is set", EnvReadinessSignal, EnvReadinessNonce)
 	}
 	if err := signalReadiness(readinessSignal, readinessNonce); err != nil {
 		w.Stop()
-		<-errCh
 		return fmt.Errorf("temporal adapter: signal readiness: %w", err)
 	}
 
@@ -193,11 +197,7 @@ func Serve(ctx context.Context, options Options) error {
 			)
 		case <-runCtx.Done():
 			w.Stop()
-			err := <-errCh
-			if err == nil || isInterrupt(err) {
-				return nil
-			}
-			return err
+			return nil
 		case err := <-errCh:
 			if err == nil || isInterrupt(err) {
 				return nil
@@ -215,7 +215,6 @@ func waitProbeOrWorker(ctx context.Context, probeCh <-chan error, errCh <-chan e
 	case err := <-probeCh:
 		if err != nil {
 			w.Stop()
-			<-errCh
 			return fmt.Errorf("temporal adapter: namespace probe: %w", err)
 		}
 		// Probe succeeded; surface an immediate poller failure before ready.
@@ -238,7 +237,6 @@ func waitProbeOrWorker(ctx context.Context, probeCh <-chan error, errCh <-chan e
 		return fmt.Errorf("temporal adapter: worker: %w", err)
 	case <-ctx.Done():
 		w.Stop()
-		<-errCh
 		<-probeCh
 		if err := ctx.Err(); err != nil {
 			return err
@@ -349,6 +347,7 @@ func validateDeploymentVersioning(options Options) error {
 func temporalWorkerOptions(options Options, tracker *healthTracker) worker.Options {
 	result := worker.Options{
 		MaxConcurrentActivityExecutionSize: int(tracker.maxConcurrent),
+		WorkerStopTimeout:                  workerStopTimeout(os.Getenv("GOBEYOND_SHUTDOWN_GRACE")),
 		Interceptors: []interceptor.WorkerInterceptor{
 			&healthInterceptor{tracker: tracker},
 			&sorWorkerInterceptor{},
@@ -367,6 +366,20 @@ func temporalWorkerOptions(options Options, tracker *healthTracker) worker.Optio
 		}
 	}
 	return result
+}
+
+// Leave the host time to observe normal exit before its hard shutdown deadline.
+// Temporal's zero default cancels running activities immediately on Stop.
+func workerStopTimeout(raw string) time.Duration {
+	grace, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil || grace <= 0 {
+		grace = 20 * time.Second
+	}
+	margin := time.Second
+	if grace < 10*time.Second {
+		margin = grace / 10
+	}
+	return grace - margin
 }
 
 func isInterrupt(err error) bool {
