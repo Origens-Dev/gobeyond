@@ -1,3 +1,4 @@
+import { readRuntimeConfiguration, selectRuntimeConfigurationElement } from "./runtime-config.js";
 import { type ReactElement } from "react";
 import { hydrateRoot, type RootOptions } from "react-dom/client";
 import {
@@ -135,6 +136,7 @@ export interface BootstrapOptions {
     props: Record<string, unknown>,
   ) => ReactElement;
   navigation?: boolean;
+  routerCache?: SoftNavigationOptions["routerCache"];
   fetch?: SoftNavigationOptions["fetch"];
   mismatchEnvironment?: SoftNavigationOptions["mismatchEnvironment"];
   onUpdateRequired?: SoftNavigationOptions["onUpdateRequired"];
@@ -215,6 +217,7 @@ function readBootstrapPayload(
   options: BootstrapOptions,
   targetDocument: Document,
 ): BootstrapPayload {
+  selectRuntimeConfigurationElement(targetDocument, options.dataElementId ?? DEFAULT_DATA_ELEMENT_ID);
   const dataElement = targetDocument.getElementById(
     options.dataElementId ?? DEFAULT_DATA_ELEMENT_ID,
   );
@@ -268,6 +271,8 @@ function hydrate(
   rootElement.dataset.gobeyondBuild = payload.buildId;
   rootElement.dataset.gobeyondRoute = payload.routeId;
   if (targetWindow) {
+    const revision = readRuntimeConfiguration(targetDocument).deploymentRevision;
+    if (revision) markBuildHealthy("deployment:" + revision, { sessionStorage: targetWindow.sessionStorage });
     markBuildHealthy(payload.buildId, {
       sessionStorage: targetWindow.sessionStorage,
     });
@@ -296,6 +301,7 @@ function hydrate(
           routes: options.routes,
           root,
           rootElement,
+          routerCache: options.routerCache,
           document: targetDocument,
           render,
           fetch: options.fetch,
@@ -310,3 +316,5 @@ function hydrate(
 
   return { root, payload, ...navigation };
 }
+
+export { publicEnv, readRuntimeConfiguration, type RuntimeConfiguration } from "./runtime-config.js";

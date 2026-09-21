@@ -1,3 +1,4 @@
+import { readRuntimeConfiguration } from "./runtime-config.js";
 export const BUILD_ID_HEADER = "x-gobeyond-build";
 export const BUILD_ERROR_HEADER = "x-gobeyond-error";
 export const BUILD_MISMATCH_CODE = "build_mismatch";
@@ -244,6 +245,7 @@ export function markBuildHealthy(
       const attempt = JSON.parse(value) as Partial<MismatchAttempt>;
       if (
         typeof attempt.currentBuildId === "string" &&
+        attempt.currentBuildId.startsWith("deployment:") === currentBuildId.startsWith("deployment:") &&
         attempt.currentBuildId !== currentBuildId
       ) {
         keys.push(key);
@@ -281,6 +283,7 @@ async function readMismatchBody(
 }
 
 export interface BuildAwareFetchOptions extends BuildMismatchOptions {
+  deploymentRevision?: string | undefined;
   buildId: string;
   fetch?: typeof globalThis.fetch;
 }
@@ -297,9 +300,14 @@ export async function fetchWithBuildGuard(
 ): Promise<Response> {
   const headers = new Headers(init?.headers);
   headers.set(BUILD_ID_HEADER, options.buildId);
+  const revision = options.deploymentRevision ?? readRuntimeConfiguration().deploymentRevision;
+  if (revision) headers.set("x-gobeyond-deployment", revision);
 
   const request = options.fetch ?? globalThis.fetch;
   const response = await request(input, { ...init, headers });
+  if (response.status === 409 && response.headers.get(BUILD_ERROR_HEADER) === "deployment_mismatch") {
+    throw handleBuildMismatch(`deployment:${revision ?? "unknown"}`, `deployment:${response.headers.get("x-gobeyond-deployment") ?? "unknown"}`, options);
+  }
   const mismatch = await readMismatchBody(response);
   if (!mismatch) return response;
 

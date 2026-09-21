@@ -1,3 +1,4 @@
+import { readRuntimeConfiguration } from "./runtime-config.js";
 import { createElement, type ComponentType, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import type { Root } from "react-dom/client";
@@ -184,6 +185,7 @@ export interface RuntimeNavigationResult {
 }
 
 export interface RuntimeNavigationPayload {
+  deploymentRevision?: string | undefined;
   apiVersion: "gobeyond.render/v1alpha1";
   buildId: string;
   routeId: string;
@@ -319,6 +321,7 @@ export interface SoftNavigationOptions {
 }
 
 interface NavigationHistoryState {
+  deploymentRevision?: string;
   buildId: string;
   path: string;
   scrollX: number;
@@ -572,6 +575,7 @@ export function parseRuntimeNavigationPayload(
   }
 
   return {
+    deploymentRevision: typeof value.deploymentRevision === "string" ? value.deploymentRevision : undefined,
     apiVersion: RUNTIME_API_VERSION,
     buildId,
     routeId,
@@ -1254,6 +1258,7 @@ export function createSoftNavigation(
   function marker(x = targetWindow.scrollX, y = targetWindow.scrollY): NavigationHistoryState {
     return {
       buildId: options.buildId,
+      deploymentRevision: readRuntimeConfiguration(options.document).deploymentRevision,
       path: currentPath(targetWindow),
       scrollX: x,
       scrollY: y,
@@ -1268,7 +1273,7 @@ export function createSoftNavigation(
   }
 
   const initialMarker = historyMarker(targetWindow.history.state);
-  if (!initialMarker || initialMarker.buildId !== options.buildId) saveScroll();
+  if (!initialMarker || initialMarker.buildId !== options.buildId || (initialMarker.deploymentRevision ?? "") !== (readRuntimeConfiguration(options.document).deploymentRevision ?? "")) saveScroll();
 
   async function navigate(
     target: string | URL,
@@ -1289,7 +1294,11 @@ export function createSoftNavigation(
     emit({ type: "start", url: href, routeId: route.routeId });
 
     try {
-      const cached = routerCache.get(routerCache.keyFor(url));
+      let cached = routerCache.get(routerCache.keyFor(url));
+      if (cached && (cached.buildId !== options.buildId || (cached.deploymentRevision ?? "") !== (readRuntimeConfiguration(options.document).deploymentRevision ?? ""))) {
+        routerCache.delete(routerCache.keyFor(url));
+        cached = undefined;
+      }
       if (cached && cached.routeId === route.routeId) {
         return await renderNavigationResult(
           url,
@@ -1378,6 +1387,7 @@ export function createSoftNavigation(
         },
         {
           buildId: options.buildId,
+          deploymentRevision: readRuntimeConfiguration(options.document).deploymentRevision,
           fetch: options.fetch,
           environment: mismatchEnvironment,
           onUpdateRequired,
@@ -1414,6 +1424,9 @@ export function createSoftNavigation(
       return undefined;
     }
     const payload = parseRuntimeNavigationPayload(await response.text());
+    if ((payload.deploymentRevision ?? "") !== (readRuntimeConfiguration(options.document).deploymentRevision ?? "")) {
+      throw handleBuildMismatch(`deployment:${readRuntimeConfiguration(options.document).deploymentRevision ?? "unknown"}`, `deployment:${payload.deploymentRevision ?? "unknown"}`, { environment: mismatchEnvironment, onUpdateRequired });
+    }
     if (payload.buildId !== options.buildId) {
       throw handleBuildMismatch(options.buildId, payload.buildId, {
         environment: mismatchEnvironment,
@@ -1501,6 +1514,7 @@ export function createSoftNavigation(
 
     const nextMarker: NavigationHistoryState = {
       buildId: options.buildId,
+      deploymentRevision: readRuntimeConfiguration(options.document).deploymentRevision,
       path: url.pathname + url.search + url.hash,
       scrollX: navigationOptions.scroll?.x ?? 0,
       scrollY: navigationOptions.scroll?.y ?? 0,
@@ -1618,7 +1632,7 @@ export function createSoftNavigation(
     const warm = (async (): Promise<RuntimeNavigationPayload | undefined> => {
       const response = await request(runtimeURL, {
         method: "GET",
-        headers: { accept: "application/json", [BUILD_ID_HEADER]: options.buildId },
+        headers: { accept: "application/json", [BUILD_ID_HEADER]: options.buildId, "x-gobeyond-deployment": readRuntimeConfiguration(options.document).deploymentRevision ?? "" },
         redirect: "manual",
       });
       if (!response.ok) return undefined;
@@ -1628,6 +1642,7 @@ export function createSoftNavigation(
       const payload = parseRuntimeNavigationPayload(await response.text());
       if (
         payload.buildId !== options.buildId ||
+        (payload.deploymentRevision ?? "") !== (readRuntimeConfiguration(options.document).deploymentRevision ?? "") ||
         payload.routeId !== route.routeId ||
         payload.result.kind !== "ok"
       ) {
@@ -1713,7 +1728,7 @@ export function createSoftNavigation(
   function onPopState(event: PopStateEvent): void {
     const saved = historyMarker(event.state);
     const scroll =
-      saved?.buildId === options.buildId
+      saved?.buildId === options.buildId && (saved.deploymentRevision ?? "") === (readRuntimeConfiguration(options.document).deploymentRevision ?? "")
         ? { x: saved.scrollX, y: saved.scrollY }
         : undefined;
     const url = targetWindow.location.href;

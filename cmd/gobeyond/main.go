@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"go/format"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -119,10 +120,14 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 }
 
 func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string, browserMode string) error {
+	buildStarted := time.Now()
+	defer func() { slog.Info("gobeyond_build_duration", "duration_seconds", time.Since(buildStarted).Seconds()) }()
 	projectRoot := websiteRoot(root)
+	generationStarted := time.Now()
 	if err := syncRouteSchemaFiles(projectRoot, false); err != nil {
 		return err
 	}
+	slog.Info("gobeyond_generation_duration", "phase", "schema_routes_agents_workers", "duration_seconds", time.Since(generationStarted).Seconds())
 	middlewareSource, err := project.DiscoverMiddlewareSource(projectRoot)
 	if err != nil {
 		return err
@@ -322,8 +327,16 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
-	if err := renderStaticDocuments(staticDir, planDir, manifest.BuildID, manifest.Routes, compiled.StaticBuild, contractDocument, browserAssets); err != nil {
+	portableConfig, err := readPortableBuildConfig(websiteRoot(root))
+	if err != nil {
 		return err
+	}
+	// Portable artifacts carry static route data and render plans. Runtime renders
+	// their HTML using the deployment snapshot, including public configuration.
+	if os.Getenv("GOBEYOND_PORTABLE_BUILD") != "1" && len(portableConfig.PublicRuntime) == 0 {
+		if err := renderStaticDocuments(staticDir, planDir, manifest.BuildID, manifest.Routes, compiled.StaticBuild, contractDocument, browserAssets); err != nil {
+			return err
+		}
 	}
 	// Pack-only runtime artifacts: the Go runtime loads render
 	// plans and packaged static entries exclusively from these two immutable
@@ -355,6 +368,9 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 		"assets":     browserAssets,
 	}
 	if err := writeJSONFile(filepath.Join(dist, "server", "runtime-manifest.json"), manifestOutput); err != nil {
+		return err
+	}
+	if err := writePortableBuildContract(projectRoot, dist); err != nil {
 		return err
 	}
 	artifacts := map[string]any{
@@ -893,80 +909,80 @@ func renderStaticRouteDocuments(staticDir, planDir, buildID string, patterns map
 		return err
 	}
 	for _, entry := range staticRoute.Entries {
-			routeAssets, err := assets.ForRoute(staticRoute.RouteID)
-			if err != nil {
-				return fmt.Errorf("resolve browser assets for %s: %w", staticRoute.RouteID, err)
+		routeAssets, err := assets.ForRoute(staticRoute.RouteID)
+		if err != nil {
+			return fmt.Errorf("resolve browser assets for %s: %w", staticRoute.RouteID, err)
+		}
+		props, err := decodeJSONValue(entry.Props)
+		if err != nil {
+			return fmt.Errorf("decode static props for %s: %w", staticRoute.RouteID, err)
+		}
+		props, err = trustStaticSafeHTML(contracts, staticRoute.RouteID, props)
+		if err != nil {
+			return fmt.Errorf("trust static SafeHTML for %s: %w", staticRoute.RouteID, err)
+		}
+		body, renderNow, err := renderer.New().RenderAt(plan, props, time.Time{})
+		if err != nil {
+			return fmt.Errorf("render static route %s: %w", staticRoute.RouteID, err)
+		}
+		metadata := gb.Metadata{Lang: "en", Title: staticRoute.RouteID}
+		indexable := len(entry.Metadata) > 0 && string(entry.Metadata) != "null"
+		if indexable {
+			if err := json.Unmarshal(entry.Metadata, &metadata); err != nil {
+				return fmt.Errorf("decode static metadata for %s: %w", staticRoute.RouteID, err)
 			}
-			props, err := decodeJSONValue(entry.Props)
-			if err != nil {
-				return fmt.Errorf("decode static props for %s: %w", staticRoute.RouteID, err)
-			}
-			props, err = trustStaticSafeHTML(contracts, staticRoute.RouteID, props)
-			if err != nil {
-				return fmt.Errorf("trust static SafeHTML for %s: %w", staticRoute.RouteID, err)
-			}
-			body, renderNow, err := renderer.New().RenderAt(plan, props, time.Time{})
-			if err != nil {
-				return fmt.Errorf("render static route %s: %w", staticRoute.RouteID, err)
-			}
-			metadata := gb.Metadata{Lang: "en", Title: staticRoute.RouteID}
-			indexable := len(entry.Metadata) > 0 && string(entry.Metadata) != "null"
-			if indexable {
-				if err := json.Unmarshal(entry.Metadata, &metadata); err != nil {
-					return fmt.Errorf("decode static metadata for %s: %w", staticRoute.RouteID, err)
-				}
-				indexable = !metadata.IsNoIndex()
-			}
-			publicOrigin := "https://invalid.gobeyond.local"
-			if canonical, parseErr := url.Parse(metadata.Canonical); parseErr == nil && canonical.Scheme != "" && canonical.Host != "" {
-				publicOrigin = canonical.Scheme + "://" + canonical.Host
-			}
-			var output bytes.Buffer
-			styles := make([]document.Asset, len(routeAssets.Styles))
-			for index, style := range routeAssets.Styles {
-				styles[index] = document.Asset{URL: style}
-			}
-			modulePreloads := make([]document.Asset, len(routeAssets.ModulePreloads))
-			for index, module := range routeAssets.ModulePreloads {
-				modulePreloads[index] = document.Asset{URL: module}
-			}
-			scripts := []document.Asset{}
-			if routeAssets.Bootstrap != "" {
-				scripts = append(scripts, document.Asset{URL: routeAssets.Bootstrap})
-			}
-			renderLocale := metadata.Lang
-			if renderLocale == "" {
-				renderLocale = "en"
-			}
-			if err := document.Render(&output, document.Input{
-				PublicOrigin: publicOrigin,
-				Indexable:    indexable,
-				Metadata:     metadata,
-				Body:         document.BodyHTML(body),
-				Hydration: document.HydrationData{
-					BuildID:      buildID,
-					RouteID:      staticRoute.RouteID,
-					Props:        props,
-					RenderNow:    renderNow.Format(time.RFC3339Nano),
-					RenderLocale: renderLocale,
-				},
-				Styles:         styles,
-				ModulePreloads: modulePreloads,
-				Scripts:        scripts,
-			}); err != nil {
-				return fmt.Errorf("render static document %s: %w", staticRoute.RouteID, err)
-			}
-			publicPath, err := expandStaticPattern(patterns[staticRoute.RouteID], entry.Params)
-			if err != nil {
-				return err
-			}
-			destination := filepath.Join(staticDir, filepath.FromSlash(strings.Trim(publicPath, "/")), "index.html")
-			if publicPath == "/" {
-				destination = filepath.Join(staticDir, "index.html")
-			}
-			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-				return err
-			}
+			indexable = !metadata.IsNoIndex()
+		}
+		publicOrigin := "https://invalid.gobeyond.local"
+		if canonical, parseErr := url.Parse(metadata.Canonical); parseErr == nil && canonical.Scheme != "" && canonical.Host != "" {
+			publicOrigin = canonical.Scheme + "://" + canonical.Host
+		}
+		var output bytes.Buffer
+		styles := make([]document.Asset, len(routeAssets.Styles))
+		for index, style := range routeAssets.Styles {
+			styles[index] = document.Asset{URL: style}
+		}
+		modulePreloads := make([]document.Asset, len(routeAssets.ModulePreloads))
+		for index, module := range routeAssets.ModulePreloads {
+			modulePreloads[index] = document.Asset{URL: module}
+		}
+		scripts := []document.Asset{}
+		if routeAssets.Bootstrap != "" {
+			scripts = append(scripts, document.Asset{URL: routeAssets.Bootstrap})
+		}
+		renderLocale := metadata.Lang
+		if renderLocale == "" {
+			renderLocale = "en"
+		}
+		if err := document.Render(&output, document.Input{
+			PublicOrigin: publicOrigin,
+			Indexable:    indexable,
+			Metadata:     metadata,
+			Body:         document.BodyHTML(body),
+			Hydration: document.HydrationData{
+				BuildID:      buildID,
+				RouteID:      staticRoute.RouteID,
+				Props:        props,
+				RenderNow:    renderNow.Format(time.RFC3339Nano),
+				RenderLocale: renderLocale,
+			},
+			Styles:         styles,
+			ModulePreloads: modulePreloads,
+			Scripts:        scripts,
+		}); err != nil {
+			return fmt.Errorf("render static document %s: %w", staticRoute.RouteID, err)
+		}
+		publicPath, err := expandStaticPattern(patterns[staticRoute.RouteID], entry.Params)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(staticDir, filepath.FromSlash(strings.Trim(publicPath, "/")), "index.html")
+		if publicPath == "/" {
+			destination = filepath.Join(staticDir, "index.html")
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+			return err
+		}
 		if err := os.WriteFile(destination, output.Bytes(), 0o644); err != nil {
 			return err
 		}
@@ -1577,7 +1593,9 @@ func runBuildTasks(tasks ...buildTask) error {
 		index, task := index, task
 		go func() {
 			defer group.Done()
+			started := time.Now()
 			errorsByTask[index] = task.run()
+			slog.Info("gobeyond_build_phase", "phase", task.name, "duration_seconds", time.Since(started).Seconds(), "succeeded", errorsByTask[index] == nil)
 		}()
 	}
 	group.Wait()

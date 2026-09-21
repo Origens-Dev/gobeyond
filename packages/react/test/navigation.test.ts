@@ -9,6 +9,7 @@ import {
   BUILD_ID_HEADER,
   NAVIGATION_ANNOUNCER_ID,
   bootstrap,
+  createRouterCache,
   bootstrapAsync,
   commonLayoutPrefixLength,
   composeRouteElement,
@@ -1649,4 +1650,20 @@ test("navigation lifecycle emits error when the runtime request fails", async ()
     restore();
     dom.window.close();
   }
+});
+
+
+test("config-only revision evicts another deployment from an injected navigation cache", async () => {
+ const dom=documentFor();const restore=installDOM(dom);
+ let app:ReturnType<typeof bootstrap>|undefined;
+ try {
+  const element=dom.window.document.getElementById("__GOBEYOND_DATA__")!;
+  element.textContent=JSON.stringify({...JSON.parse(element.textContent!),deploymentRevision:"new"});
+  const cache=createRouterCache();
+  cache.set("/products/trail",{...payload("product",{name:"Old config"},"Old",{mode:"public",maxAge:60}),deploymentRevision:"old"});
+  let calls=0;
+  await act(async()=>{app=bootstrap({document:dom.window.document,routerCache:cache,routes:{home:{component:Home,pattern:"/"},product:{component:Product,pattern:"/products/[slug]"}},scrollTo(){},fetch:async()=>{calls++;return new Response(JSON.stringify({...payload("product",{name:"New config"},"New"),deploymentRevision:"new"}),{status:200,headers:{"content-type":"application/json"}})}})});
+  await act(async()=>{await app!.navigate("/products/trail")});
+  assert.equal(calls,1);assert.equal(dom.window.document.querySelector("h1")?.textContent,"New config");
+ }finally {await act(async()=>app?.root.unmount());restore();dom.window.close()}
 });
