@@ -285,3 +285,25 @@ func TestSignalReadinessUnixgram(t *testing.T) {
 		t.Fatal("timeout")
 	}
 }
+
+func TestWorkerStopTimeoutPreservesActivitiesWithinHostDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+	}{
+		{"21m", 21*time.Minute - time.Second},
+		{"20s", 19 * time.Second},
+		{"100ms", 90 * time.Millisecond},
+		{"", 19 * time.Second},
+		{"bad", 19 * time.Second},
+		{"-1s", 19 * time.Second},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("GOBEYOND_SHUTDOWN_GRACE", tc.value)
+			got := temporalWorkerOptions(Options{}, &healthTracker{maxConcurrent: 1})
+			if got.WorkerStopTimeout != tc.want {
+				t.Fatalf("stop timeout = %v, want %v", got.WorkerStopTimeout, tc.want)
+			}
+		})
+	}
+}
