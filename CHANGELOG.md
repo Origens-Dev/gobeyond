@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.100
+
+- Support portable compilation with explicit public runtime configuration, safe browser bootstrap and deployment revision checks.
+- Regenerate compiler-owned output for builds/development and ignore it in new scaffolds.
+- Keep Go and npm consumers on the same release for the platform build-once rollout.
+
 - Document and export `temporalruntime.DefaultGeminiLiveModel`
   (`gemini-3.8-live`) as the Gemini Developer API Live audio↔audio model id
   (replaces `gemini-3.1-flash-live-preview` in guides).
