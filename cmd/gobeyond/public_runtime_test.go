@@ -46,8 +46,38 @@ func TestRequiredPublicConfigurationMustBeUniqueAndPublic(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "gobeyond.json"), []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := readPortableBuildConfig(root); err == nil {
+		if _, err := readPublicRuntimeConfig(root); err == nil {
 			t.Fatal("accepted invalid required settings")
 		}
+	}
+}
+
+func TestBuildContractIsSharedWithoutProjectEnrollment(t *testing.T) {
+	for _, config := range []string{"", `{}`, `{"portableBuild":false}`, `{"portableBuild":true,"publicRuntime":["KEY"]}`} {
+		t.Run(config, func(t *testing.T) {
+			root, dist := t.TempDir(), t.TempDir()
+			if config != "" {
+				if err := os.WriteFile(filepath.Join(root, "gobeyond.json"), []byte(config), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writePublicRuntimeContract(root, dist); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(filepath.Join(dist, "deploy", "public-runtime.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var contract struct {
+				Portable bool     `json:"portable"`
+				Public   []string `json:"public"`
+			}
+			if err := json.Unmarshal(raw, &contract); err != nil {
+				t.Fatal(err)
+			}
+			if !contract.Portable {
+				t.Fatal("build contract was not reusable")
+			}
+		})
 	}
 }

@@ -104,22 +104,17 @@ func buildTo(root, dist string) error {
 }
 
 func buildToMode(root, dist string, checkContracts bool) error {
-	environment, err := projectEnvironment(websiteRoot(root), "production")
-	if err != nil {
-		return err
-	}
+	environment := compilerEnvironment()
 	return buildToModeWithCompilerAndEnvironment(root, dist, checkContracts, "", environment, "production")
 }
 
 func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCompilerCLI string) error {
-	environment, err := projectEnvironment(websiteRoot(root), "production")
-	if err != nil {
-		return err
-	}
+	environment := compilerEnvironment()
 	return buildToModeWithCompilerAndEnvironment(root, dist, checkContracts, preparedCompilerCLI, environment, "production")
 }
 
 func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string, browserMode string) error {
+	environment = compilerEnvironment()
 	buildStarted := time.Now()
 	defer func() { slog.Info("gobeyond_build_duration", "duration_seconds", time.Since(buildStarted).Seconds()) }()
 	projectRoot := websiteRoot(root)
@@ -187,7 +182,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := syncContractFiles(projectRoot, compiled.Contracts, checkContracts); err != nil {
 		return fmt.Errorf("sync generated contracts during build: %w", err)
 	}
-	contractDocument, err := codegen.Parse(compiled.Contracts)
+	_, err = codegen.Parse(compiled.Contracts)
 	if err != nil {
 		return err
 	}
@@ -327,17 +322,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
-	portableConfig, err := readPortableBuildConfig(websiteRoot(root))
-	if err != nil {
-		return err
-	}
-	// Portable artifacts carry static route data and render plans. Runtime renders
-	// their HTML using the deployment snapshot, including public configuration.
-	if os.Getenv("GOBEYOND_PORTABLE_BUILD") != "1" && len(portableConfig.PublicRuntime) == 0 {
-		if err := renderStaticDocuments(staticDir, planDir, manifest.BuildID, manifest.Routes, compiled.StaticBuild, contractDocument, browserAssets); err != nil {
-			return err
-		}
-	}
+	// Static HTML is rendered from immutable plans under the deployment snapshot.
 	// Pack-only runtime artifacts: the Go runtime loads render
 	// plans and packaged static entries exclusively from these two immutable
 	// containers. The pretty JSON written alongside them (render-plans/*.json,
@@ -370,7 +355,7 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err := writeJSONFile(filepath.Join(dist, "server", "runtime-manifest.json"), manifestOutput); err != nil {
 		return err
 	}
-	if err := writePortableBuildContract(projectRoot, dist); err != nil {
+	if err := writePublicRuntimeContract(projectRoot, dist); err != nil {
 		return err
 	}
 	artifacts := map[string]any{
@@ -1469,10 +1454,7 @@ func websiteRoot(root string) string {
 
 func generate(root string, check bool) error {
 	website := websiteRoot(root)
-	environment, err := projectEnvironment(website, "production")
-	if err != nil {
-		return err
-	}
+	environment := compilerEnvironment()
 	routes, err := project.Discover(website)
 	if err != nil {
 		return err
@@ -1615,8 +1597,24 @@ func buildBrowserAssets(root, website, staticDir, buildID, clientEntry string, e
 		}
 		return err
 	}
+	// Override dotenv loading even when a project uses an older Vite plugin or
+	// supplies its own Vite configuration. Keep its transforms and CSS settings.
+	wrapper, err := os.CreateTemp(filepath.Dir(config), ".gobeyond-vite-*.mts")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(wrapper.Name())
+	configImport, _ := json.Marshal(filepath.ToSlash(config))
+	_, writeErr := fmt.Fprintf(wrapper, "import projectConfig from %s;\nexport default async (env) => ({ ...(typeof projectConfig === 'function' ? await projectConfig(env) : await projectConfig), envDir: false });\n", configImport)
+	closeErr := wrapper.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
 	vite := filepath.Join(root, "node_modules", ".bin", "vite")
-	command := exec.Command(vite, viteBuildArguments(config, buildID, mode)...)
+	command := exec.Command(vite, viteBuildArguments(wrapper.Name(), buildID, mode)...)
 	command.Dir = website
 	command.Env = withEnvironment(environment,
 		"GOBEYOND_BUILD_ID="+buildID,

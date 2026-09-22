@@ -391,8 +391,8 @@ function validateMetadata(metadata: Record<string, unknown>): string | undefined
       return `${name} must be a non-empty string.`
     }
   }
-  if (!isAbsoluteHTTPURL(metadata.canonical as string)) {
-    return 'canonical must be an absolute HTTP(S) URL.'
+  if (!isMetadataHTTPURL(metadata.canonical as string)) {
+    return 'canonical must be an absolute HTTP(S) URL or root-relative path.'
   }
   const openGraphIssue = validateSocialMetadata(metadata.openGraph, 'openGraph', true)
   if (openGraphIssue) return openGraphIssue
@@ -418,7 +418,7 @@ function validateMetadata(metadata: Record<string, unknown>): string | undefined
       if (
         !isPlainObject(alternate) ||
         typeof alternate.language !== 'string' || alternate.language === '' ||
-        typeof alternate.url !== 'string' || !isAbsoluteHTTPURL(alternate.url)
+        typeof alternate.url !== 'string' || !isMetadataHTTPURL(alternate.url)
       ) return `alternates[${index}] must contain language and an absolute HTTP(S) url.`
     }
   }
@@ -460,8 +460,8 @@ function validateSocialMetadata(
       return `${name}.${field} must be a non-empty string.`
     }
   }
-  if (requireURL && !isAbsoluteHTTPURL(value.url as string)) {
-    return `${name}.url must be an absolute HTTP(S) URL.`
+  if (requireURL && !isMetadataHTTPURL(value.url as string)) {
+    return `${name}.url must be an absolute HTTP(S) URL or root-relative path.`
   }
   if (requireURL && value.image !== undefined) {
     if (!isPlainObject(value.image)) return `${name}.image must be an object.`
@@ -471,8 +471,8 @@ function validateSocialMetadata(
         return `unknown field ${JSON.stringify(`${name}.image.${field}`)}.`
       }
     }
-    if (typeof value.image.url !== 'string' || !isAbsoluteHTTPSURL(value.image.url)) {
-      return `${name}.image.url must be an absolute HTTPS URL.`
+    if (typeof value.image.url !== 'string' || !isMetadataHTTPSURL(value.image.url)) {
+      return `${name}.image.url must be an absolute HTTPS URL or root-relative path.`
     }
     for (const field of ['width', 'height']) {
       const dimension = value.image[field]
@@ -490,7 +490,7 @@ function validateSocialMetadata(
   if (
     value.images !== undefined && (
       !Array.isArray(value.images) || value.images.length === 0 ||
-      !value.images.every((image) => typeof image === 'string' && isAbsoluteHTTPSURL(image))
+      !value.images.every((image) => typeof image === 'string' && isMetadataHTTPSURL(image))
     )
   ) return `${name}.images must contain absolute HTTPS URLs.`
   if (name === 'openGraph' && value.image === undefined && value.images === undefined) {
@@ -502,14 +502,16 @@ function validateSocialMetadata(
   return undefined
 }
 
-function isAbsoluteHTTPURL(value: string): boolean {
+function isMetadataHTTPURL(value: string): boolean {
+  if (isRootRelativeURL(value)) return true
   try {
     const parsed = new URL(value)
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host !== ''
   } catch { return false }
 }
 
-function isAbsoluteHTTPSURL(value: string): boolean {
+function isMetadataHTTPSURL(value: string): boolean {
+  if (isRootRelativeURL(value)) return true
   try {
     const parsed = new URL(value)
     return parsed.protocol === 'https:' && parsed.host !== ''
@@ -632,4 +634,8 @@ function diagnostic(
     line: 1,
     column: 1,
   }
+}
+
+function isRootRelativeURL(value: string): boolean {
+ return value.startsWith('/') && !value.startsWith('//') && !value.includes('\\') && !/[\u0000-\u0020]/.test(value)
 }

@@ -330,6 +330,7 @@ func devCompilerInputsChanged(previous, next map[string]string, root string) boo
 }
 
 func buildDevGoServer(root, currentBuild, candidateBuild string, environment []string) error {
+	environment = compilerEnvironment()
 	if err := copyTree(currentBuild, candidateBuild); err != nil {
 		return fmt.Errorf("copy current development build: %w", err)
 	}

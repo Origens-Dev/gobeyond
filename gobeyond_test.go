@@ -88,3 +88,26 @@ func TestPublicRevalidate(t *testing.T) {
 		t.Fatalf("HeaderValue() = %q, want %q", got, want)
 	}
 }
+
+func TestMetadataURLsResolveWithoutMutatingSharedCode(t *testing.T) {
+	original := Metadata{Canonical: "/", OpenGraph: OpenGraph{URL: "/", Image: &OpenGraphImage{URL: "/social.png"}, Images: []string{"/social.png", "https://external.example/image.png"}}, Twitter: Twitter{Images: []string{"/social.png"}}, Alternates: []Alternate{{Language: "fr", URL: "/fr"}}}
+	a, b := original.ResolveURLs("https://preview.example"), original.ResolveURLs("https://prod.example")
+	if a.Canonical != "https://preview.example/" || b.Canonical != "https://prod.example/" {
+		t.Fatal("canonical did not follow deployment origin")
+	}
+	if original.OpenGraph.Image.URL != "/social.png" || original.OpenGraph.Images[0] != "/social.png" || original.Twitter.Images[0] != "/social.png" || original.Alternates[0].URL != "/fr" {
+		t.Fatal("shared metadata was mutated")
+	}
+	if b.OpenGraph.Images[1] != "https://external.example/image.png" {
+		t.Fatal("external image changed")
+	}
+	if got := original.ResolveURLs("http://localhost:8080"); got.OpenGraph.Image.URL != "https://localhost:8080/social.png" {
+		t.Fatal("relative social image must use HTTPS")
+	}
+	for _, invalid := range []string{"//evil.example/x", "/\\evil.example/x"} {
+		got := (Metadata{Canonical: invalid}).ResolveURLs("https://prod.example")
+		if got.Canonical != invalid {
+			t.Fatal("unsafe URL was resolved")
+		}
+	}
+}

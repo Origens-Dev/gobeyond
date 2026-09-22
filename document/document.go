@@ -57,6 +57,7 @@ type Input struct {
 }
 
 func Render(writer io.Writer, input Input) error {
+	input.Metadata = input.Metadata.ResolveURLs(input.PublicOrigin)
 	if input.Hydration.APIVersion == "" {
 		input.Hydration.APIVersion = gb.RenderAPIVersion
 	}

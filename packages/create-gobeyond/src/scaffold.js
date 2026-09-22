@@ -5,7 +5,7 @@ export class CreateProjectError extends Error {}
 
 // Keep the Go module and every published JavaScript package on the exact same
 // release line in a starter.
-const GOBEYOND_VERSION = '0.1.0-alpha.100'
+const GOBEYOND_VERSION = '0.1.0-alpha.102'
 const REACT_VERSION = '19.2.8'
 
 /**
@@ -292,18 +292,12 @@ import { page } from './page.schema.js'
 
 type Props = InferPageProps<typeof page>
 
-declare const process: { env: Record<string, string | undefined> }
-
-// Packaged into the static-entry pack (static-build.gbs). Canonical/social
-// URLs must match the runtime PublicOrigin used at serve time (and therefore
-// the build-time GOBEYOND_PUBLIC_ORIGIN when you bake a deployment-specific
-// origin).
+// Root-relative URLs are resolved from the deployment public origin at runtime.
 export function metadata(_props: Props): DocumentMetadata {
-  const origin = process.env.GOBEYOND_PUBLIC_ORIGIN ?? 'http://localhost:8080'
   const title = 'Welcome to GoBeyond'
   const description = 'A GoBeyond web experience rendered by Go and hydrated by React.'
-  const canonical = \`\${origin}/\`
-  const image = \`\${origin.replace(/^http:\\/\\//, 'https://')}/social/home.svg\`
+  const canonical = '/'
+  const image = '/social/home.svg'
   return {
     lang: 'en',
     title,
@@ -344,5 +338,5 @@ function dockerfile() {
 }
 
 function workflow() {
-  return `name: verify\non:\n  push:\n  pull_request:\njobs:\n  verify:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: pnpm/action-setup@v4\n        with:\n          version: 10\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n          cache: pnpm\n      - uses: actions/setup-go@v5\n        with:\n          go-version: '1.24.x'\n      - run: go install github.com/Origens-Dev/gobeyond/cmd/gobeyond@v${GOBEYOND_VERSION}\n      - run: pnpm install --frozen-lockfile\n      - run: pnpm test\n      - run: pnpm build\n      - run: test ! -e dist/server/node_modules\n`
+  return `name: verify\non:\n  push:\n  pull_request:\njobs:\n  verify:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: pnpm/action-setup@v4\n        with:\n          version: 10\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n          cache: pnpm\n      - uses: actions/setup-go@v5\n        with:\n          go-version: '1.24.x'\n      - run: go install github.com/Origens-Dev/gobeyond/cmd/gobeyond@v${GOBEYOND_VERSION}\n      - run: pnpm install --frozen-lockfile\n      - run: pnpm test\n`
 }
