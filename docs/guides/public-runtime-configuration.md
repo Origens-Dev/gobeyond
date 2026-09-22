@@ -42,3 +42,10 @@ Static routes retain their compiled render plans and data;
 HTML is rendered under the deployment snapshot and can be cached by the hosting
 platform. This avoids sharing environment-specific HTML between deployments,
 with a first-render cost compared with pre-exported HTML.
+
+For static page metadata, use root-relative canonical, Open Graph, alternate, and
+social-image URLs (for example `/` and `/social/og.png`). The runtime resolves
+these against the deployment public origin for HTML and navigation responses,
+without modifying the shared metadata. Social-image URLs resolve with HTTPS.
+Absolute URLs retain their authored meaning. Do not read deployment environment
+variables in `page.metadata.ts` or other compilation-time generators.

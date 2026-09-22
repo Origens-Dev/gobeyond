@@ -292,18 +292,12 @@ import { page } from './page.schema.js'
 
 type Props = InferPageProps<typeof page>
 
-declare const process: { env: Record<string, string | undefined> }
-
-// Packaged into the static-entry pack (static-build.gbs). Canonical/social
-// URLs must match the runtime PublicOrigin used at serve time (and therefore
-// the build-time GOBEYOND_PUBLIC_ORIGIN when you bake a deployment-specific
-// origin).
+// Root-relative URLs are resolved from the deployment public origin at runtime.
 export function metadata(_props: Props): DocumentMetadata {
-  const origin = process.env.GOBEYOND_PUBLIC_ORIGIN ?? 'http://localhost:8080'
   const title = 'Welcome to GoBeyond'
   const description = 'A GoBeyond web experience rendered by Go and hydrated by React.'
-  const canonical = \`\${origin}/\`
-  const image = \`\${origin.replace(/^http:\\/\\//, 'https://')}/social/home.svg\`
+  const canonical = '/'
+  const image = '/social/home.svg'
   return {
     lang: 'en',
     title,

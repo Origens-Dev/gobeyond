@@ -831,7 +831,12 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 // props cache. Every caller of a page's data goes through here, so a document
 // request and a soft-navigation runtime request share one cache entry and one
 // set of privacy gates.
-func (s *Server) loadPage(parent context.Context, request *http.Request, params map[string]string, values map[string]any, page PageRoute) (LoadedPage, error) {
+func (s *Server) loadPage(parent context.Context, request *http.Request, params map[string]string, values map[string]any, page PageRoute) (result LoadedPage, err error) {
+	defer func() {
+		if err == nil {
+			result.Metadata = result.Metadata.ResolveURLs(publicOriginFromContext(request.Context()))
+		}
+	}()
 	if page.Static != nil {
 		return *page.Static, nil
 	}

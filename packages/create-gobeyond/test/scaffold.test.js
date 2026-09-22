@@ -109,7 +109,8 @@ test('scaffolds an internally consistent GoBeyond hello world', async () => {
 
   const homeMetadata = await readFile(join(destination, 'app/page.metadata.ts'), 'utf8')
   assert.match(homeMetadata, /export function metadata/)
-  assert.match(homeMetadata, /GOBEYOND_PUBLIC_ORIGIN/)
+  assert.doesNotMatch(homeMetadata, /process.env/)
+  assert.match(homeMetadata, /const canonical =/)
 
   const productSchema = await readFile(join(destination, 'app/products/[slug]/page.schema.ts'), 'utf8')
   assert.match(productSchema, /revalidate: 60/)
@@ -150,8 +151,7 @@ test('local workspace integration generates contracts and type-checks the starte
   await run('go', ['mod', 'tidy'], destination)
   await run(join(nodeModules, '.bin', 'tsc'), ['-p', 'tsconfig.json', '--noEmit'], destination)
   await run('go', ['test', './...'], destination)
-  // Bake home metadata for the ephemeral listen origin so packaged canonical
-  // URLs match runtime PublicOrigin / AllowedHosts.
+  // One build resolves metadata under the serving deployment origin.
   const serveOrigin = 'http://localhost:18887'
   await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'build'], destination, {
     GOBEYOND_PUBLIC_ORIGIN: serveOrigin,
@@ -163,8 +163,13 @@ test('local workspace integration generates contracts and type-checks the starte
   const runtimeManifest = JSON.parse(await readFile(join(destination, 'dist/server/runtime-manifest.json'), 'utf8'))
   await access(join(destination, 'dist/static/_gobeyond/builds', runtimeManifest.buildId, 'assets', 'app.js'))
   const response = await serveAndFetch(join(destination, 'dist/server/gobeyond-server'), destination, serveOrigin)
-  assert.equal(response.rootStatus, 200)
+  assert.equal(response.rootStatus, 200, response.rootHTML + response.output)
   assert.match(response.rootHTML, /<h1>Welcome to GoBeyond<\/h1>/)
+  assert.ok(response.rootHTML.includes(`href="${serveOrigin}/"`))
+  const promotedOrigin = 'http://localhost:18888'
+  const promoted = await serveAndFetch(join(destination, 'dist/server/gobeyond-server'), destination, promotedOrigin)
+  assert.equal(promoted.rootStatus, 200, promoted.rootHTML + promoted.output)
+  assert.ok(promoted.rootHTML.includes(`href="${promotedOrigin}/"`))
   assert.equal(response.status, 200)
   assert.match(response.html, /<h1>Portable React<\/h1>/)
   assert.match(response.html, /rel="canonical"/)
@@ -274,6 +279,7 @@ async function serveAndFetch(binary, cwd, publicOrigin) {
         const stylesheetResponse = await fetch(`http://${address}${stylesheetURL}`)
         const imageResponse = await fetch(`http://${address}/portable-react.svg`)
         return {
+          output,
           rootStatus: rootResponse.status,
           rootHTML,
           status: response.status,
