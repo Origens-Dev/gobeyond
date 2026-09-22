@@ -132,8 +132,16 @@ func withEnvironment(environment []string, values ...string) []string {
 func compilerEnvironment() []string {
 	var controlled []string
 	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
+		key, value, _ := strings.Cut(entry, "=")
 		switch key {
+		case "GOMAXPROCS":
+			if n, err := strconv.Atoi(value); err == nil && n > 0 && n <= 1024 {
+				controlled = append(controlled, "GOMAXPROCS="+strconv.Itoa(n))
+			}
+		case "GOBEYOND_COMPILER_NODE_HEAP_MB":
+			if n, err := strconv.Atoi(value); err == nil && n >= 128 && n <= 1048576 {
+				controlled = append(controlled, "NODE_OPTIONS=--max-old-space-size="+strconv.Itoa(n), "GOBEYOND_COMPILER_NODE_HEAP_MB="+strconv.Itoa(n))
+			}
 		case "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "GOCACHE", "GOMODCACHE", "GOPATH", "GOPROXY", "GOSUMDB", "GOOS", "GOARCH", "CGO_ENABLED", "GOBEYOND_COMPILER_CLI", "PNPM_HOME":
 			controlled = append(controlled, entry)
 		}
