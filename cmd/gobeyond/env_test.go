@@ -158,3 +158,18 @@ func TestCompilerEnvironmentExcludesDeploymentConfiguration(t *testing.T) {
 		t.Fatal("compiler toolchain is not pinned")
 	}
 }
+
+func TestCompilerResourceLimitsAreValidated(t *testing.T) {
+	t.Setenv("GOMAXPROCS", "1")
+	t.Setenv("GOBEYOND_COMPILER_NODE_HEAP_MB", "1536")
+	got := strings.Join(compilerEnvironment(), "\n")
+	if !strings.Contains(got, "GOMAXPROCS=1") || !strings.Contains(got, "NODE_OPTIONS=--max-old-space-size=1536") {
+		t.Fatal(got)
+	}
+	t.Setenv("GOMAXPROCS", "1;env")
+	t.Setenv("GOBEYOND_COMPILER_NODE_HEAP_MB", "1536 --require=secrets.js")
+	got = strings.Join(compilerEnvironment(), "\n")
+	if strings.Contains(got, "GOMAXPROCS=") || strings.Contains(got, "NODE_OPTIONS=") {
+		t.Fatal("unsafe resource settings admitted")
+	}
+}
