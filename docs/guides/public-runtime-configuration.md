@@ -4,7 +4,6 @@ Declare browser-visible deployment settings explicitly in `gobeyond.json`:
 
 ```json
 {
-  "portableBuild": true,
   "publicRuntime": ["CLERK_PUBLISHABLE_KEY", "CLERK_DOMAIN"],
   "requiredPublicRuntime": ["CLERK_PUBLISHABLE_KEY"]
 }
@@ -36,10 +35,10 @@ Portable compilation disables ambient dotenv loading and strips deployment
 variables from child commands. Go builds use readonly modules and the local pinned
 toolchain. Lockfiles, generator and build tools must be pinned; build scripts that
 fetch mutable content or generate environment-dependent code require migration
-before opting in. A changed environment variable should produce a configuration
+before deploying. A changed environment variable should produce a configuration
 revision, not a new compilation. Changes to actual compilation inputs still build.
 
-Portable/public-config static routes retain their compiled render plans and data;
+Static routes retain their compiled render plans and data;
 HTML is rendered under the deployment snapshot and can be cached by the hosting
 platform. This avoids sharing environment-specific HTML between deployments,
 with a first-render cost compared with pre-exported HTML.

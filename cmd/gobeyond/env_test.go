@@ -60,7 +60,7 @@ func TestProjectEnvironmentLoadsContentfulSecretsForGoWithoutBrowserPrefix(t *te
 	}
 }
 
-func TestViteHonorsProjectPostCSSAndDoesNotExposeUnprefixedSecret(t *testing.T) {
+func TestViteHonorsProjectPostCSSWithoutCompilingDotenvValues(t *testing.T) {
 	root := t.TempDir()
 	vite := filepath.Join(workspaceRoot(t), "node_modules", ".bin", "vite")
 	if _, err := os.Stat(vite); err != nil {
@@ -73,10 +73,7 @@ func TestViteHonorsProjectPostCSSAndDoesNotExposeUnprefixedSecret(t *testing.T) 
 	writeEnvFixture(t, root, "postcss.config.mjs", "import plugin from './postcss-plugin.mjs'\nexport default { plugins: [plugin] }\n")
 	writeEnvFixture(t, root, "vite.config.ts", "export default { publicDir: false, build: { outDir: process.env.GOBEYOND_STATIC_OUT, emptyOutDir: false, rollupOptions: { input: process.env.GOBEYOND_CLIENT_ENTRY, output: { entryFileNames: 'app.js', assetFileNames: 'assets/[name]-[hash][extname]' } } } }\n")
 
-	environment, err := projectEnvironment(root, "production")
-	if err != nil {
-		t.Fatal(err)
-	}
+	environment := compilerEnvironment()
 	staticDir := filepath.Join(root, "output")
 	if err := buildBrowserAssets(workspaceRoot(t), root, staticDir, "test", filepath.Join(root, "entry.js"), environment, "production"); err != nil {
 		t.Fatal(err)
@@ -85,8 +82,8 @@ func TestViteHonorsProjectPostCSSAndDoesNotExposeUnprefixedSecret(t *testing.T) 
 	if !strings.Contains(assets, "processed") {
 		t.Fatal("Vite did not apply the project PostCSS config")
 	}
-	if !strings.Contains(assets, "space_123") {
-		t.Fatal("Vite did not expose the VITE_ variable")
+	if strings.Contains(assets, "space_123") {
+		t.Fatal("Vite exposed a deployment variable")
 	}
 	if strings.Contains(assets, "contentful-delivery-secret") {
 		t.Fatal("unprefixed Contentful secret was emitted into browser assets")
@@ -142,4 +139,22 @@ func readTree(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return contents.String()
+}
+
+func TestCompilerEnvironmentExcludesDeploymentConfiguration(t *testing.T) {
+	t.Setenv("CLERK_SECRET_KEY", "test-secret")
+	t.Setenv("VITE_CLERK_PUBLISHABLE_KEY", "test-public")
+	t.Setenv("GOBEYOND_PUBLIC_CONFIG", `{"KEY":"deployment"}`)
+	t.Setenv("NODE_OPTIONS", "--require=deployment.js")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv("GOTOOLCHAIN", "auto")
+	values := environmentValues(compilerEnvironment())
+	for _, key := range []string{"CLERK_SECRET_KEY", "VITE_CLERK_PUBLISHABLE_KEY", "GOBEYOND_PUBLIC_CONFIG", "NODE_OPTIONS"} {
+		if _, ok := values[key]; ok {
+			t.Errorf("compiler received %s", key)
+		}
+	}
+	if values["GOFLAGS"] != "-mod=readonly" || values["GOTOOLCHAIN"] != "local" {
+		t.Fatal("compiler toolchain is not pinned")
+	}
 }

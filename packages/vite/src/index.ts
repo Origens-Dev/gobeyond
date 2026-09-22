@@ -33,7 +33,7 @@ export function goBeyond(options: GoBeyondViteOptions = {}): Plugin {
     enforce: 'pre',
     config() {
       // Vite's dotenv loading is separate from the Go CLI's loader.
-      if (process.env.GOBEYOND_PORTABLE_BUILD === '1') return { envDir: false }
+      return { envDir: false }
     },
     configResolved(resolvedConfig) {
       config = resolvedConfig
@@ -46,8 +46,8 @@ export function goBeyond(options: GoBeyondViteOptions = {}): Plugin {
       )
     },
     transform(code, id) {
-      if (process.env.GOBEYOND_PORTABLE_BUILD === '1' && /import\.meta\.env(?:\.VITE_|\s*\[)/.test(code)) {
-        this.error(`Portable builds cannot bake environment values into ${id}; use publicEnv with an explicit publicRuntime declaration.`)
+      if (/import\.meta\.env(?:\.VITE_|\s*\[)/.test(code)) {
+        this.error(`Builds cannot bake environment values into ${id}; use publicEnv with an explicit publicRuntime declaration.`)
       }
       if (!config || !manifest) return null
       const useIdSites = (manifest.useIdSites ?? []).filter(

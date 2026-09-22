@@ -12,14 +12,13 @@ import (
 
 // PublicRuntime declares browser exposure explicitly. Sensitive=false and the
 // VITE_ prefix alone never grant exposure in a portable build.
-type portableBuildConfig struct {
-	PortableBuild         bool     `json:"portableBuild"`
+type publicRuntimeConfig struct {
 	PublicRuntime         []string `json:"publicRuntime"`
 	RequiredPublicRuntime []string `json:"requiredPublicRuntime"`
 }
 
-func readPortableBuildConfig(root string) (portableBuildConfig, error) {
-	var config portableBuildConfig
+func readPublicRuntimeConfig(root string) (publicRuntimeConfig, error) {
+	var config publicRuntimeConfig
 	raw, err := os.ReadFile(filepath.Join(root, "gobeyond.json"))
 	if os.IsNotExist(err) {
 		return config, nil
@@ -50,21 +49,18 @@ func readPortableBuildConfig(root string) (portableBuildConfig, error) {
 	}
 	return config, nil
 }
-func writePortableBuildContract(root, dist string) error {
-	config, err := readPortableBuildConfig(root)
+func writePublicRuntimeContract(root, dist string) error {
+	config, err := readPublicRuntimeConfig(root)
 	if err != nil {
 		return err
 	}
-	if os.Getenv("GOBEYOND_PORTABLE_BUILD") == "1" && !config.PortableBuild {
-		return fmt.Errorf("project must declare portableBuild and migrate environment-dependent compilation before shared builds")
-	}
-	return writeJSONFile(filepath.Join(dist, "deploy", "public-runtime.json"), map[string]any{"version": 1, "portable": config.PortableBuild && os.Getenv("GOBEYOND_PORTABLE_BUILD") == "1", "public": config.PublicRuntime, "required": config.RequiredPublicRuntime})
+	return writeJSONFile(filepath.Join(dist, "deploy", "public-runtime.json"), map[string]any{"version": 1, "portable": true, "public": config.PublicRuntime, "required": config.RequiredPublicRuntime})
 }
 
 // Local development follows the same explicit publication contract as deployment.
 // This is assembled only for the runtime child, never a compiler environment.
 func developmentPublicConfig(root string, environment []string) ([]string, error) {
-	config, err := readPortableBuildConfig(root)
+	config, err := readPublicRuntimeConfig(root)
 	if err != nil {
 		return nil, err
 	}
