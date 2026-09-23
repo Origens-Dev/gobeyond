@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,14 @@ const (
 // WorkerHealth is saturation / slot pressure reported to gbhost
 // (ReportWorkerHealth → schedule heartbeat).
 type WorkerHealth struct {
+	RecoveryVersion    int    `json:"recovery_version,omitempty"`
+	UncoveredWorkflows int64  `json:"uncovered_workflows,omitempty"`
+	WorkflowTasks      int    `json:"workflow_tasks,omitempty"`
+	LocalActivities    int    `json:"local_activities,omitempty"`
+	ReservedTasks      int    `json:"reserved_tasks,omitempty"`
+	SleepFence         string `json:"sleep_fence,omitempty"`
+	Quiesced           bool   `json:"quiesced,omitempty"`
+
 	Saturated          bool `json:"saturated"`
 	TasksAssigned      int  `json:"tasks_assigned"`
 	TasksAvailable     int  `json:"tasks_available"`
@@ -33,6 +42,14 @@ type WorkerHealth struct {
 }
 
 type hostHealthPayload struct {
+	RecoveryVersion    int    `json:"recovery_version,omitempty"`
+	UncoveredWorkflows int64  `json:"uncovered_workflows,omitempty"`
+	WorkflowTasks      int    `json:"workflow_tasks,omitempty"`
+	LocalActivities    int    `json:"local_activities,omitempty"`
+	ReservedTasks      int    `json:"reserved_tasks,omitempty"`
+	SleepFence         string `json:"sleep_fence,omitempty"`
+	Quiesced           bool   `json:"quiesced,omitempty"`
+
 	EnvironmentID      string `json:"environment_id"`
 	WorkerID           string `json:"worker_id"`
 	DeployKey          string `json:"deploy_key,omitempty"`
@@ -46,6 +63,11 @@ type hostHealthPayload struct {
 // ReportWorkerHealth POSTs saturation/tasks to gbhost's host-report UDS.
 // Best-effort: missing socket (local Docker) is a no-op success.
 func ReportWorkerHealth(ctx context.Context, health WorkerHealth) error {
+	_, err := reportWorkerHealth(ctx, health)
+	return err
+}
+
+func reportWorkerHealth(ctx context.Context, health WorkerHealth) (string, error) {
 	socket := strings.TrimSpace(os.Getenv(envHostReportSocket))
 	if socket == "" {
 		socket = defaultReportSocket
@@ -53,10 +75,14 @@ func ReportWorkerHealth(ctx context.Context, health WorkerHealth) error {
 	envID := strings.TrimSpace(os.Getenv(envEnvironmentID))
 	workerID := strings.TrimSpace(os.Getenv(envWorkerID))
 	if envID == "" || workerID == "" {
-		return nil
+		if health.RecoveryVersion == 1 {
+			return "", errors.New("recovery health identity unavailable")
+		}
+		return "", nil
 	}
 	body, err := json.Marshal(hostHealthPayload{
-		EnvironmentID:      envID,
+		EnvironmentID:   envID,
+		RecoveryVersion: health.RecoveryVersion, UncoveredWorkflows: health.UncoveredWorkflows, WorkflowTasks: health.WorkflowTasks, LocalActivities: health.LocalActivities, ReservedTasks: health.ReservedTasks, SleepFence: health.SleepFence, Quiesced: health.Quiesced,
 		WorkerID:           workerID,
 		DeployKey:          strings.TrimSpace(os.Getenv(envDeployKey)),
 		Saturated:          health.Saturated,
@@ -66,7 +92,7 @@ func ReportWorkerHealth(ctx context.Context, health WorkerHealth) error {
 		CPUHeadroomPercent: health.CPUHeadroomPercent,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	client := &http.Client{
 		Timeout: 2 * time.Second,
@@ -79,26 +105,36 @@ func ReportWorkerHealth(ctx context.Context, health WorkerHealth) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://host"+hostReportPath, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
 		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") ||
 			strings.Contains(err.Error(), "connection refused") {
-			return nil
+			if health.RecoveryVersion == 1 {
+				return "", errors.New("recovery health transport unavailable")
+			}
+			return "", nil
 		}
-		return fmt.Errorf("report worker health: %w", err)
+		return "", fmt.Errorf("report worker health: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("report worker health: status %d", resp.StatusCode)
+		return "", fmt.Errorf("report worker health: status %d", resp.StatusCode)
 	}
-	return nil
+	if health.Quiesced && resp.Header.Get("X-GoBeyond-Quiesce-Accepted") != health.SleepFence {
+		return "", errors.New("quiesce acknowledgement missing")
+	}
+	return resp.Header.Get("X-GoBeyond-Quiesce-Fence"), nil
 }
 
 // healthTracker counts in-flight activity tasks for saturation heartbeats.
 type healthTracker struct {
+	tuner         *recoveryTuner
+	uncovered     atomic.Int64
+	quiesce       chan string
+	recoveryLost  chan error
 	maxConcurrent int32
 	inFlight      atomic.Int32
 }
@@ -108,16 +144,29 @@ func (t *healthTracker) snapshot() WorkerHealth {
 		return WorkerHealth{}
 	}
 	assigned := int(t.inFlight.Load())
-	max := int(t.maxConcurrent)
-	available := max - assigned
+	maximum := int(t.maxConcurrent)
+	available := maximum - assigned
 	if available < 0 {
 		available = 0
 	}
-	return WorkerHealth{
-		Saturated:      max > 0 && assigned >= max,
-		TasksAssigned:  assigned,
-		TasksAvailable: available,
+	result := WorkerHealth{Saturated: maximum > 0 && assigned >= maximum, TasksAssigned: assigned, TasksAvailable: available}
+	if t.tuner != nil {
+		result.RecoveryVersion = 1
+		result.UncoveredWorkflows = t.uncovered.Load()
+		for i, s := range t.tuner.suppliers {
+			if s != nil {
+				r, e, _ := s.snapshot()
+				result.ReservedTasks += r
+				switch i {
+				case 0:
+					result.WorkflowTasks = e
+				case 2:
+					result.LocalActivities = e
+				}
+			}
+		}
 	}
+	return result
 }
 
 func (t *healthTracker) begin() {
@@ -137,6 +186,7 @@ func startHealthReporter(ctx context.Context, tracker *healthTracker) {
 		return
 	}
 	go func() {
+		lastCovered := time.Now()
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -144,7 +194,22 @@ func startHealthReporter(ctx context.Context, tracker *healthTracker) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = ReportWorkerHealth(ctx, tracker.snapshot())
+				fence, err := reportWorkerHealth(ctx, tracker.snapshot())
+				if err == nil {
+					lastCovered = time.Now()
+				} else if tracker.tuner != nil && time.Since(lastCovered) >= 30*time.Second {
+					select {
+					case tracker.recoveryLost <- errors.New("durable worker residency lost"):
+					default:
+					}
+					return
+				}
+				if err == nil && fence != "" && tracker.quiesce != nil {
+					select {
+					case tracker.quiesce <- fence:
+					default:
+					}
+				}
 			}
 		}
 	}()

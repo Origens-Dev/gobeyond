@@ -138,7 +138,7 @@ func Serve(ctx context.Context, options Options) error {
 	}()
 
 	runStart := time.Now()
-	tracker := &healthTracker{maxConcurrent: 100}
+	tracker := &healthTracker{maxConcurrent: 100, quiesce: make(chan string, 1), recoveryLost: make(chan error, 1)}
 	errCh := make(chan error, 1)
 	workerOptions := temporalWorkerOptions(options, tracker)
 	workerOptions.OnFatalError = func(err error) {
@@ -149,9 +149,12 @@ func Serve(ctx context.Context, options Options) error {
 	}
 	w := worker.New(c, options.TaskQueue, workerOptions)
 	registerSorActivities(w)
+	registerRecoveryActivity(w)
 	options.Register(w)
 	startHealthReporter(runCtx, tracker)
-	_ = ReportWorkerHealth(runCtx, tracker.snapshot())
+	if err := ReportWorkerHealth(runCtx, tracker.snapshot()); err != nil && tracker.tuner != nil {
+		return fmt.Errorf("durable worker residency: %w", err)
+	}
 
 	// Start synchronously before any fail-closed Stop(). worker.Run+manual Stop
 	// races when the probe fails before Run's internal Start (SDK panics:
@@ -190,6 +193,30 @@ func Serve(ctx context.Context, options Options) error {
 
 	for {
 		select {
+		case err := <-tracker.recoveryLost:
+			tracker.tuner.closeIntake()
+			w.Stop()
+			return err
+		case fence := <-tracker.quiesce:
+			if tracker.tuner == nil {
+				continue
+			}
+			tracker.tuner.closeIntake()
+			w.Stop()
+			_, safe := tracker.tuner.accountedAfterStop(tracker.uncovered.Load() == 0)
+			if !safe {
+				return errors.New("recovery quiesce has unaccounted work")
+			}
+			health := tracker.snapshot()
+			health.SleepFence = fence
+			health.Quiesced = true
+			ackCtx, ackCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, ackErr := reportWorkerHealth(ackCtx, health)
+			ackCancel()
+			if ackErr != nil {
+				return errors.New("recovery quiesce acknowledgement failed")
+			}
+			return nil
 		case <-cont:
 			_ = signalReadiness(
 				os.Getenv(EnvReadinessSignal),
@@ -351,7 +378,17 @@ func temporalWorkerOptions(options Options, tracker *healthTracker) worker.Optio
 		Interceptors: []interceptor.WorkerInterceptor{
 			&healthInterceptor{tracker: tracker},
 			&sorWorkerInterceptor{},
+			&recoveryWorkerInterceptor{enabled: os.Getenv(recoveryEnabledEnv) == "1", uncovered: &tracker.uncovered},
 		},
+	}
+	if os.Getenv(recoveryEnabledEnv) == "1" {
+		tuner, err := newRecoveryTuner(int(tracker.maxConcurrent))
+		if err != nil {
+			panic(err)
+		} // Fixed, positive defaults validated before serving.
+		tracker.tuner = tuner
+		result.Tuner = tuner
+		result.MaxConcurrentActivityExecutionSize = 0
 	}
 	if options.DeploymentName != "" {
 		result.DeploymentOptions = worker.DeploymentOptions{
