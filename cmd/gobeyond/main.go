@@ -84,6 +84,15 @@ func run(args []string) error {
 		return reportCommand(root, args[1:])
 	case "preview":
 		return preview(root, args[1:])
+	case "build-prepare":
+		return prepareBuildCheckpoint(root)
+	case "build-web":
+		return resumeWebCheckpoint(root)
+	case "build-worker":
+		if len(args) != 2 {
+			return fmt.Errorf("build-worker requires an exact worker ID")
+		}
+		return resumeWorkerCheckpoint(root, args[1])
 	case "build":
 		return build(root)
 	case "dev":
@@ -114,7 +123,11 @@ func buildToModeWithCompiler(root, dist string, checkContracts bool, preparedCom
 }
 
 func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts bool, preparedCompilerCLI string, environment []string, browserMode string) error {
-	environment = compilerEnvironment()
+	return prepareAndCompile(root, dist, checkContracts, preparedCompilerCLI, browserMode, false)
+}
+
+func prepareAndCompile(root, dist string, checkContracts bool, preparedCompilerCLI, browserMode string, prepareOnly bool) error {
+	environment := compilerEnvironment()
 	buildStarted := time.Now()
 	defer func() { slog.Info("gobeyond_build_duration", "duration_seconds", time.Since(buildStarted).Seconds()) }()
 	projectRoot := websiteRoot(root)
@@ -224,7 +237,6 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
-	serverOutput := filepath.Join(dist, "server", "gobeyond-server")
 	if err := os.MkdirAll(filepath.Join(dist, "server", "runtime-data"), 0o755); err != nil {
 		return err
 	}
@@ -232,6 +244,27 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 	if err != nil {
 		return err
 	}
+	checkpoint := buildCheckpoint{Version: 1, Root: root, Dist: dist, BrowserMode: browserMode,
+		ProjectRoot: projectRoot, Manifest: manifest, Compiled: compiled, ClientEntry: clientEntry,
+		ServerTarget: serverTarget, Workers: workerTargets, GeneratedIconAssets: generatedIconAssets,
+		GeneratedMetadataAssets: generatedMetadataAssets, HasGoMiddleware: hasGoMiddleware,
+		ImageConfig: imageConfig, HasImageConfig: hasImageConfig, ProxyPolicy: proxyPolicyBytes}
+	if prepareOnly {
+		return writeBuildCheckpoint(checkpoint)
+	}
+	return compileCheckpoint(checkpoint, true)
+}
+
+func compileCheckpoint(c buildCheckpoint, compileWorkers bool) error {
+	root, dist, projectRoot := c.Root, c.Dist, c.ProjectRoot
+	environment := compilerEnvironment()
+	staticDir := filepath.Join(dist, "static")
+	manifest, compiled, clientEntry := c.Manifest, c.Compiled, c.ClientEntry
+	serverTarget, serverOutput := c.ServerTarget, filepath.Join(dist, "server", "gobeyond-server")
+	workerTargets, browserMode := c.Workers, c.BrowserMode
+	generatedIconAssets, generatedMetadataAssets := c.GeneratedIconAssets, c.GeneratedMetadataAssets
+	hasGoMiddleware, imageConfig, hasImageConfig := c.HasGoMiddleware, c.ImageConfig, c.HasImageConfig
+	proxyPolicyBytes := c.ProxyPolicy
 	var publicAssets []string
 	tasks := []buildTask{
 		{
@@ -255,18 +288,20 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 			},
 		},
 	}
-	for _, workerTarget := range workerTargets {
-		wt := workerTarget
-		workerOutput := filepath.Join(dist, buildpaths.WorkersDir, wt.ID, buildpaths.WorkerEntryName)
-		if err := os.MkdirAll(filepath.Dir(workerOutput), 0o755); err != nil {
-			return err
+	if compileWorkers {
+		for _, workerTarget := range workerTargets {
+			wt := workerTarget
+			workerOutput := filepath.Join(dist, buildpaths.WorkersDir, wt.ID, buildpaths.WorkerEntryName)
+			if err := os.MkdirAll(filepath.Dir(workerOutput), 0o755); err != nil {
+				return err
+			}
+			tasks = append(tasks, buildTask{
+				name: "build worker " + wt.ID,
+				run: func() error {
+					return runCommandWithEnvironment(root, withEnvironment(environment, "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", workerOutput, wt.PackageDir)
+				},
+			})
 		}
-		tasks = append(tasks, buildTask{
-			name: "build worker " + wt.ID,
-			run: func() error {
-				return runCommandWithEnvironment(root, withEnvironment(environment, "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", workerOutput, wt.PackageDir)
-			},
-		})
 	}
 	if err := runBuildTasks(tasks...); err != nil {
 		return err
