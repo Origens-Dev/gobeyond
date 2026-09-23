@@ -90,10 +90,15 @@ func Generate(root, buildRoot string, check bool) error {
 // Write persists deterministic route registries using an already finalized
 // build identity. The build command uses this after hashing compiler outputs.
 func Write(root string, routes []Route, buildID string, check bool) error {
+	return WriteWithAgentRevisions(root, routes, buildID, check, nil)
+}
+
+// WriteWithAgentRevisions emits matching worker and web agent identities.
+func WriteWithAgentRevisions(root string, routes []Route, buildID string, check bool, revisions map[string]string) error {
 	if buildID == "" {
 		return errors.New("build ID is required")
 	}
-	if err := syncGoSources(root, routes, buildID, check); err != nil {
+	if err := syncGoSources(root, routes, buildID, check, revisions); err != nil {
 		return err
 	}
 	workflowDefinitions, err := DiscoverWorkflowDefinitions(root)
@@ -110,8 +115,11 @@ func Write(root string, routes []Route, buildID string, check bool) error {
 	if err != nil {
 		return err
 	}
-	setAgentRevisions(agentDefinitions, buildID)
+	setAgentRevisions(agentDefinitions, buildID, revisions)
 	agentsManifest := portableAgentsManifest(agentDefinitions, buildID)
+	if len(revisions) > 0 {
+		agentsManifest.APIVersion = "gobeyond.agents/v1alpha5"
+	}
 	if err := attachVoiceManifests(&agentsManifest, agentDefinitions); err != nil {
 		return err
 	}
@@ -212,9 +220,12 @@ func portableAgentsManifest(definitions []AgentDefinition, buildID string) Agent
 	return manifest
 }
 
-func setAgentRevisions(definitions []AgentDefinition, buildID string) {
+func setAgentRevisions(definitions []AgentDefinition, buildID string, revisions ...map[string]string) {
 	for index := range definitions {
 		definitions[index].Revision = buildID
+		if len(revisions) > 0 && revisions[0][definitions[index].ID] != "" {
+			definitions[index].Revision = revisions[0][definitions[index].ID]
+		}
 	}
 }
 
@@ -309,7 +320,7 @@ func LoadAgentsManifest(root string) (AgentsManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return AgentsManifest{}, err
 	}
-	if manifest.APIVersion != "gobeyond.agents/v1alpha4" || strings.TrimSpace(manifest.BuildID) == "" {
+	if (manifest.APIVersion != "gobeyond.agents/v1alpha4" && manifest.APIVersion != "gobeyond.agents/v1alpha5") || strings.TrimSpace(manifest.BuildID) == "" {
 		return AgentsManifest{}, errors.New("unsupported or incomplete agent manifest")
 	}
 	if manifest.Agents == nil {

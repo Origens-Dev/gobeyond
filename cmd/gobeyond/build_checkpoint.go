@@ -14,6 +14,7 @@ import (
 // Lambda. Only the pinned compiler image consumes these private checkpoints.
 // Normal `build` never writes or reads a checkpoint.
 type buildCheckpoint struct {
+	Fingerprints                                 map[string]string
 	Version                                      int
 	Root, Dist, ProjectRoot, BrowserMode         string
 	Manifest                                     project.Manifest
@@ -58,10 +59,11 @@ func writeBuildCheckpoint(c buildCheckpoint) error {
 		ids = append(ids, w.ID)
 	}
 	return writeJSONFile(filepath.Join(c.Root, ".gobeyond", "build-targets.json"), struct {
-		Version int      `json:"version"`
-		BuildID string   `json:"build_id"`
-		Workers []string `json:"workers"`
-	}{1, c.Manifest.BuildID, ids})
+		Version      int               `json:"version"`
+		BuildID      string            `json:"build_id"`
+		Workers      []string          `json:"workers"`
+		Fingerprints map[string]string `json:"fingerprints,omitempty"`
+	}{1, c.Manifest.BuildID, ids, c.Fingerprints})
 }
 
 func readBuildCheckpoint(root string) (buildCheckpoint, error) {

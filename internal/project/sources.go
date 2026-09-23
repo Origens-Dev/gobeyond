@@ -34,7 +34,7 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 	return syncGoSources(root, routes, buildID, check)
 }
 
-func syncGoSources(root string, routes []Route, buildID string, check bool) error {
+func syncGoSources(root string, routes []Route, buildID string, check bool, revisions ...map[string]string) error {
 	if _, err := DiscoverMiddlewareSource(root); err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func syncGoSources(root string, routes []Route, buildID string, check bool) erro
 	if err != nil {
 		return err
 	}
-	setAgentRevisions(agentDefinitions, buildID)
+	setAgentRevisions(agentDefinitions, buildID, revisions...)
 	for _, definition := range agentDefinitions {
 		authorDir := filepath.Join(root, filepath.FromSlash(definition.SourceDir))
 		moduleFile := filepath.Join(authorDir, "go.mod")
