@@ -120,7 +120,12 @@ func (r *recoveryWorkflowOutbound) NewTimerWithOptions(ctx workflow.Context, d t
 func (r *recoveryWorkflowOutbound) ExecuteActivity(ctx workflow.Context, name string, args ...interface{}) workflow.Future {
 	if r.state.enabled {
 		r.state.commandSeq++
-		if err := r.register(ctx, "checkpoint", strconv.Itoa(r.state.commandSeq), time.Time{}); err != nil {
+		options := workflow.GetActivityOptions(ctx)
+		queue := options.TaskQueue
+		if queue == "" {
+			queue = workflow.GetInfo(ctx).TaskQueueName
+		}
+		if err := r.register(ctx, "checkpoint", strconv.Itoa(r.state.commandSeq), time.Time{}, map[string]string{"activity_queue": queue}); err != nil {
 			future, set := workflow.NewFuture(ctx)
 			set.Set(nil, err)
 			return future
@@ -147,9 +152,14 @@ func (r *recoveryWorkflowOutbound) ExecuteChildWorkflow(ctx workflow.Context, na
 	return r.Next.ExecuteChildWorkflow(ctx, name, args...)
 }
 
-func registerWorkflowRecovery(ctx workflow.Context, kind, key string, deadline time.Time) error {
+func registerWorkflowRecovery(ctx workflow.Context, kind, key string, deadline time.Time, metadata ...map[string]string) error {
 	info := workflow.GetInfo(ctx)
 	in := ReportSorEventInput{WorkflowID: info.WorkflowExecution.ID, RunID: info.WorkflowExecution.RunID, Kind: "recovery", Type: kind, DedupeKey: kind + ":" + key, Payload: map[string]string{"operation_key": key, "first_run_id": info.FirstRunID}}
+	for _, fields := range metadata {
+		for key, value := range fields {
+			in.Payload[key] = value
+		}
+	}
 	if !deadline.IsZero() {
 		in.Payload["deadline"] = deadline.UTC().Format(time.RFC3339Nano)
 	}
@@ -215,12 +225,12 @@ func postRecoveryRegistration(ctx context.Context, in ReportSorEventInput) error
 	return nil
 }
 
-func (r *recoveryWorkflowOutbound) register(ctx workflow.Context, kind, key string, deadline time.Time) error {
+func (r *recoveryWorkflowOutbound) register(ctx workflow.Context, kind, key string, deadline time.Time, metadata ...map[string]string) error {
 	if r.uncovered != nil {
 		r.uncovered.Add(1)
 		defer r.uncovered.Add(-1)
 	}
-	return registerWorkflowRecovery(ctx, kind, key, deadline)
+	return registerWorkflowRecovery(ctx, kind, key, deadline, metadata...)
 }
 
 func (r *recoveryWorkflowOutbound) protectExternal(ctx workflow.Context, target, runID string, send func() workflow.Future) workflow.Future {

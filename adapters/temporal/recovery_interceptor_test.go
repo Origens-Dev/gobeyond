@@ -125,3 +125,32 @@ func TestRecoveryExternalSignalAcknowledgementUsesItsOwnCoroutine(t *testing.T) 
 	}
 	env.AssertExpectations(t)
 }
+
+func TestRecoveryActivityQueueIsDurableBeforeScheduling(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&recoveryWorkerInterceptor{enabled: true}}})
+	var registered atomic.Bool
+	env.RegisterActivityWithOptions(func(_ context.Context, in ReportSorEventInput) error {
+		if in.Type == "checkpoint" {
+			if in.Payload["activity_queue"] != "sibling__production" {
+				t.Error("activity queue not captured", in.Payload)
+			}
+			registered.Store(true)
+		}
+		return nil
+	}, activity.RegisterOptions{Name: recoveryRegisterName})
+	env.RegisterActivityWithOptions(func(context.Context) error {
+		if !registered.Load() {
+			return errors.New("activity ran before queue registration")
+		}
+		return nil
+	}, activity.RegisterOptions{Name: "business"})
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{TaskQueue: "sibling__production", StartToCloseTimeout: time.Second})
+		return workflow.ExecuteActivity(ctx, "business").Get(ctx, nil)
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+}
