@@ -138,19 +138,31 @@ func fingerprintCheckpoint(c *buildCheckpoint) error {
 		return err
 	}
 	targets := []string{c.ServerTarget}
+	if c.Version == 2 {
+		targets = append(targets, "github.com/Origens-Dev/gobeyond/codegen")
+	}
 	for _, w := range c.Workers {
 		targets = append(targets, w.PackageDir)
 	}
 	for _, a := range agents {
 		targets = append(targets, filepath.Join(c.ProjectRoot, "generated", "agents", a.Key))
 	}
-	graph, err := loadFingerprintGraph(c.ProjectRoot, targets)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "target fingerprinting unavailable; all targets will compile")
-		return nil
-	}
 	revisions := map[string]string{}
 	for _, a := range agents {
+		revisions[a.ID] = c.Manifest.BuildID
+	}
+	c.AgentRevisions = revisions
+	graph, err := loadFingerprintGraph(c.ProjectRoot, targets)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "target dependency graph unavailable; using conservative web inputs")
+		if c.Version == 2 {
+			c.NeedsPortablePreparation = len(c.Workers) > 0
+			return fingerprintPlannedWeb(c, nil)
+		}
+		return nil
+	}
+	for _, a := range agents {
+		revisions[a.ID] = c.Manifest.BuildID
 		dir := filepath.Join(c.ProjectRoot, "generated", "agents", a.Key)
 		salt, _ := json.Marshal(a)
 		digest, e := graph.digest(dir, map[string]bool{filepath.Join(dir, "gobeyond_register_gen.go"): true}, salt)
@@ -158,6 +170,7 @@ func fingerprintCheckpoint(c *buildCheckpoint) error {
 			revisions[a.ID] = "a_" + digest
 		}
 	}
+	c.AgentRevisions = revisions
 	// Keep the web registry, voice manifests, and workers on the same revisions.
 	if err := project.WriteWithAgentRevisions(c.ProjectRoot, c.Manifest.Routes, c.Manifest.BuildID, false, revisions); err != nil {
 		return err
@@ -166,7 +179,12 @@ func fingerprintCheckpoint(c *buildCheckpoint) error {
 	for _, w := range c.Workers {
 		if digest, e := graph.digest(w.PackageDir, nil, nil); e == nil {
 			c.Fingerprints["worker/"+w.ID] = digest
+		} else if c.Version == 2 {
+			c.NeedsPortablePreparation = true
 		}
+	}
+	if c.Version == 2 {
+		return fingerprintPlannedWeb(c, graph)
 	}
 	// Web output still contains the application build ID, so it is deliberately
 	// conservative. Include all authored/local package sources in the repository
@@ -184,7 +202,19 @@ func fingerprintCheckpoint(c *buildCheckpoint) error {
 func webFingerprintInputs(c *buildCheckpoint) ([]byte, error) {
 	// BuildID covers the project, compiler output and static inputs. Hash sibling
 	// sources too: file: browser packages may live outside the project root.
-	root := c.ProjectRoot
+	root := fingerprintSourceRoot(c.ProjectRoot)
+	snapshot, err := project.BuildSnapshot(root)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		Build   string
+		Sources map[string]string
+	}{c.Manifest.BuildID, snapshot})
+}
+
+func fingerprintSourceRoot(projectRoot string) string {
+	root := projectRoot
 	for dir := root; ; dir = filepath.Dir(dir) {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 			root = dir
@@ -195,18 +225,11 @@ func webFingerprintInputs(c *buildCheckpoint) ([]byte, error) {
 		}
 	}
 	// Lambda workspaces have no .git; source extraction uses a stable src root.
-	for dir := c.ProjectRoot; filepath.Dir(dir) != dir; dir = filepath.Dir(dir) {
+	for dir := projectRoot; filepath.Dir(dir) != dir; dir = filepath.Dir(dir) {
 		if filepath.Base(dir) == "src" {
 			root = dir
 			break
 		}
 	}
-	snapshot, err := project.BuildSnapshot(root)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(struct {
-		Build   string
-		Sources map[string]string
-	}{c.Manifest.BuildID, snapshot})
+	return root
 }

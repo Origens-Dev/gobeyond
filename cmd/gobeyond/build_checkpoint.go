@@ -14,6 +14,9 @@ import (
 // Lambda. Only the pinned compiler image consumes these private checkpoints.
 // Normal `build` never writes or reads a checkpoint.
 type buildCheckpoint struct {
+	NeedsPortablePreparation                     bool
+	WebInputIdentity                             string
+	AgentRevisions                               map[string]string
 	Fingerprints                                 map[string]string
 	Version                                      int
 	Root, Dist, ProjectRoot, BrowserMode         string
@@ -35,21 +38,23 @@ func checkpointPath(root string) string {
 }
 
 func prepareBuildCheckpoint(root string) error {
-	return prepareAndCompile(root, filepath.Join(root, "dist"), false, "", "production", true)
+	return prepareTargetPlan(root)
 }
 
 func writeBuildCheckpoint(c buildCheckpoint) error {
 	// JSON reformatting must not change raw plans/contracts used in packs.
 	// Encode those bytes as base64 while retaining JSON's empty versus nil
 	// semantics for the rest of the compiler's structured output.
-	compiled := *c.Compiled
-	c.Compiled = &compiled
-	c.ContractBytes = compiled.Contracts
-	c.PlanBytes = make([][]byte, len(compiled.Plans))
-	for i, plan := range compiled.Plans {
-		c.PlanBytes[i] = plan
+	if c.Compiled != nil {
+		compiled := *c.Compiled
+		c.Compiled = &compiled
+		c.ContractBytes = compiled.Contracts
+		c.PlanBytes = make([][]byte, len(compiled.Plans))
+		for i, plan := range compiled.Plans {
+			c.PlanBytes[i] = plan
+		}
+		compiled.Contracts, compiled.Plans = nil, nil
 	}
-	compiled.Contracts, compiled.Plans = nil, nil
 	if err := writeJSONFile(checkpointPath(c.Root), c); err != nil {
 		return err
 	}
@@ -59,11 +64,12 @@ func writeBuildCheckpoint(c buildCheckpoint) error {
 		ids = append(ids, w.ID)
 	}
 	return writeJSONFile(filepath.Join(c.Root, ".gobeyond", "build-targets.json"), struct {
-		Version      int               `json:"version"`
-		BuildID      string            `json:"build_id"`
-		Workers      []string          `json:"workers"`
-		Fingerprints map[string]string `json:"fingerprints,omitempty"`
-	}{1, c.Manifest.BuildID, ids, c.Fingerprints})
+		NeedsPortablePreparation bool              `json:"needs_portable_preparation,omitempty"`
+		Version                  int               `json:"version"`
+		BuildID                  string            `json:"build_id"`
+		Workers                  []string          `json:"workers"`
+		Fingerprints             map[string]string `json:"fingerprints,omitempty"`
+	}{c.NeedsPortablePreparation, 1, c.Manifest.BuildID, ids, c.Fingerprints})
 }
 
 func readBuildCheckpoint(root string) (buildCheckpoint, error) {
@@ -75,13 +81,15 @@ func readBuildCheckpoint(root string) (buildCheckpoint, error) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return c, err
 	}
-	if c.Version != 1 || c.Root != root || c.Dist != filepath.Join(root, "dist") || c.ProjectRoot != websiteRoot(root) || c.Compiled == nil || c.Manifest.BuildID == "" {
+	if (c.Version != 1 && c.Version != 2) || c.Root != root || c.Dist != filepath.Join(root, "dist") || c.ProjectRoot != websiteRoot(root) || (c.Version == 1 && c.Compiled == nil) || c.Manifest.BuildID == "" {
 		return c, fmt.Errorf("incompatible or relocated build checkpoint")
 	}
-	c.Compiled.Contracts = c.ContractBytes
-	c.Compiled.Plans = make([]json.RawMessage, len(c.PlanBytes))
-	for i, plan := range c.PlanBytes {
-		c.Compiled.Plans[i] = plan
+	if c.Compiled != nil {
+		c.Compiled.Contracts = c.ContractBytes
+		c.Compiled.Plans = make([]json.RawMessage, len(c.PlanBytes))
+		for i, plan := range c.PlanBytes {
+			c.Compiled.Plans[i] = plan
+		}
 	}
 	return c, nil
 }
@@ -91,11 +99,14 @@ func resumeWebCheckpoint(root string) error {
 	if err != nil {
 		return err
 	}
+	if c.Version == 2 {
+		return prepareAndCompilePlan(root, c.Dist, false, "", c.BrowserMode, false, &c)
+	}
 	return compileCheckpoint(c, false)
 }
 
-// Worker execution is Go only. Generation, Node and dependency installation
-// have already completed in the prepared workspace.
+// Worker execution is Go only. The plan contains generated Go sources; Node
+// installation and portable web compilation occur only in a web cache miss.
 func resumeWorkerCheckpoint(root, id string) error {
 	c, err := readBuildCheckpoint(root)
 	if err != nil {

@@ -85,6 +85,12 @@ func run(args []string) error {
 	case "preview":
 		return preview(root, args[1:])
 	case "build-prepare":
+		if len(args) == 2 && args[1] == "--portable" {
+			return prepareAndCompile(root, filepath.Join(root, "dist"), false, "", "production", true)
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("build-prepare accepts only --portable")
+		}
 		return prepareBuildCheckpoint(root)
 	case "build-web":
 		return resumeWebCheckpoint(root)
@@ -127,6 +133,10 @@ func buildToModeWithCompilerAndEnvironment(root, dist string, checkContracts boo
 }
 
 func prepareAndCompile(root, dist string, checkContracts bool, preparedCompilerCLI, browserMode string, prepareOnly bool) error {
+	return prepareAndCompilePlan(root, dist, checkContracts, preparedCompilerCLI, browserMode, prepareOnly, nil)
+}
+
+func prepareAndCompilePlan(root, dist string, checkContracts bool, preparedCompilerCLI, browserMode string, prepareOnly bool, plan *buildCheckpoint) error {
 	environment := compilerEnvironment()
 	buildStarted := time.Now()
 	defer func() { slog.Info("gobeyond_build_duration", "duration_seconds", time.Since(buildStarted).Seconds()) }()
@@ -152,6 +162,9 @@ func prepareAndCompile(root, dist string, checkContracts bool, preparedCompilerC
 	provisionalID, err := project.BuildID(root, routes)
 	if err != nil {
 		return err
+	}
+	if plan != nil {
+		provisionalID = plan.Manifest.BuildID
 	}
 	manifest := project.Manifest{APIVersion: "gobeyond.routes/v1alpha1", BuildID: provisionalID, Routes: routes}
 	if err := os.RemoveAll(dist); err != nil {
@@ -199,9 +212,11 @@ func prepareAndCompile(root, dist string, checkContracts bool, preparedCompilerC
 	if err != nil {
 		return err
 	}
-	manifest.BuildID, err = finalizedBuildID(provisionalID, compiled)
-	if err != nil {
-		return err
+	if plan == nil {
+		manifest.BuildID, err = finalizedBuildID(provisionalID, compiled)
+		if err != nil {
+			return err
+		}
 	}
 	proxyConfig, err := policy.LoadConfig(filepath.Join(projectRoot, "gobeyond.json"))
 	if err != nil {
@@ -211,7 +226,11 @@ func prepareAndCompile(root, dist string, checkContracts bool, preparedCompilerC
 	if err != nil {
 		return err
 	}
-	if err := project.Write(projectRoot, routes, manifest.BuildID, false); err != nil {
+	var agentRevisions map[string]string
+	if plan != nil {
+		agentRevisions = plan.AgentRevisions
+	}
+	if err := project.WriteWithAgentRevisions(projectRoot, routes, manifest.BuildID, false, agentRevisions); err != nil {
 		return err
 	}
 	staticDir := filepath.Join(dist, "static")
@@ -255,7 +274,7 @@ func prepareAndCompile(root, dist string, checkContracts bool, preparedCompilerC
 		}
 		return writeBuildCheckpoint(checkpoint)
 	}
-	return compileCheckpoint(checkpoint, true)
+	return compileCheckpoint(checkpoint, plan == nil)
 }
 
 func compileCheckpoint(c buildCheckpoint, compileWorkers bool) error {
