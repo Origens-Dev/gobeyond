@@ -250,6 +250,9 @@ func prepareAndCompile(root, dist string, checkContracts bool, preparedCompilerC
 		GeneratedMetadataAssets: generatedMetadataAssets, HasGoMiddleware: hasGoMiddleware,
 		ImageConfig: imageConfig, HasImageConfig: hasImageConfig, ProxyPolicy: proxyPolicyBytes}
 	if prepareOnly {
+		if err := fingerprintCheckpoint(&checkpoint); err != nil {
+			return err
+		}
 		return writeBuildCheckpoint(checkpoint)
 	}
 	return compileCheckpoint(checkpoint, true)
