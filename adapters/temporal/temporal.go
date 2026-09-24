@@ -39,6 +39,7 @@ import (
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -105,6 +106,11 @@ func Serve(ctx context.Context, options Options) error {
 		return err
 	}
 
+	tracker := &healthTracker{maxConcurrent: 100, quiesce: make(chan string, 1), recoveryLost: make(chan error, 1)}
+	if os.Getenv(recoveryEnabledEnv) == "1" {
+		tracker.handoff = newRecoveryTaskHandoff(&tracker.uncovered)
+		clientOptions.ConnectionOptions.DialOptions = append(clientOptions.ConnectionOptions.DialOptions, grpc.WithChainUnaryInterceptor(tracker.handoff.intercept))
+	}
 	dialStart := time.Now()
 	c, err := client.Dial(clientOptions)
 	if err != nil {
@@ -138,7 +144,7 @@ func Serve(ctx context.Context, options Options) error {
 	}()
 
 	runStart := time.Now()
-	tracker := &healthTracker{maxConcurrent: 100, quiesce: make(chan string, 1), recoveryLost: make(chan error, 1)}
+
 	errCh := make(chan error, 1)
 	workerOptions := temporalWorkerOptions(options, tracker)
 	workerOptions.OnFatalError = func(err error) {
@@ -378,7 +384,7 @@ func temporalWorkerOptions(options Options, tracker *healthTracker) worker.Optio
 		Interceptors: []interceptor.WorkerInterceptor{
 			&healthInterceptor{tracker: tracker},
 			&sorWorkerInterceptor{},
-			&recoveryWorkerInterceptor{enabled: os.Getenv(recoveryEnabledEnv) == "1", uncovered: &tracker.uncovered},
+			&recoveryWorkerInterceptor{handoff: tracker.handoff, enabled: os.Getenv(recoveryEnabledEnv) == "1", uncovered: &tracker.uncovered},
 		},
 	}
 	if os.Getenv(recoveryEnabledEnv) == "1" {

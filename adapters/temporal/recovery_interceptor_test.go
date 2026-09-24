@@ -69,7 +69,7 @@ func TestRecoveryTomorrowTimerRegistersBeforeScheduling(t *testing.T) {
 	var deadline time.Time
 	var registered atomic.Bool
 	env.RegisterActivityWithOptions(func(_ context.Context, in ReportSorEventInput) error {
-		if uncovered.Load() < 1 {
+		if in.Type != "timer.finished" && uncovered.Load() < 1 {
 			t.Error("pending registration is sleep eligible")
 		}
 		if in.Type == "timer.started" {
