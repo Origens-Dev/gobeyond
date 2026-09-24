@@ -27,19 +27,23 @@ const recoveryEnabledEnv = "GOBEYOND_DURABLE_RECOVERY_ENABLED"
 
 type recoveryWorkerInterceptor struct {
 	interceptor.WorkerInterceptorBase
+	handoff   *recoveryTaskHandoff
 	enabled   bool
 	uncovered *atomic.Int64
 }
 
 func (r *recoveryWorkerInterceptor) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
-	in := &recoveryWorkflowInbound{configured: r.enabled, state: &recoveryWorkflowState{}, uncovered: r.uncovered}
+	in := &recoveryWorkflowInbound{configured: r.enabled, state: &recoveryWorkflowState{handoff: r.handoff}, uncovered: r.uncovered}
 	in.Next = next
 	return in
 }
 
 type recoveryRegistrationContextKey struct{}
+type recoveryHandoffContextKey struct{}
 
 type recoveryWorkflowState struct {
+	handoff    *recoveryTaskHandoff
+	direct     bool
 	enabled    bool
 	timerSeq   int
 	commandSeq int
@@ -75,6 +79,14 @@ func (r *recoveryWorkflowInbound) ExecuteWorkflow(ctx workflow.Context, in *inte
 		}
 	}
 	if r.state.enabled {
+		maxVersion := workflow.Version(1)
+		if r.state.handoff != nil {
+			maxVersion = 2
+		}
+		r.state.direct = workflow.GetVersion(ctx, "gobeyond-recovery-handoff", workflow.DefaultVersion, maxVersion) == 2
+		if r.state.direct {
+			ctx = workflow.WithValue(ctx, recoveryHandoffContextKey{}, r.state.handoff)
+		}
 		if err := registerWorkflowRecovery(ctx, "run", "", time.Time{}); err != nil {
 			return nil, err
 		}
@@ -167,6 +179,10 @@ func registerWorkflowRecovery(ctx workflow.Context, kind, key string, deadline t
 }
 
 func executeRecoveryRegistration(ctx workflow.Context, in ReportSorEventInput) error {
+	if h, ok := ctx.Value(recoveryHandoffContextKey{}).(*recoveryTaskHandoff); ok {
+		h.enqueue(in)
+		return nil
+	}
 	info := workflow.GetInfo(ctx)
 	// SDK local-activity retry backoff uses workflow.Sleep. Bypass timer
 	// registration for that infrastructure retry to avoid recursive registration.
