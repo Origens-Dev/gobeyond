@@ -30,6 +30,12 @@ func newRecoveryTaskHandoff(uncovered *atomic.Int64) *recoveryTaskHandoff {
 func (h *recoveryTaskHandoff) enqueue(in ReportSorEventInput) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// Replayed tasks must not grow the queue during a registration outage.
+	for _, prior := range h.pending[in.RunID] {
+		if prior.Type == in.Type && prior.DedupeKey == in.DedupeKey && prior.Payload["operation_key"] == in.Payload["operation_key"] && prior.Payload["activity_queue"] == in.Payload["activity_queue"] {
+			return
+		}
+	}
 	h.pending[in.RunID] = append(h.pending[in.RunID], &in)
 	if h.uncovered != nil {
 		h.uncovered.Add(1)

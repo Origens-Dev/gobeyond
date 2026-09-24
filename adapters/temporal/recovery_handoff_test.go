@@ -155,3 +155,15 @@ func TestRecoveryHandoffRealTemporal(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRecoveryHandoffReplayDeduplicatesPending(t *testing.T) {
+	var pending atomic.Int64
+	h := newRecoveryTaskHandoff(&pending)
+	in := ReportSorEventInput{RunID: "run", Type: "checkpoint", DedupeKey: "checkpoint:1", Payload: map[string]string{"activity_queue": "worker"}}
+	for i := 0; i < 100; i++ {
+		h.enqueue(in)
+	}
+	if pending.Load() != 1 || len(h.pending["run"]) != 1 {
+		t.Fatal("replay grew pending registrations")
+	}
+}
