@@ -32,6 +32,11 @@ type ToolConfig struct {
 	// VoiceControl opts an authored tool into the compiled call-control manifest.
 	VoiceControl    *VoiceToolPolicy
 	VoiceRemoteRead *VoiceReadPolicy
+	// VoiceAction opts an authenticated application action into the voice
+	// manifest. It is intentionally separate from call control and reads.
+	// Action tools must also set RequiresApproval; the workflow enforces that
+	// approval against the exact server-held tool call before execution.
+	VoiceAction bool
 }
 
 type ToolHandler[Input any, Output any] func(context.Context, Actor, Input) (Output, error)
@@ -89,6 +94,17 @@ func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCa
 		policy.TargetKinds = append([]string(nil), policy.TargetKinds...)
 		policy.InputModes = append([]string(nil), policy.InputModes...)
 		ns["voiceControl"] = policy
+		metadata[toolMetadataNamespace] = ns
+	}
+	if config.VoiceAction {
+		if metadata == nil {
+			metadata = ai.ProviderMetadata{}
+		}
+		ns, _ := metadata[toolMetadataNamespace].(map[string]any)
+		if ns == nil {
+			ns = map[string]any{}
+		}
+		ns["voiceAction"] = true
 		metadata[toolMetadataNamespace] = ns
 	}
 	return ai.Tool{

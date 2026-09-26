@@ -20,6 +20,7 @@ import (
 	"time"
 
 	gb "github.com/Origens-Dev/gobeyond"
+	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/browserassets"
 	"github.com/Origens-Dev/gobeyond/buildpaths"
 	"github.com/Origens-Dev/gobeyond/cache"
@@ -158,6 +159,9 @@ type Config struct {
 	DeploymentRevision  string
 	PublicConfig        map[string]string
 	BuildID             string
+	// AIDefinitionResolver exposes the compiler-registered AI definitions to
+	// authored API routes via agents.AIDefinitionFromContext.
+	AIDefinitionResolver agents.AIDefinitionResolver
 	PublicOrigin        string
 	ResolvePublicOrigin PublicOriginResolver
 	AllowedHosts        []string
@@ -680,8 +684,12 @@ func (s *Server) serveDocument(writer http.ResponseWriter, request *http.Request
 	current = current.WithContext(cache.WithRequestScope(current.Context(), s.newRequestScope(privateRequest)))
 	for rewrites := 0; rewrites <= maxRewrites; rewrites++ {
 		_, params, _ := s.pageTable.Resolve(current.URL.Path)
+		requestContext := current.Context()
+		if s.config.AIDefinitionResolver != nil {
+			requestContext = agents.WithAIDefinitionResolver(requestContext, s.config.AIDefinitionResolver)
+		}
 		ctx := &gb.RequestContext{
-			Context:      current.Context(),
+			Context:      requestContext,
 			Request:      current,
 			PublicOrigin: publicOriginFromContext(current.Context()),
 			Params:       params,
@@ -1053,8 +1061,12 @@ func (s *Server) applyMiddleware(request *http.Request, requestID string, params
 			return gb.Response{}, errors.New("application middleware returned a nil handler")
 		}
 	}
+	requestContext := request.Context()
+	if s.config.AIDefinitionResolver != nil {
+		requestContext = agents.WithAIDefinitionResolver(requestContext, s.config.AIDefinitionResolver)
+	}
 	return pipe(&gb.RequestContext{
-		Context:      request.Context(),
+		Context:      requestContext,
 		Request:      request,
 		PublicOrigin: publicOriginFromContext(request.Context()),
 		Params:       params,

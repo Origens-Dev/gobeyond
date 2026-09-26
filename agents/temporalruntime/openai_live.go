@@ -590,7 +590,7 @@ func (h *openAILiveHandle) execute(ctx context.Context, calls []grokFunctionCall
 			err = errors.New("tool unavailable")
 		} else {
 			h.logControlStage("tool_started", c.Name, "")
-			result, err = selected.Execute(toolCtx, ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": h.cfg.Actor}})
+			result, err = executeVoiceAgentTool(toolCtx, selected, ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": h.cfg.Actor}})
 			if err == nil {
 				err = ai.ValidateToolOutput(selected, result)
 			}

@@ -24,6 +24,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -57,6 +58,7 @@ var (
 type Client interface {
 	ExecuteWorkflow(context.Context, client.StartWorkflowOptions, interface{}, ...interface{}) (client.WorkflowRun, error)
 	SignalWorkflow(context.Context, string, string, string, interface{}) error
+	QueryWorkflow(context.Context, string, string, string, ...interface{}) (converter.EncodedValue, error)
 	CancelWorkflow(context.Context, string, string) error
 	Close()
 }
@@ -653,9 +655,9 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 	}
 	agentInput := temporalai.AgentInput{
 		AgentID: definitionID(call), CompiledRevision: definition.AI.Revision,
-		ModelID: definition.AI.Model,
+		ModelID:      definition.AI.Model,
 		Instructions: agents.ResolveInstructions(definition.AI.Instructions, call.Session.Metadata),
-		Prompt: input.PromptText(), Messages: activities.MessagesFromAI(messages),
+		Prompt:       input.PromptText(), Messages: activities.MessagesFromAI(messages),
 		Tools: toolDefinitions, MaxSteps: maxSteps,
 		Stream: updates.Options{
 			StreamID: call.Run.ID, ConversationID: call.Session.ID,
@@ -672,11 +674,10 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 		agentInput.LocalToolTimeoutFallback = temporalai.LocalToolTimeoutFallbackNone
 	}
 	if dispatcher.hosted != nil {
-		result, err := dispatcher.hosted.execute(ctx, hostedAgentExecuteRequest{
+		result, err := dispatcher.awaitHostedAIWorkflow(ctx, workflowID, hostedAgentExecuteRequest{
 			AgentID: definitionID(call), Kind: "ai", SessionID: call.Session.ID,
-			RunID: call.Run.ID, WorkerID: definition.Config.TaskQueue,
-			Args: []any{agentInput},
-		})
+			RunID: call.Run.ID, WorkerID: definition.Config.TaskQueue, Args: []any{agentInput},
+		}, emit)
 		if err != nil {
 			return err
 		}
@@ -698,14 +699,124 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 	if run == nil {
 		return errors.New("start durable AI agent workflow: Temporal returned a nil run")
 	}
-	var result temporalai.AgentResult
-	if err := run.Get(ctx, &result); err != nil {
-		return fmt.Errorf("wait for durable AI agent workflow: %w", err)
+	result, err := dispatcher.awaitAIWorkflow(ctx, workflowID, run, emit)
+	if err != nil {
+		return err
 	}
 	return emit.Emit(ctx, "agent.output", agents.AIOutput{
 		Text: result.Text, FinishReason: result.FinishReason,
 		RawFinishReason: result.RawFinishReason, Model: result.ModelID,
 	})
+}
+
+func (dispatcher *Dispatcher) awaitHostedAIWorkflow(ctx context.Context, workflowID string, request hostedAgentExecuteRequest, emit httpruntime.EventEmitter) (json.RawMessage, error) {
+	type resultValue struct {
+		result json.RawMessage
+		err    error
+	}
+	completed := make(chan resultValue, 1)
+	go func() {
+		result, err := dispatcher.hosted.execute(ctx, request)
+		completed <- resultValue{result: result, err: err}
+	}()
+	return dispatcher.awaitApprovalEvents(ctx, workflowID, emit, func() (json.RawMessage, error, bool) {
+		select {
+		case done := <-completed:
+			return done.result, done.err, true
+		default:
+			return nil, nil, false
+		}
+	})
+}
+
+func (dispatcher *Dispatcher) awaitAIWorkflow(ctx context.Context, workflowID string, run client.WorkflowRun, emit httpruntime.EventEmitter) (temporalai.AgentResult, error) {
+	type resultValue struct {
+		result temporalai.AgentResult
+		err    error
+	}
+	completed := make(chan resultValue, 1)
+	go func() {
+		var result temporalai.AgentResult
+		getErr := run.Get(ctx, &result)
+		completed <- resultValue{result: result, err: getErr}
+	}()
+	result, err := dispatcher.awaitApprovalEvents(ctx, workflowID, emit, func() (json.RawMessage, error, bool) {
+		select {
+		case done := <-completed:
+			data, marshalErr := json.Marshal(done.result)
+			if done.err != nil {
+				return nil, done.err, true
+			}
+			return data, marshalErr, true
+		default:
+			return nil, nil, false
+		}
+	})
+	if err != nil {
+		return temporalai.AgentResult{}, fmt.Errorf("wait for durable AI agent workflow: %w", err)
+	}
+	var output temporalai.AgentResult
+	if err := json.Unmarshal(result, &output); err != nil {
+		return temporalai.AgentResult{}, fmt.Errorf("decode durable AI agent output: %w", err)
+	}
+	return output, nil
+}
+
+func (dispatcher *Dispatcher) awaitApprovalEvents(ctx context.Context, workflowID string, emit httpruntime.EventEmitter, pollResult func() (json.RawMessage, error, bool)) (json.RawMessage, error) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	emitted := make(map[string]struct{})
+	for {
+		if result, err, done := pollResult(); done {
+			if err != nil {
+				return nil, err
+			}
+			return result, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+			snapshot, err := dispatcher.queryPendingApproval(ctx, workflowID)
+			if err != nil || !snapshot.Pending {
+				continue
+			}
+			requests := snapshot.Requests
+			if len(requests) == 0 && snapshot.Request != nil {
+				requests = []temporalai.ToolApprovalRequest{*snapshot.Request}
+			}
+			for i := range requests {
+				request := requests[i]
+				if _, exists := emitted[request.ApprovalID]; exists {
+					continue
+				}
+				if err := emit.Emit(ctx, "agent.interaction.requested", map[string]any{
+					"interactionId": request.ApprovalID, "interactionType": "tool-approval",
+					"toolCallId": request.ToolCallID, "toolName": request.ToolName,
+					"title": "Review " + request.ToolName, "input": request.Input,
+					"inputHash": request.InputHash, "requiresApproval": true,
+				}); err != nil {
+					return nil, fmt.Errorf("emit durable AI approval interaction: %w", err)
+				}
+				emitted[request.ApprovalID] = struct{}{}
+			}
+		}
+	}
+}
+
+func (dispatcher *Dispatcher) queryPendingApproval(ctx context.Context, workflowID string) (temporalai.ToolApprovalSnapshot, error) {
+	if dispatcher.hosted != nil {
+		return dispatcher.hosted.queryApproval(ctx, workflowID)
+	}
+	value, err := dispatcher.client.QueryWorkflow(ctx, workflowID, "", temporalai.ToolApprovalQueryName)
+	if err != nil {
+		return temporalai.ToolApprovalSnapshot{}, err
+	}
+	var snapshot temporalai.ToolApprovalSnapshot
+	if err := value.Get(&snapshot); err != nil {
+		return temporalai.ToolApprovalSnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func durableToolDefinitions(definition agents.AIDefinition, environment string) ([]activities.ToolDefinition, error) {
@@ -752,11 +863,15 @@ func (dispatcher *Dispatcher) Respond(ctx context.Context, adapter httpruntime.A
 	var response struct {
 		InteractionID string `json:"interactionId"`
 		ApprovalID    string `json:"approvalId"`
+		ToolCallID    string `json:"toolCallId"`
+		InputHash     string `json:"inputHash"`
 		Approved      *bool  `json:"approved"`
 		Reason        string `json:"reason"`
 		Answers       struct {
-			Approved *bool  `json:"approved"`
-			Reason   string `json:"reason"`
+			ToolCallID string `json:"toolCallId"`
+			InputHash  string `json:"inputHash"`
+			Approved   *bool  `json:"approved"`
+			Reason     string `json:"reason"`
 		} `json:"answers"`
 	}
 	if err := json.Unmarshal(call.Response, &response); err != nil {
@@ -768,6 +883,17 @@ func (dispatcher *Dispatcher) Respond(ctx context.Context, adapter httpruntime.A
 	}
 	if approvalID == "" {
 		return errors.New("durable AI agent response interactionId is required")
+	}
+	toolCallID := strings.TrimSpace(response.ToolCallID)
+	if toolCallID == "" {
+		toolCallID = strings.TrimSpace(response.Answers.ToolCallID)
+	}
+	inputHash := strings.TrimSpace(response.InputHash)
+	if inputHash == "" {
+		inputHash = strings.TrimSpace(response.Answers.InputHash)
+	}
+	if toolCallID == "" || inputHash == "" {
+		return errors.New("durable AI agent response toolCallId and inputHash are required")
 	}
 	approved := response.Approved
 	if approved == nil {
@@ -786,7 +912,7 @@ func (dispatcher *Dispatcher) Respond(ctx context.Context, adapter httpruntime.A
 	}
 	signalName := temporalai.ToolApprovalResponseSignalName(approvalID)
 	signal := temporalai.ToolApprovalResponse{
-		ApprovalID: approvalID, Approved: *approved, Reason: reason,
+		ApprovalID: approvalID, ToolCallID: toolCallID, InputHash: inputHash, Approved: *approved, Reason: reason,
 	}
 	if dispatcher.hosted != nil {
 		if err := dispatcher.hosted.signal(ctx, workflowID, signalName, signal); err != nil {

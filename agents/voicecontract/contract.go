@@ -72,6 +72,7 @@ type Tool struct {
 	OutputSchema       json.RawMessage `json:"output_schema,omitempty"`
 	OutputSchemaDigest string          `json:"output_schema_digest,omitempty"`
 	MaxResultBytes     int             `json:"max_result_bytes,omitempty"`
+	RequiresApproval   bool            `json:"requires_approval,omitempty"`
 	ID                 string          `json:"id"`
 	Name               string          `json:"name"`
 	Description        string          `json:"description"`
@@ -191,4 +192,5 @@ type ReadRequest struct {
 	Arguments   json.RawMessage `json:"arguments"`
 }
 
-func (t Tool) IsRead() bool { return t.ExecutionKind == "read" }
+func (t Tool) IsRead() bool   { return t.ExecutionKind == "read" }
+func (t Tool) IsAction() bool { return t.ExecutionKind == "action" }

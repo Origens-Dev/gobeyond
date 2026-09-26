@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
 )
 
@@ -110,7 +111,7 @@ func Adapt[Input any, Output any](definition agents.Definition[Input, Output]) A
 // Direct agents stream text/tool progress through the existing ordered native
 // event log; durable dispatchers use AIDefinition to construct Temporal input.
 func AdaptAI(definition agents.AIDefinition) Adapter {
-	return aiAdapter{definition: definition}
+	return aiAdapter{definition: definition, approvals: newApprovalManager()}
 }
 
 // RegisterAI validates the native AI feature set before installing a direct
@@ -131,7 +132,10 @@ func RegisterAI(registry Registerer, agentID string, definition agents.AIDefinit
 	return registry.Register(agentID, AdaptAI(definition))
 }
 
-type aiAdapter struct{ definition agents.AIDefinition }
+type aiAdapter struct {
+	definition agents.AIDefinition
+	approvals  *approvalManager
+}
 
 func (adapter aiAdapter) Config() agents.Config { return adapter.definition.Config }
 
@@ -148,6 +152,31 @@ func (adapter aiAdapter) Start(ctx context.Context, call StartCall, emit EventEm
 	}
 	definition := adapter.definition
 	definition.AI.Instructions = agents.ResolveInstructions(definition.AI.Instructions, call.Session.Metadata)
+	definition.AI.Tools = make(map[string]ai.Tool, len(adapter.definition.AI.Tools))
+	for id, authored := range adapter.definition.AI.Tools {
+		tool := authored
+		if tool.RequiresApproval || tool.NeedsApproval != nil {
+			originalNeedsApproval := tool.NeedsApproval
+			requiresApproval := tool.RequiresApproval
+			tool.NeedsApproval = func(approvalCtx context.Context, toolCall ai.ToolCall) (ai.ApprovalDecision, error) {
+				decision := ai.UserApproval()
+				if originalNeedsApproval != nil {
+					var err error
+					decision, err = originalNeedsApproval(approvalCtx, toolCall)
+					if err != nil || decision.Type == ai.ApprovalDecisionDenied {
+						return decision, err
+					}
+				} else if !requiresApproval {
+					return ai.ApprovalDecision{Type: ai.ApprovalDecisionNotApplicable}, nil
+				}
+				if !requiresApproval && decision.Type != ai.ApprovalDecisionUserApproval {
+					return decision, nil
+				}
+				return adapter.approvals.request(approvalCtx, call, toolCall, authored, emit)
+			}
+		}
+		definition.AI.Tools[id] = tool
+	}
 	// G4 StartConfig.Instructions should use the same ResolveInstructions overlay
 	// before opening a Live session (voice path acceptance is deferred to G4).
 	result, err := definition.Stream(ctx, call.Actor, input)
@@ -202,8 +231,47 @@ func (adapter aiAdapter) Start(ctx context.Context, call StartCall, emit EventEm
 	})
 }
 
-func (aiAdapter) Respond(context.Context, RespondCall, EventEmitter) error {
-	return ErrRespondUnsupported
+func (adapter aiAdapter) Respond(ctx context.Context, call RespondCall, _ EventEmitter) error {
+	if adapter.approvals == nil {
+		return ErrRespondUnsupported
+	}
+	var response struct {
+		InteractionID string `json:"interactionId"`
+		ToolCallID    string `json:"toolCallId"`
+		ToolName      string `json:"toolName"`
+		InputHash     string `json:"inputHash"`
+		Approved      *bool  `json:"approved"`
+		Reason        string `json:"reason"`
+		Answers       struct {
+			ToolCallID string `json:"toolCallId"`
+			ToolName   string `json:"toolName"`
+			InputHash  string `json:"inputHash"`
+			Approved   *bool  `json:"approved"`
+			Reason     string `json:"reason"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal(call.Response, &response); err != nil {
+		return fmt.Errorf("decode AI approval response: %w", err)
+	}
+	if response.ToolCallID == "" {
+		response.ToolCallID = response.Answers.ToolCallID
+	}
+	if response.ToolName == "" {
+		response.ToolName = response.Answers.ToolName
+	}
+	if response.InputHash == "" {
+		response.InputHash = response.Answers.InputHash
+	}
+	if response.Approved == nil {
+		response.Approved = response.Answers.Approved
+	}
+	if response.Reason == "" {
+		response.Reason = response.Answers.Reason
+	}
+	if strings.TrimSpace(response.InteractionID) == "" || response.Approved == nil || strings.TrimSpace(response.ToolCallID) == "" || strings.TrimSpace(response.ToolName) == "" || strings.TrimSpace(response.InputHash) == "" {
+		return errors.New("AI approval response requires interactionId, toolCallId, toolName, inputHash, and approved")
+	}
+	return adapter.approvals.respond(call, response.InteractionID, response.ToolCallID, response.ToolName, response.InputHash, *response.Approved, response.Reason)
 }
 
 func (aiAdapter) Cancel(context.Context, CancelCall, EventEmitter) error { return nil }
@@ -251,6 +319,59 @@ type Dispatcher interface {
 // Registry is the lookup contract consumed by Runtime.
 type Registry interface {
 	Lookup(agentID string) (Adapter, bool)
+}
+
+// AIDefinitionResolver adapts an HTTP agent registry for a GoBeyond server
+// Config.AIDefinitionResolver field.
+func AIDefinitionResolver(registry Registry) agents.AIDefinitionResolver {
+	return func(agentID string) (agents.AIDefinition, bool) {
+		if registry == nil {
+			return agents.AIDefinition{}, false
+		}
+		adapter, ok := registry.Lookup(agentID)
+		if !ok {
+			return agents.AIDefinition{}, false
+		}
+		provider, ok := adapter.(interface{ AIDefinition() agents.AIDefinition })
+		if !ok {
+			return agents.AIDefinition{}, false
+		}
+		return provider.AIDefinition(), true
+	}
+}
+
+type agentDefinitionRegistryContextKey struct{}
+
+// WithAIDefinitionRegistry adds the registered agent definitions to a request
+// context for framework-owned routes that need compiled metadata. It does not
+// expose mutable registration or authorize execution; callers must still apply
+// their normal actor and capability checks.
+func WithAIDefinitionRegistry(ctx context.Context, registry Registry) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, agentDefinitionRegistryContextKey{}, registry)
+}
+
+// AIDefinitionFromContext resolves a registered AI definition without importing
+// compiler-generated agent packages from a route package.
+func AIDefinitionFromContext(ctx context.Context, agentID string) (agents.AIDefinition, bool) {
+	if ctx == nil {
+		return agents.AIDefinition{}, false
+	}
+	registry, _ := ctx.Value(agentDefinitionRegistryContextKey{}).(Registry)
+	if registry == nil {
+		return agents.AIDefinition{}, false
+	}
+	adapter, ok := registry.Lookup(agentID)
+	if !ok {
+		return agents.AIDefinition{}, false
+	}
+	provider, ok := adapter.(interface{ AIDefinition() agents.AIDefinition })
+	if !ok {
+		return agents.AIDefinition{}, false
+	}
+	return provider.AIDefinition(), true
 }
 
 // Registerer is the narrow interface accepted by compiler-generated registry

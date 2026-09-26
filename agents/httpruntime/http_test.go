@@ -363,7 +363,7 @@ func TestCancelDispatchFailurePublishesRacingCompletion(t *testing.T) {
 	}
 }
 
-func TestRegisterAIRejectsApprovalPolicies(t *testing.T) {
+func TestRegisterAIAcceptsApprovalPolicies(t *testing.T) {
 	tests := map[string]ai.Tool{
 		"static":  {RequiresApproval: true},
 		"dynamic": {NeedsApproval: func(context.Context, ai.ToolCall) (ai.ApprovalDecision, error) { return ai.ApprovalDecision{}, nil }},
@@ -373,14 +373,14 @@ func TestRegisterAIRejectsApprovalPolicies(t *testing.T) {
 			registry := NewRegistry()
 			definition := agents.DefineAI(agents.AIConfig{Tools: map[string]ai.Tool{"dangerous": tool}})
 			err := RegisterAI(registry, "assistant", definition)
-			if err == nil || !strings.Contains(err.Error(), "native approval delivery is not available") {
+			if err != nil {
 				t.Fatalf("RegisterAI error = %v", err)
 			}
-			if _, ok := registry.Lookup("assistant"); ok {
-				t.Fatal("approval-gated AI agent was registered")
+			if _, ok := registry.Lookup("assistant"); !ok {
+				t.Fatal("approval-gated AI agent was not registered")
 			}
-			if err := registry.Register("bypass", AdaptAI(definition)); err == nil || !strings.Contains(err.Error(), "native approval delivery is not available") {
-				t.Fatalf("direct registry bypass error = %v", err)
+			if err := registry.Register("bypass", AdaptAI(definition)); err != nil {
+				t.Fatalf("direct registry registration error = %v", err)
 			}
 		})
 	}

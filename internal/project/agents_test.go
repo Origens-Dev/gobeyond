@@ -311,7 +311,16 @@ var Agent = gbagents.DefineAI(gbagents.AIConfig{
 		t.Fatal(err)
 	}
 	assertSourceTestContains(t,
+		filepath.Join(root, GeneratedDir, "registry", "site.go"),
+		"func AIDefinition(agentID string) (gbagents.AIDefinition, bool)",
+		"case \"operator\": return agent0.GobeyondDefinition(), true",
+		"cfg.AIDefinitionResolver = gbagents.AIDefinitionResolver(AIDefinition)",
+	)
+	assertSourceTestContains(t,
 		filepath.Join(root, GeneratedDir, "agents", definitions[0].Key, "gobeyond_register_gen.go"),
+		"func GobeyondDefinition() agents.AIDefinition",
+		`definition.AI.Instructions = "You are the operator."`,
+		`definition.AI.Revision = "b_voice_fixture"`,
 		`definition.AI.LiveModel = "gemini-live"`,
 		`definition.AI.ToolModel = "gemini-tool"`,
 		`definition.AI.VoiceName = "Puck"`,

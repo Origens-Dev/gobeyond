@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.105 - 2026-09-26
+
+- Add manifest-bound voice actions with exact-input user approval for HTTP and
+  Temporal Live agents.
+- Resolve compiled AI definitions through the request context so application
+  routes can expose trusted support-agent configuration without importing
+  generated route packages.
+- Expose all concurrent pending Temporal tool approvals to voice dispatchers.
+
 ## 0.1.0-alpha.100
 
 - Support portable compilation with explicit public runtime configuration, safe browser bootstrap and deployment revision checks.

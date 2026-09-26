@@ -44,6 +44,17 @@ func VoiceControlPolicy(tool AITool) (VoiceToolPolicy, bool) {
 	return p, ok
 }
 
+// VoiceActionPolicy identifies an authored app action selected for authenticated
+// voice dispatch. The typed marker can only be emitted by DefineTool.
+func VoiceActionPolicy(tool AITool) bool {
+	ns, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)
+	if !ok {
+		return false
+	}
+	enabled, _ := ns["voiceAction"].(bool)
+	return enabled
+}
+
 // CompileVoiceManifest freezes opt-in tools from the compiled definition. The
 // generated registration injects AI.Revision before this function is called.
 // Unmarked tools (including native search) never enter the remote manifest.
@@ -54,11 +65,15 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 	for id, t := range d.AI.Tools {
 		p, ok := VoiceControlPolicy(t)
 		read, isRead := VoiceRemoteReadPolicy(t)
-		if ok && isRead {
-			return m, nil, "", errors.New("tool cannot be read and call control")
+		action := VoiceActionPolicy(t)
+		if (ok && isRead) || (action && (ok || isRead)) {
+			return m, nil, "", errors.New("voice tool cannot have multiple execution policies")
 		}
-		if !ok && !isRead {
+		if !ok && !isRead && !action {
 			continue
+		}
+		if action && !t.RequiresApproval {
+			return m, nil, "", fmt.Errorf("voice action %s must require approval", id)
 		}
 		name := t.Name
 		if name == "" {
@@ -73,7 +88,12 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 			return m, nil, "", e
 		}
 		spec := voicecontract.Tool{ID: id, Name: name, Description: t.Description, InputSchema: c, SchemaDigest: voicecontract.Digest(c), DestinationClasses: p.DestinationClasses, TargetKinds: p.TargetKinds, InputModes: p.InputModes, HandoffMode: p.HandoffMode, TerminalBehavior: p.TerminalBehavior, TerminalOnSuccess: p.TerminalOnSuccess, ExecutionKind: "call_control"}
-		if isRead {
+		if action {
+			spec.ExecutionKind = "action"
+			spec.RequiresApproval = true
+			spec.DestinationClasses = []string{}
+			spec.TerminalOnSuccess = false
+		} else if isRead {
 			output, e := json.Marshal(t.OutputSchema)
 			if e != nil {
 				return m, nil, "", e
