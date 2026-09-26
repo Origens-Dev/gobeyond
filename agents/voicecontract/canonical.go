@@ -275,7 +275,7 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 		}
 		t.InputSchema = c
 		if t.IsRead() {
-			if len(t.DestinationClasses) != 0 || t.TerminalOnSuccess || t.MaxResultBytes < 1 || t.MaxResultBytes > 4096 {
+			if t.RequiresApproval || len(t.DestinationClasses) != 0 || t.TerminalOnSuccess || t.MaxResultBytes < 1 || t.MaxResultBytes > 4096 {
 				return nil, "", errors.New("invalid read policy")
 			}
 			output, e := CanonicalJSON(t.OutputSchema, MaxSchemaBytes)
@@ -296,8 +296,12 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 				return nil, "", errors.New("read output schema digest mismatch")
 			}
 			t.OutputSchema = output
+		} else if t.IsAction() {
+			if !t.RequiresApproval || len(t.DestinationClasses) != 0 || len(t.TargetKinds) != 0 || len(t.InputModes) != 0 || t.HandoffMode != "" || t.TerminalBehavior != "" || t.TerminalOnSuccess || len(t.OutputSchema) > 0 || t.OutputSchemaDigest != "" || t.MaxResultBytes != 0 {
+				return nil, "", errors.New("invalid action policy")
+			}
 		} else {
-			if t.ExecutionKind != "" && t.ExecutionKind != "call_control" || len(t.OutputSchema) > 0 || t.OutputSchemaDigest != "" || t.MaxResultBytes != 0 {
+			if t.ExecutionKind != "" && t.ExecutionKind != "call_control" || t.RequiresApproval || len(t.OutputSchema) > 0 || t.OutputSchemaDigest != "" || t.MaxResultBytes != 0 {
 				return nil, "", errors.New("invalid execution policy")
 			}
 			if e := classes(t.DestinationClasses); e != nil {

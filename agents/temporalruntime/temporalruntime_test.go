@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 
@@ -20,6 +19,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 )
 
@@ -351,7 +351,7 @@ func TestStartAIAgentResolvesToolQueuesAndRealtimeBoundaries(t *testing.T) {
 	}
 }
 
-func TestRegisterAIRejectsApprovalPolicies(t *testing.T) {
+func TestRegisterAIAcceptsApprovalPolicies(t *testing.T) {
 	model := ai.NewMockLanguageModel("assistant")
 	provider := ai.NewMockProvider()
 	provider.LanguageModels["assistant"] = model
@@ -367,7 +367,7 @@ func TestRegisterAIRejectsApprovalPolicies(t *testing.T) {
 			})
 			runtimes := NewAIRegistry()
 			err := RegisterAI(nil, runtimes, "support-agent", definition)
-			if err == nil || !strings.Contains(err.Error(), "native approval delivery is not available") {
+			if err != nil {
 				t.Fatalf("RegisterAI error = %v", err)
 			}
 		})
@@ -454,7 +454,7 @@ func TestRespondSignalsDurableAIApproval(t *testing.T) {
 	call := durableStartCall()
 	err = dispatcher.Respond(context.Background(), httpruntime.AdaptAI(definition), httpruntime.RespondCall{
 		Session: call.Session, Run: call.Run,
-		Response: json.RawMessage(`{"interactionId":"approval-1","answers":{"approved":true,"reason":"looks safe"}}`),
+		Response: json.RawMessage(`{"interactionId":"approval-1","answers":{"approved":true,"reason":"looks safe","toolCallId":"call-1","inputHash":"abc123"}}`),
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -463,8 +463,14 @@ func TestRespondSignalsDurableAIApproval(t *testing.T) {
 		t.Fatalf("signal = %q %q", fake.signalWorkflowID, fake.signalName)
 	}
 	response, ok := fake.signalValue.(temporalai.ToolApprovalResponse)
-	if !ok || !response.Approved || response.Reason != "looks safe" {
+	if !ok || !response.Approved || response.Reason != "looks safe" || response.ToolCallID != "call-1" || response.InputHash != "abc123" {
 		t.Fatalf("signal value = %#v", fake.signalValue)
+	}
+	if err := dispatcher.Respond(context.Background(), httpruntime.AdaptAI(definition), httpruntime.RespondCall{
+		Session: call.Session, Run: call.Run,
+		Response: json.RawMessage(`{"interactionId":"approval-1","answers":{"approved":true}}`),
+	}, nil); err == nil {
+		t.Fatal("durable response without call/input binding was accepted")
 	}
 }
 
@@ -539,6 +545,10 @@ func (fake *fakeClient) SignalWorkflow(_ context.Context, workflowID, _ string, 
 	fake.signalName = signalName
 	fake.signalValue = value
 	return nil
+}
+
+func (*fakeClient) QueryWorkflow(context.Context, string, string, string, ...interface{}) (converter.EncodedValue, error) {
+	return nil, errors.New("no approval query in fake workflow")
 }
 
 func (fake *fakeClient) Close() {

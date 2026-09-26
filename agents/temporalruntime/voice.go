@@ -378,7 +378,6 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 	}
 }
 
-
 func liveToolBatchAllRemoteReads(handle *geminiLiveHandle, call *genai.LiveServerToolCall) bool {
 	if handle == nil || call == nil || len(call.FunctionCalls) == 0 {
 		return false
@@ -494,7 +493,7 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 						Response: map[string]any{"error": fmt.Sprintf("unknown tool %q", name)}}
 					return
 				}
-				result, err := tool.Execute(callCtx, ai.ToolCall{
+				result, err := executeVoiceAgentTool(callCtx, tool, ai.ToolCall{
 					ToolCallID: functionCall.ID, ToolName: name, Input: functionCall.Args,
 				}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": handle.cfg.Actor}})
 				response := map[string]any{"result": result}

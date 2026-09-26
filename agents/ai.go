@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
@@ -99,6 +98,36 @@ type AIDefinition struct {
 	Slots  Slots
 }
 
+// AIDefinitionResolver resolves compiler-registered AI definitions by their
+// stable agent ID. App route handlers receive the resolver through Context so
+// they can inspect compiled prompt/tool metadata without importing generated
+// agent packages themselves.
+type AIDefinitionResolver func(agentID string) (AIDefinition, bool)
+
+type aiDefinitionResolverContextKey struct{}
+
+// WithAIDefinitionResolver adds the server-owned definition resolver to a
+// request context. It is metadata access only; it does not authorize tool use.
+func WithAIDefinitionResolver(ctx context.Context, resolver AIDefinitionResolver) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, aiDefinitionResolverContextKey{}, resolver)
+}
+
+// AIDefinitionFromContext returns a registered compiled AI definition when the
+// hosting runtime installed a resolver with WithAIDefinitionResolver.
+func AIDefinitionFromContext(ctx context.Context, agentID string) (AIDefinition, bool) {
+	if ctx == nil {
+		return AIDefinition{}, false
+	}
+	resolver, _ := ctx.Value(aiDefinitionResolverContextKey{}).(AIDefinitionResolver)
+	if resolver == nil {
+		return AIDefinition{}, false
+	}
+	return resolver(agentID)
+}
+
 // DefineAI declares a framework-owned conversational AI agent. The authored
 // folder must also contain instructions.md; the project compiler embeds it in
 // the generated registration.
@@ -110,29 +139,11 @@ func DefineAI(config AIConfig, slots ...Slots) AIDefinition {
 	return definition
 }
 
-// ValidateRegistration rejects capabilities that the native GoBeyond agent
-// transport cannot complete safely yet. Approval-gated tools must not enter
-// either direct or durable registries until pending interactions are delivered
-// through the native session event contract.
+// ValidateRegistration rejects capabilities that cannot be represented by
+// the native GoBeyond agent transport.
 func (definition AIDefinition) ValidateRegistration() error {
 	if _, _, _, err := definition.CompileVoiceManifest(); err != nil {
 		return fmt.Errorf("compiled voice manifest: %w", err)
-	}
-	toolIDs := make([]string, 0, len(definition.AI.Tools))
-	for toolID := range definition.AI.Tools {
-		toolIDs = append(toolIDs, toolID)
-	}
-	sort.Strings(toolIDs)
-	for _, toolID := range toolIDs {
-		tool := definition.AI.Tools[toolID]
-		if !tool.RequiresApproval && tool.NeedsApproval == nil {
-			continue
-		}
-		name := strings.TrimSpace(tool.Name)
-		if name == "" {
-			name = toolID
-		}
-		return fmt.Errorf("AI agent tool %q requires approval, but native approval delivery is not available", name)
 	}
 	return nil
 }

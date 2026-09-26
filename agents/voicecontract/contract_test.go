@@ -46,6 +46,43 @@ func TestV2AgentContextAndTargetFence(t *testing.T) {
 	}
 }
 
+func TestV2PlatformSupportScopeIsUserBoundAndNetworkIndependent(t *testing.T) {
+	c := v2TestContext()
+	c.NetworkID = ""
+	c.Scope = Scope{Kind: "platform_support"}
+	if err := c.ValidateForVersion(Version); err != nil {
+		t.Fatalf("valid platform support context: %v", err)
+	}
+	if err := c.ValidateForVersion(LegacyVersion); err == nil {
+		t.Fatal("accepted platform support scope on legacy wire")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Context)
+	}{
+		{"network bound", func(c *Context) { c.NetworkID = "network_1" }},
+		{"non-user actor", func(c *Context) { c.ActorKind = "service" }},
+		{"line bound", func(c *Context) { c.Scope.LineID = "line_1" }},
+		{"DID bound", func(c *Context) { c.Scope.DIDID = "did_1" }},
+		{"recipient revision bound", func(c *Context) { c.Scope.RecipientSetRevision = "revision_1" }},
+		{"selected line bound", func(c *Context) { c.Scope.SelectedLineID = "line_1" }},
+		{"missing actor identity", func(c *Context) { c.ActorID = "" }},
+		{"missing session identity", func(c *Context) { c.SessionID = "" }},
+		{"missing agent identity", func(c *Context) { c.AgentID = "" }},
+		{"missing hop identity", func(c *Context) { c.HopID = "" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bad := c
+			tt.mutate(&bad)
+			if err := bad.ValidateForVersion(Version); err == nil {
+				t.Fatal("accepted invalid platform support context")
+			}
+		})
+	}
+}
+
 func TestV2OneOfInputIsClosedAndExclusive(t *testing.T) {
 	schema := []byte(`{"oneOf":[{"type":"object","properties":{"destination_id":{"type":"string","maxLength":128,"minLength":1}},"required":["destination_id"],"additionalProperties":false},{"type":"object","properties":{"phone_number":{"type":"string","maxLength":16,"minLength":8}},"required":["phone_number"],"additionalProperties":false}]}`)
 	canonicalSchema, err := CanonicalJSON(schema, MaxSchemaBytes)

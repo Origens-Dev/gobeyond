@@ -485,6 +485,12 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 		for index, definition := range agents {
 			imports = append(imports, fmt.Sprintf(`agent%d "%s"`, index, path.Join(websiteImport, GeneratedDir, "agents", definition.Key)))
 		}
+		for _, definition := range agents {
+			if definition.Kind == AgentKindAI {
+				imports = append(imports, `gbagents "github.com/Origens-Dev/gobeyond/agents"`)
+				break
+			}
+		}
 	}
 	if hasMiddleware {
 		imports = append(imports, `middleware "`+websiteImport+`"`)
@@ -533,9 +539,26 @@ func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, acti
 		b.WriteString("\tResolveAgentActor        httpruntime.ActorResolver\n")
 		b.WriteString("\tAllowLoopbackAgentActor bool\n")
 	}
-	b.WriteString(`}
-
-func New(opts Options) (*gbruntime.Server, func() error, error) {
+	b.WriteString("}\n")
+	if len(agents) > 0 {
+		hasAIAgent := false
+		for _, definition := range agents {
+			if definition.Kind == AgentKindAI {
+				hasAIAgent = true
+				break
+			}
+		}
+		if hasAIAgent {
+			b.WriteString("func AIDefinition(agentID string) (gbagents.AIDefinition, bool) {\n\tswitch agentID {\n")
+			for index, definition := range agents {
+				if definition.Kind == AgentKindAI {
+					b.WriteString(fmt.Sprintf("\tcase %q: return agent%d.GobeyondDefinition(), true\n", definition.ID, index))
+				}
+			}
+			b.WriteString("\tdefault: return gbagents.AIDefinition{}, false\n\t}\n}\n\n")
+		}
+	}
+	b.WriteString(`func New(opts Options) (*gbruntime.Server, func() error, error) {
 	pages := []gbruntime.PageRoute{
 `)
 	for _, page := range pages {
@@ -617,6 +640,12 @@ func New(opts Options) (*gbruntime.Server, func() error, error) {
 		APIs:          apis,
 	}
 `)
+	for _, definition := range agents {
+		if definition.Kind == AgentKindAI {
+			b.WriteString("\tcfg.AIDefinitionResolver = gbagents.AIDefinitionResolver(AIDefinition)\n")
+			break
+		}
+	}
 	b.WriteString(`	if opts.FetchOrigin == nil {
 		fetchOrigin, err := gbruntime.FetchOriginFromEnv()
 		if err != nil {

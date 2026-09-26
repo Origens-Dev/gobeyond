@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/Origens-Dev/go-ai v0.1.0-alpha.2
-	github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.9
+	github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.10
 	github.com/aws/aws-lambda-go v1.49.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3

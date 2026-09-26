@@ -12,10 +12,13 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/Origens-Dev/go-temporal-ai-sdk/temporalai"
 )
 
 const (
 	hostAgentExecutePath   = "/v1/agents/execute"
+	hostWorkflowQueryPath  = "/v1/workflows/query"
 	hostWorkflowSignalPath = "/v1/workflows/signal"
 	hostWorkflowCancelPath = "/v1/workflows/cancel"
 )
@@ -36,6 +39,11 @@ type hostedAgentExecuteRequest struct {
 
 type hostedAgentExecuteResponse struct {
 	Result json.RawMessage `json:"result"`
+}
+
+type hostedWorkflowQueryRequest struct {
+	WorkflowID string `json:"workflow_id"`
+	QueryType  string `json:"query_type"`
 }
 
 // NewLazyFromEnv chooses the site-bound host broker in a hosted slot and the
@@ -92,6 +100,20 @@ func (client *hostedAgentClient) signal(ctx context.Context, workflowID, signalN
 		"signal_name": signalName,
 		"args":        []any{argument},
 	}, nil)
+}
+
+func (client *hostedAgentClient) queryApproval(ctx context.Context, workflowID string) (temporalai.ToolApprovalSnapshot, error) {
+	var response hostedAgentExecuteResponse
+	if err := client.post(ctx, hostWorkflowQueryPath, hostedWorkflowQueryRequest{
+		WorkflowID: workflowID, QueryType: temporalai.ToolApprovalQueryName,
+	}, &response); err != nil {
+		return temporalai.ToolApprovalSnapshot{}, err
+	}
+	var snapshot temporalai.ToolApprovalSnapshot
+	if err := json.Unmarshal(response.Result, &snapshot); err != nil {
+		return temporalai.ToolApprovalSnapshot{}, fmt.Errorf("decode hosted workflow approval query: %w", err)
+	}
+	return snapshot, nil
 }
 
 func (client *hostedAgentClient) cancel(ctx context.Context, workflowID string) error {

@@ -19,12 +19,12 @@ func (c Context) ValidateForVersion(version string) error {
 		return errors.New("invalid context version")
 	}
 	if v2(version) {
-		if c.Scope.Kind != "agent" || !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops {
+		if (c.Scope.Kind != "agent" && c.Scope.Kind != "platform_support") || !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops {
 			return errors.New("invalid agent context identity")
 		}
 		return nil
 	}
-	if c.Scope.Kind == "agent" || c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
+	if c.Scope.Kind == "agent" || c.Scope.Kind == "platform_support" || c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
 		return errors.New("v2 context on legacy wire")
 	}
 	return nil
@@ -44,6 +44,10 @@ func (s Scope) Validate() error {
 		if !identifier(s.LineID) || s.DIDID != "" || s.RecipientSetRevision != "" || s.SelectedLineID != "" {
 			return errors.New("invalid agent scope")
 		}
+	case "platform_support":
+		if s.LineID != "" || s.DIDID != "" || s.RecipientSetRevision != "" || s.SelectedLineID != "" {
+			return errors.New("invalid platform support scope")
+		}
 	default:
 		return errors.New("unknown scope kind")
 	}
@@ -53,10 +57,17 @@ func (c Context) Validate() error {
 	if !callIdentifier(c.CallID) {
 		return errors.New("invalid call identifier")
 	}
-	for _, s := range []string{c.ExecutionID, c.OrganizationID, c.ProjectID, c.EnvironmentID, c.NetworkID, c.SessionID, c.ActorID, c.AgentID, c.AgentRevision} {
+	for _, s := range []string{c.ExecutionID, c.OrganizationID, c.ProjectID, c.EnvironmentID, c.SessionID, c.ActorID, c.AgentID, c.AgentRevision} {
 		if !identifier(s) {
 			return errors.New("invalid context identifier")
 		}
+	}
+	if c.Scope.Kind == "platform_support" {
+		if c.NetworkID != "" || c.ActorKind != "user" {
+			return errors.New("invalid platform support identity")
+		}
+	} else if !identifier(c.NetworkID) {
+		return errors.New("invalid context identifier")
 	}
 	if c.ActorKind != "user" && c.ActorKind != "external_call" && c.ActorKind != "service" {
 		return errors.New("invalid actor kind")
@@ -68,7 +79,7 @@ func (c Context) Validate() error {
 		return err
 	}
 	if c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
-		if !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops || c.Scope.Kind != "agent" {
+		if !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops || (c.Scope.Kind != "agent" && c.Scope.Kind != "platform_support") {
 			return errors.New("invalid per-hop identity")
 		}
 	}

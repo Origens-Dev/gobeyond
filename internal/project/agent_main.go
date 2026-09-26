@@ -17,6 +17,25 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 		source.WriteString("import temporalruntime \"github.com/Origens-Dev/gobeyond/agents/temporalruntime\"\n")
 		source.WriteString("import \"go.temporal.io/sdk/worker\"\n")
 	}
+	if definition.Kind == AgentKindAI {
+		source.WriteString("import agents \"github.com/Origens-Dev/gobeyond/agents\"\n")
+		source.WriteString("\nfunc GobeyondDefinition() agents.AIDefinition {\n")
+		source.WriteString("\tdefinition := Agent\n")
+		source.WriteString(fmt.Sprintf("\tdefinition.Config.TaskQueue = %q\n", definition.TaskQueue))
+		source.WriteString(fmt.Sprintf("\tdefinition.AI.TaskQueue = %q\n", definition.TaskQueue))
+		source.WriteString(fmt.Sprintf("\tdefinition.AI.Instructions = %q\n", definition.Instructions))
+		source.WriteString(fmt.Sprintf("\tdefinition.AI.Revision = %q\n", definition.Revision))
+		if definition.LiveModel != "" {
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.LiveModel = %q\n", definition.LiveModel))
+		}
+		if definition.ToolModel != "" {
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.ToolModel = %q\n", definition.ToolModel))
+		}
+		if definition.VoiceName != "" {
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceName = %q\n", definition.VoiceName))
+		}
+		source.WriteString("\treturn definition\n}\n")
+	}
 	source.WriteString("\nfunc GobeyondRegister(registry httpruntime.Registerer) error {\n")
 	source.WriteString("\tdefinition := Agent\n")
 	source.WriteString(fmt.Sprintf("\tdefinition.Config.TaskQueue = %q\n", definition.TaskQueue))

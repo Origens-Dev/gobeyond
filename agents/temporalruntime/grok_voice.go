@@ -374,7 +374,7 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 				outputs[i] = map[string]any{"call_id": call.CallID, "output": map[string]any{"error": fmt.Sprintf("unknown tool %q", call.Name)}}
 				return
 			}
-			result, err := tool.Execute(toolCtx, ai.ToolCall{ToolCallID: call.CallID, ToolName: call.Name, Input: call.Arguments}, ai.ToolExecutionOptions{
+			result, err := executeVoiceAgentTool(toolCtx, tool, ai.ToolCall{ToolCallID: call.CallID, ToolName: call.Name, Input: call.Arguments}, ai.ToolExecutionOptions{
 				Context: map[string]any{"gobeyondActor": h.cfg.Actor},
 			})
 			output := map[string]any{"result": result}
