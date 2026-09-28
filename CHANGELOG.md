@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Include approval-gated `VoiceAction` tools in compiler-generated voice manifests.
+
 ## 0.1.0-alpha.105 - 2026-09-26
 
 - Add manifest-bound voice actions with exact-input user approval for HTTP and
