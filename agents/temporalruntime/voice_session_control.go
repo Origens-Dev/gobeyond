@@ -84,7 +84,7 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 		c = &voicecontract.Command{Version: r.Version, Context: r.Context, ToolID: r.ToolID, ToolCallID: r.ToolCallID, InputDigest: r.InputDigest, Arguments: r.Arguments}
 	}
 	validControl := c != nil && c.Validate() == nil && ((c.Version == voicecontract.LegacyVersion && c.Context.Scope.Kind == "operator" && c.ToolID == "dial-contact") || (c.Version == voicecontract.Version && c.Context.Scope.Kind == "agent"))
-	validRead := c != nil && c.Context.Scope.Kind == "agent" && c.Version == voicecontract.Version || c != nil && c.Context.Scope.Kind == "operator" && c.Version == voicecontract.LegacyVersion
+	validRead := c != nil && ((c.Version == voicecontract.Version && (c.Context.Scope.Kind == "agent" || c.Context.Scope.Kind == "platform_support")) || (c.Version == voicecontract.LegacyVersion && c.Context.Scope.Kind == "operator"))
 	if c == nil || (!read && !validControl) || (read && !validRead) || len(req.Grant) == 0 || len(req.Grant) > 8192 {
 		return VoiceSessionExecuteToolResult{}, errors.New("invalid control request")
 	}

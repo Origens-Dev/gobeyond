@@ -229,7 +229,7 @@ func (s SoftphoneEvent) Validate() error {
 }
 
 func (r ReadRequest) Validate() error {
-	if !validVersion(r.Version) || r.Context.ValidateForVersion(r.Version) != nil || (r.Version == LegacyVersion && r.Context.Scope.Kind != "operator") || (r.Version == Version && r.Context.Scope.Kind != "agent") || !identifier(r.ToolID) || !identifier(r.ToolCallID) {
+	if !validVersion(r.Version) || r.Context.ValidateForVersion(r.Version) != nil || (r.Version == LegacyVersion && r.Context.Scope.Kind != "operator") || (r.Version == Version && r.Context.Scope.Kind != "agent" && r.Context.Scope.Kind != "platform_support") || !identifier(r.ToolID) || !identifier(r.ToolCallID) {
 		return errors.New("invalid remote read")
 	}
 	raw, err := CanonicalJSON(r.Arguments, 1024)

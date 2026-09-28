@@ -44,7 +44,16 @@ func (s *voiceReadWorkflowState) execute(ctx workflow.Context, in VoiceSessionIn
 		}
 		return s.results[key], nil
 	}
-	if s.budget.count >= 2 {
+	limit := 2
+	if r.Context.Scope.Kind == "platform_support" {
+		// Support can inspect several networks in one session. Keep reads bounded
+		// by the same per-session limit used for authored voice actions.
+		limit = maxVoiceSessionToolCalls
+	}
+	if s.budget.count >= limit {
+		if r.Context.Scope.Kind == "platform_support" {
+			return VoiceSessionExecuteToolResult{Error: "support read budget exhausted"}, nil
+		}
 		return VoiceSessionExecuteToolResult{Error: "directory search budget exhausted"}, nil
 	}
 	s.budget.count++
