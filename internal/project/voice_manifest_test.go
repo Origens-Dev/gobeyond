@@ -1,12 +1,15 @@
 package project
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"strings"
 	"testing"
 
+	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 )
 
@@ -164,5 +167,47 @@ func TestVoiceManifestRejectsControlAndReadOnSameTool(t *testing.T) {
 	}
 	if _, err = parseVoiceTool("dial-contact", expr.(*ast.CallExpr)); err == nil {
 		t.Fatal("accepted dual voice policy")
+	}
+}
+
+func TestVoiceActionCompilerRuntimeManifestParity(t *testing.T) {
+	const source = `agents.DefineTool(agents.ToolConfig{
+ Name:"rename-network", Description:"Rename a network after approval.",
+ RequiresApproval:true, VoiceAction:true,
+ InputSchema:map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{"name":map[string]any{"type":"string","maxLength":120}},"required":[]string{"name"}},
+ }, handler)`
+	expr, err := parser.ParseExpr(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, err := parseVoiceTool("rename-network", expr.(*ast.CallExpr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tool == nil {
+		t.Fatal("compiler omitted action")
+	}
+	defs := []AgentDefinition{{ID: "support", Revision: "build-1", Tools: []AgentToolDefinition{{ID: "rename-network", VoiceControl: tool}}}}
+	published := portableAgentsManifest(defs, "build-1")
+	if err := attachVoiceManifests(&published, defs); err != nil {
+		t.Fatal(err)
+	}
+	var input any
+	if err := json.Unmarshal(tool.InputSchema, &input); err != nil {
+		t.Fatal(err)
+	}
+	runtime := agents.DefineAI(agents.AIConfig{Revision: "build-1", Tools: map[string]agents.AITool{
+		"rename-network": agents.DefineTool(agents.ToolConfig{Name: tool.Name, Description: tool.Description, InputSchema: input, VoiceAction: true, RequiresApproval: true}, func(context.Context, agents.Actor, map[string]any) (string, error) { return "", nil }),
+	}})
+	_, runtimeRaw, runtimeDigest, err := runtime.CompileVoiceManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildRaw, buildDigest, err := voicecontract.FreezeManifest(*published.Agents[0].VoiceManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeDigest != buildDigest || !bytes.Equal(runtimeRaw, buildRaw) {
+		t.Fatalf("compiler/runtime manifest mismatch\nbuild: %s\nruntime: %s", buildRaw, runtimeRaw)
 	}
 }
