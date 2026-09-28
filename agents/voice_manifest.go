@@ -91,7 +91,8 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		if action {
 			spec.ExecutionKind = "action"
 			spec.RequiresApproval = true
-			spec.DestinationClasses = []string{}
+			// Match the compiler-published action manifest representation.
+			spec.DestinationClasses = nil
 			spec.TerminalOnSuccess = false
 		} else if isRead {
 			output, e := json.Marshal(t.OutputSchema)
