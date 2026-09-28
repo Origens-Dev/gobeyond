@@ -30,98 +30,129 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 	}
 	controlExpr, hasControl := fields["VoiceControl"]
 	readExpr, hasRead := fields["VoiceRemoteRead"]
+	readPolicy := hasRead && !isNilVoicePolicy(readExpr)
+	actionExpr, hasAction := fields["VoiceAction"]
+	action := false
+	if hasAction {
+		value, err := voiceLiteral(actionExpr, 0)
+		if err != nil {
+			return nil, fmt.Errorf("voice action flag must be a literal boolean")
+		}
+		var ok bool
+		action, ok = value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("voice action flag must be a literal boolean")
+		}
+	}
 	if hasControl && hasRead {
 		return nil, fmt.Errorf("tool cannot be read and call control")
 	}
-	if !hasControl && !hasRead {
-		return nil, nil
-	}
-	policyExpr := controlExpr
-	if hasRead {
-		policyExpr = readExpr
-	}
-	if ident, ok := policyExpr.(*ast.Ident); ok && ident.Name == "nil" {
-		return nil, nil
-	}
-	if u, ok := policyExpr.(*ast.UnaryExpr); ok && u.Op == token.AND {
-		policyExpr = u.X
-	}
-	pl, ok := policyExpr.(*ast.CompositeLit)
-	if !ok {
-		if hasRead {
-			return nil, fmt.Errorf("voice remote read policy must be an inline literal")
+	var tool voicecontract.Tool
+	if action {
+		if hasControl && !isNilVoicePolicy(controlExpr) || hasRead && !isNilVoicePolicy(readExpr) {
+			return nil, fmt.Errorf("tool cannot combine voice action with read or call control")
 		}
-		return nil, fmt.Errorf("voice control policy must be an inline literal")
-	}
-	tool := voicecontract.Tool{ID: id, Name: id, ExecutionKind: "call_control"}
-	if hasRead {
-		tool.ExecutionKind = "read"
-	}
-	for _, e := range pl.Elts {
-		kv, ok := e.(*ast.KeyValueExpr)
+		approvalExpr, ok := fields["RequiresApproval"]
 		if !ok {
-			return nil, fmt.Errorf("voice policy requires named fields")
+			return nil, fmt.Errorf("voice action requires RequiresApproval: true")
 		}
-		key, ok := kv.Key.(*ast.Ident)
-		if !ok {
-			return nil, fmt.Errorf("invalid voice policy field")
+		approval, err := voiceLiteral(approvalExpr, 0)
+		approved, isBool := approval.(bool)
+		if err != nil || !isBool || !approved {
+			return nil, fmt.Errorf("voice action requires RequiresApproval: true")
 		}
-		v, err := voiceLiteral(kv.Value, 0)
-		if err != nil {
-			return nil, err
+		tool = voicecontract.Tool{ID: id, Name: id, ExecutionKind: "action", RequiresApproval: true}
+	} else {
+		if !hasControl && !hasRead {
+			return nil, nil
 		}
+		policyExpr := controlExpr
 		if hasRead {
-			switch key.Name {
-			case "MaxResultBytes":
-				n, ok := v.(int64)
-				if !ok || n < 1 || n > 4096 {
-					return nil, fmt.Errorf("max result bytes must be an int between 1 and 4096")
+			policyExpr = readExpr
+		}
+		if isNilVoicePolicy(policyExpr) {
+			return nil, nil
+		}
+		if u, ok := policyExpr.(*ast.UnaryExpr); ok && u.Op == token.AND {
+			policyExpr = u.X
+		}
+		pl, ok := policyExpr.(*ast.CompositeLit)
+		if !ok {
+			if hasRead {
+				return nil, fmt.Errorf("voice remote read policy must be an inline literal")
+			}
+			return nil, fmt.Errorf("voice control policy must be an inline literal")
+		}
+		tool = voicecontract.Tool{ID: id, Name: id, ExecutionKind: "call_control"}
+		if hasRead {
+			tool.ExecutionKind = "read"
+		}
+		for _, e := range pl.Elts {
+			kv, ok := e.(*ast.KeyValueExpr)
+			if !ok {
+				return nil, fmt.Errorf("voice policy requires named fields")
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok {
+				return nil, fmt.Errorf("invalid voice policy field")
+			}
+			v, err := voiceLiteral(kv.Value, 0)
+			if err != nil {
+				return nil, err
+			}
+			if hasRead {
+				switch key.Name {
+				case "MaxResultBytes":
+					n, ok := v.(int64)
+					if !ok || n < 1 || n > 4096 {
+						return nil, fmt.Errorf("max result bytes must be an int between 1 and 4096")
+					}
+					tool.MaxResultBytes = int(n)
+				default:
+					return nil, fmt.Errorf("unsupported voice read policy field %s", key.Name)
 				}
-				tool.MaxResultBytes = int(n)
+				continue
+			}
+			switch key.Name {
+			case "TerminalOnSuccess":
+				b, ok := v.(bool)
+				if !ok {
+					return nil, fmt.Errorf("terminal policy must be boolean")
+				}
+				tool.TerminalOnSuccess = b
+			case "DestinationClasses":
+				a, err := literalStrings(v, "destination class")
+				if err != nil {
+					return nil, err
+				}
+				tool.DestinationClasses = a
+			case "TargetKinds":
+				a, err := literalStrings(v, "target kind")
+				if err != nil {
+					return nil, err
+				}
+				tool.TargetKinds = a
+			case "InputModes":
+				a, err := literalStrings(v, "input mode")
+				if err != nil {
+					return nil, err
+				}
+				tool.InputModes = a
+			case "HandoffMode":
+				s, ok := v.(string)
+				if !ok {
+					return nil, fmt.Errorf("handoff mode must be a literal string")
+				}
+				tool.HandoffMode = s
+			case "TerminalBehavior":
+				s, ok := v.(string)
+				if !ok {
+					return nil, fmt.Errorf("terminal behavior must be a literal string")
+				}
+				tool.TerminalBehavior = s
 			default:
-				return nil, fmt.Errorf("unsupported voice read policy field %s", key.Name)
+				return nil, fmt.Errorf("unsupported voice policy field %s", key.Name)
 			}
-			continue
-		}
-		switch key.Name {
-		case "TerminalOnSuccess":
-			b, ok := v.(bool)
-			if !ok {
-				return nil, fmt.Errorf("terminal policy must be boolean")
-			}
-			tool.TerminalOnSuccess = b
-		case "DestinationClasses":
-			a, err := literalStrings(v, "destination class")
-			if err != nil {
-				return nil, err
-			}
-			tool.DestinationClasses = a
-		case "TargetKinds":
-			a, err := literalStrings(v, "target kind")
-			if err != nil {
-				return nil, err
-			}
-			tool.TargetKinds = a
-		case "InputModes":
-			a, err := literalStrings(v, "input mode")
-			if err != nil {
-				return nil, err
-			}
-			tool.InputModes = a
-		case "HandoffMode":
-			s, ok := v.(string)
-			if !ok {
-				return nil, fmt.Errorf("handoff mode must be a literal string")
-			}
-			tool.HandoffMode = s
-		case "TerminalBehavior":
-			s, ok := v.(string)
-			if !ok {
-				return nil, fmt.Errorf("terminal behavior must be a literal string")
-			}
-			tool.TerminalBehavior = s
-		default:
-			return nil, fmt.Errorf("unsupported voice policy field %s", key.Name)
 		}
 	}
 	for name, dst := range map[string]*string{"Name": &tool.Name, "Description": &tool.Description} {
@@ -147,7 +178,7 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 	}
 	tool.InputSchema = raw
 	tool.SchemaDigest = voicecontract.Digest(raw)
-	if hasRead {
+	if readPolicy {
 		if tool.MaxResultBytes < 1 {
 			return nil, fmt.Errorf("voice remote read requires MaxResultBytes")
 		}
@@ -171,6 +202,11 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 		return nil, err
 	}
 	return &tool, nil
+}
+
+func isNilVoicePolicy(expr ast.Expr) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == "nil"
 }
 
 func literalStrings(value any, label string) ([]string, error) {
@@ -253,8 +289,8 @@ func attachVoiceManifests(manifest *AgentsManifest, definitions []AgentDefinitio
 	for i, d := range definitions {
 		m := voicecontract.Manifest{Version: voicecontract.Version, Revision: d.Revision, CompiledRevision: d.Revision, Tools: []voicecontract.Tool{}}
 		for _, tool := range d.Tools {
-			// VoiceControl holds either a call-control or remote-read tool after
-			// parseVoiceTool; ExecutionKind distinguishes them for FreezeManifest.
+			// VoiceControl holds a call-control, remote-read, or approval-gated
+			// action tool after parseVoiceTool; ExecutionKind distinguishes them.
 			if tool.VoiceControl != nil {
 				m.Tools = append(m.Tools, *tool.VoiceControl)
 			}
