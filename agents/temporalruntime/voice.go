@@ -83,6 +83,7 @@ func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConf
 	if err != nil {
 		return nil, voice.StartResult{}, err
 	}
+	cfg = selectedControlConfig(cfg, selectedTools)
 	selectedDefinition := adapter.definition
 	selectedDefinition.AI.Tools = selectedTools
 	// CallControl selections already include verified dial tools (and remote
@@ -706,23 +707,6 @@ func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) 
 	if len(definition.AI.Tools) == 0 {
 		return nil
 	}
-	if len(enabled) == 0 {
-		out := make(map[string]ai.Tool)
-		for id, tool := range definition.AI.Tools {
-			_, remoteRead := agents.VoiceRemoteReadPolicy(tool)
-			if _, controlled := agents.VoiceControlPolicy(tool); !controlled && !remoteRead {
-				out[id] = tool
-			}
-		}
-		return out
-	}
-	allowed := make(map[string]struct{}, len(enabled))
-	for _, id := range enabled {
-		id = strings.TrimSpace(id)
-		if id != "" {
-			allowed[id] = struct{}{}
-		}
-	}
 	out := make(map[string]ai.Tool)
 	for key, tool := range definition.AI.Tools {
 		if _, read := agents.VoiceRemoteReadPolicy(tool); read {
@@ -735,10 +719,7 @@ func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) 
 		if name == "" {
 			name = key
 		}
-		canonical := strings.ReplaceAll(name, "-", "_")
-		if _, ok := allowed[name]; ok {
-			out[key] = tool
-		} else if _, ok := allowed[canonical]; ok {
+		if agents.VoiceToolEnabled(enabled, key, name) {
 			out[key] = tool
 		}
 	}

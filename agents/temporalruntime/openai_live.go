@@ -89,6 +89,11 @@ func (a *OpenAILiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, in
 	if err := cfg.Actor.Validate(); err != nil {
 		return nil, voice.StartResult{}, err
 	}
+	tools, err := controlTools(a.definition, cfg)
+	if err != nil {
+		return nil, voice.StartResult{}, err
+	}
+	cfg = selectedControlConfig(cfg, tools)
 	// Live has no authoritative output-audio-done event. A transfer requires
 	// finite application audio plus the verified downstream playout barrier.
 	if cfg.CallControl != nil {
@@ -97,10 +102,6 @@ func (a *OpenAILiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, in
 				return nil, voice.StartResult{}, errors.New("OpenAI Live transfer requires an application-controlled announcement")
 			}
 		}
-	}
-	tools, err := controlTools(a.definition, cfg)
-	if err != nil {
-		return nil, voice.StartResult{}, err
 	}
 	// Native search is a capability, not a call-control function. Merge only
 	// the already selected authored search tools, never arbitrary request names.

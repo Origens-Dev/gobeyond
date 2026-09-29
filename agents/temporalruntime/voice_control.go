@@ -107,7 +107,15 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 		if !ok {
 			return nil, errors.New("control tool absent from resolved definition")
 		}
-		out[name] = t
+		enabled := false
+		for id, candidate := range d.AI.Tools {
+			if id == name || candidate.Name == name {
+				enabled = enabled || agents.VoiceToolEnabled(cfg.EnabledToolIDs, id, candidate.Name)
+			}
+		}
+		if enabled {
+			out[name] = t
+		}
 	}
 	// Directory/search reads are not CallControl ToolNames, but they must remain
 	// model-visible beside verified dial tools. Include typed remote-read tools
@@ -120,7 +128,7 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 		if name == "" {
 			name = id
 		}
-		if name == "" {
+		if name == "" || !agents.VoiceToolEnabled(cfg.EnabledToolIDs, id, name) {
 			continue
 		}
 		if _, exists := out[name]; exists {
@@ -133,7 +141,6 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 	// web-search from Gemini Live (only hang_up was declared). Re-attach
 	// definition web-search tools when EnabledToolIDs admits them so Live can
 	// declare native Google Search / provider web_search.
-	enabledSearch := enabledWebSearchIDs(cfg.EnabledToolIDs)
 	for id, tool := range d.AI.Tools {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
@@ -142,7 +149,7 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 		if !isWebSearchTool(name) && !isWebSearchTool(id) {
 			continue
 		}
-		if len(enabledSearch) > 0 && !webSearchEnabled(enabledSearch, name, id) {
+		if !agents.VoiceToolEnabled(cfg.EnabledToolIDs, id, name) {
 			continue
 		}
 		if _, exists := out[name]; exists {
@@ -156,41 +163,23 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 	return out, nil
 }
 
-func enabledWebSearchIDs(enabled []string) map[string]struct{} {
-	if len(enabled) == 0 {
-		return nil
+// selectedControlConfig keeps callback dispatch aligned with declarations without
+// mutating the caller's verified control configuration.
+func selectedControlConfig(cfg voice.StartConfig, tools map[string]ai.Tool) voice.StartConfig {
+	if cfg.CallControl == nil {
+		return cfg
 	}
-	out := make(map[string]struct{}, len(enabled))
-	for _, id := range enabled {
-		id = strings.TrimSpace(id)
-		if !isWebSearchTool(id) {
-			continue
+	control := *cfg.CallControl
+	control.ToolNames = []string{}
+	for _, name := range cfg.CallControl.ToolNames {
+		if _, selected := tools[name]; selected {
+			control.ToolNames = append(control.ToolNames, name)
 		}
-		out[id] = struct{}{}
-		out[strings.ReplaceAll(id, "-", "_")] = struct{}{}
-		out[strings.ReplaceAll(id, "_", "-")] = struct{}{}
 	}
-	return out
+	cfg.CallControl = &control
+	return cfg
 }
 
-func webSearchEnabled(enabled map[string]struct{}, names ...string) bool {
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		if _, ok := enabled[name]; ok {
-			return true
-		}
-		if _, ok := enabled[strings.ReplaceAll(name, "-", "_")]; ok {
-			return true
-		}
-		if _, ok := enabled[strings.ReplaceAll(name, "_", "-")]; ok {
-			return true
-		}
-	}
-	return false
-}
 func invokeControl(ctx context.Context, cfg voice.StartConfig, call ai.ToolCall, barrier uint64) (any, bool, error) {
 	allowed := false
 	for _, name := range cfg.CallControl.ToolNames {
