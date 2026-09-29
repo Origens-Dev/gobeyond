@@ -47,8 +47,9 @@ type HostedStartRequest struct {
 	Instructions         string            `json:"instructions,omitempty"`
 	Metadata             map[string]string `json:"metadata,omitempty"`
 	Actor                ActorDTO          `json:"actor"`
-	// EnabledToolIDs is a canonical allowlist; hosts map IDs to fixed schemas.
-	EnabledToolIDs []string `json:"enabled_tool_ids,omitempty"`
+	// EnabledToolIDs selects authored capabilities. Preserve null (legacy
+	// defaults) versus [] (no optional tools) across the hosted boundary.
+	EnabledToolIDs []string `json:"enabled_tool_ids"`
 	// PCMProtocolVersion 3 enables explicit telephone playout barriers.
 	PCMProtocolVersion int               `json:"pcm_protocol_version,omitempty"`
 	PCMInSampleRate    int               `json:"pcm_in_sample_rate,omitempty"`

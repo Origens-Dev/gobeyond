@@ -58,6 +58,8 @@ func VoiceActionPolicy(tool AITool) bool {
 // CompileVoiceManifest freezes opt-in tools from the compiled definition. The
 // generated registration injects AI.Revision before this function is called.
 // Unmarked tools (including native search) never enter the remote manifest.
+// This manifest authorizes remote execution; it does not replace the session's
+// authored-tool selection. Native provider capabilities keep their own selection.
 // Voice-channel agents with zero VoiceControl tools still freeze an
 // identity-only manifest for platform admission.
 func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, string, error) {

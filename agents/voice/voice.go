@@ -81,8 +81,8 @@ type StartConfig struct {
 	VoiceName                string
 	Instructions             string
 	Metadata                 map[string]string
-	// EnabledToolIDs is the canonical platform capability allowlist. Empty
-	// means use the authored definition's tools for direct/local adapters.
+	// EnabledToolIDs selects authored tools: nil uses legacy defaults; a nonnil
+	// empty slice disables optional tools. Remote manifest authorization still applies.
 	EnabledToolIDs   []string
 	PCMInSampleRate  int
 	PCMOutSampleRate int
