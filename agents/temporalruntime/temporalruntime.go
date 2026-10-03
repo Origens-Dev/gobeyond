@@ -277,7 +277,7 @@ func (runtimes *AIRegistry) ResolveAgentRuntime(_ context.Context, scope activit
 	}
 	return activities.AgentRuntime{
 		AgentID: agentID, CompiledRevision: compiledRevision,
-		ModelProvider: definition.RuntimeProvider(), Tools: definition.AI.Tools,
+		ModelProvider: definition.RuntimeProvider(), Tools: agents.ModelTools(definition.AI.Tools),
 	}, nil
 }
 
@@ -821,7 +821,7 @@ func (dispatcher *Dispatcher) queryPendingApproval(ctx context.Context, workflow
 }
 
 func durableToolDefinitions(definition agents.AIDefinition, environment string) ([]activities.ToolDefinition, error) {
-	definitions := activities.ToolDefinitionsFromAI(definition.AI.Tools)
+	definitions := activities.ToolDefinitionsFromAI(agents.ModelTools(definition.AI.Tools))
 	for index := range definitions {
 		if definition.Config.Realtime {
 			definitions[index].ExecutionBoundary = activities.ToolExecutionBoundaryLocalActivity

@@ -33,6 +33,10 @@ type ToolConfig struct {
 	// VoiceControl opts an authored tool into the compiled call-control manifest.
 	VoiceControl    *VoiceToolPolicy
 	VoiceRemoteRead *VoiceReadPolicy
+	VoicePlayback   *VoicePlaybackPolicy
+	// VoicePlaybackCompletion is hidden from provider tool schemas. Only a trusted
+	// runtime completion receipt may invoke it; it is a mutation, never a read.
+	VoicePlaybackCompletion bool
 	// VoiceAction opts an authenticated application action into the voice
 	// manifest. It is intentionally separate from call control and reads.
 	// Action tools must also set RequiresApproval; the workflow enforces that
@@ -70,6 +74,22 @@ func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCa
 		metadata = ai.ProviderMetadata{
 			toolMetadataNamespace: map[string]any{toolTaskQueueKey: config.TaskQueue},
 		}
+	}
+	if config.VoicePlayback != nil || config.VoicePlaybackCompletion {
+		if metadata == nil {
+			metadata = ai.ProviderMetadata{}
+		}
+		ns, _ := metadata[toolMetadataNamespace].(map[string]any)
+		if ns == nil {
+			ns = map[string]any{}
+		}
+		if config.VoicePlayback != nil {
+			ns["voicePlayback"] = *config.VoicePlayback
+		}
+		if config.VoicePlaybackCompletion {
+			ns["voicePlaybackCompletion"] = voicePlaybackCompletionMarker{}
+		}
+		metadata[toolMetadataNamespace] = ns
 	}
 	if config.VoiceRemoteRead != nil {
 		if metadata == nil {

@@ -28,6 +28,9 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 			}
 		}
 	}
+	if tool, handled, err := parsePlaybackVoiceTool(id, fields); handled {
+		return tool, err
+	}
 	controlExpr, hasControl := fields["VoiceControl"]
 	readExpr, hasRead := fields["VoiceRemoteRead"]
 	readPolicy := hasRead && !isNilVoicePolicy(readExpr)

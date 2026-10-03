@@ -14,7 +14,7 @@ func ValidateBudgetPolicy(policy string, c Context, m Manifest) error {
 	if policy == "" {
 		return nil
 	}
-	if policy != BudgetPolicyOperatorMailboxV1 || c.Validate() != nil || c.AgentID != "call-operator" || c.Scope.Kind != "agent" {
+	if (policy != BudgetPolicyOperatorMailboxV1 && policy != BudgetPolicyOperatorMailboxPlaybackV1) || c.Validate() != nil || c.AgentID != "call-operator" || c.Scope.Kind != "agent" {
 		return errors.New("voice budget scope unavailable")
 	}
 	return validateBudgetManifest(m)
@@ -24,10 +24,14 @@ func validateBudgetManifest(m Manifest) error {
 	if m.BudgetPolicy == "" {
 		return nil
 	}
-	if m.BudgetPolicy != BudgetPolicyOperatorMailboxV1 || m.Version != Version {
+	if (m.BudgetPolicy != BudgetPolicyOperatorMailboxV1 && m.BudgetPolicy != BudgetPolicyOperatorMailboxPlaybackV1) || m.Version != Version {
 		return errors.New("unsupported voice budget policy")
 	}
 	required := map[string]bool{"list-text-messages": false, "get-text-message": false, "dial-contact": false}
+	if m.BudgetPolicy == BudgetPolicyOperatorMailboxPlaybackV1 {
+		required["play-text-message"] = false
+		required["complete-text-message-playback"] = false
+	}
 	for _, t := range m.Tools {
 		switch t.ID {
 		case "list-text-messages", "get-text-message":
@@ -39,6 +43,16 @@ func validateBudgetManifest(m Manifest) error {
 			if !t.IsRead() {
 				return errors.New("directory budget requires read tool")
 			}
+		case "play-text-message":
+			if m.BudgetPolicy != BudgetPolicyOperatorMailboxPlaybackV1 || !t.IsPlayback() || t.Playback == nil || t.Playback.CompletionToolID != "complete-text-message-playback" {
+				return errors.New("playback budget requires exact paired tool")
+			}
+			required[t.ID] = true
+		case "complete-text-message-playback":
+			if m.BudgetPolicy != BudgetPolicyOperatorMailboxPlaybackV1 || !t.IsPlaybackCompletion() {
+				return errors.New("completion budget requires hidden mutation")
+			}
+			required[t.ID] = true
 		case "dial-contact":
 			if t.IsRead() || t.IsAction() {
 				return errors.New("placement budget requires call control")
@@ -61,12 +75,21 @@ func validateBudgetManifest(m Manifest) error {
 }
 
 // ToolBudget selects independent fixed buckets after ValidateBudgetPolicy.
-// Marking is deliberately reserved and unavailable until scoped mutations exist.
+// Completion is a separate mutation bucket, available only to the new policy.
+// Classification does not authorize it: trusted clip receipt dispatch is mandatory.
 func ToolBudget(policy, toolID string) (bucket string, limit int, err error) {
-	if policy != BudgetPolicyOperatorMailboxV1 {
+	if policy != BudgetPolicyOperatorMailboxV1 && policy != BudgetPolicyOperatorMailboxPlaybackV1 {
 		return "", 0, errors.New("unsupported voice budget policy")
 	}
 	switch toolID {
+	case "play-text-message":
+		if policy == BudgetPolicyOperatorMailboxPlaybackV1 {
+			return "playback", 12, nil
+		}
+	case "complete-text-message-playback":
+		if policy == BudgetPolicyOperatorMailboxPlaybackV1 {
+			return "completion", 12, nil
+		}
 	case "list-text-messages":
 		return "list", 4, nil
 	case "get-text-message":
@@ -75,7 +98,6 @@ func ToolBudget(policy, toolID string) (bucket string, limit int, err error) {
 		return "placement", 2, nil
 	case ToolIDHangUp, "hang-up":
 		return "hangup", 1, nil
-	default:
-		return "", 0, errors.New("tool outside operator mailbox budget")
 	}
+	return "", 0, errors.New("tool outside operator mailbox budget")
 }

@@ -277,7 +277,13 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 			return nil, "", errors.New("schema digest mismatch")
 		}
 		t.InputSchema = c
-		if t.IsRead() {
+		if t.IsPlayback() || t.IsPlaybackCompletion() {
+			if e := ValidatePlaybackTool(*t); e != nil {
+				return nil, "", e
+			}
+		} else if t.Playback != nil {
+			return nil, "", errors.New("playback mapping on other tool")
+		} else if t.IsRead() {
 			if t.RequiresApproval || len(t.DestinationClasses) != 0 || t.TerminalOnSuccess || t.MaxResultBytes < 1 || t.MaxResultBytes > 4096 {
 				return nil, "", errors.New("invalid read policy")
 			}
@@ -323,6 +329,9 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 				return nil, "", errors.New("invalid terminal behavior")
 			}
 		}
+	}
+	if e := validatePlaybackPairs(m); e != nil {
+		return nil, "", e
 	}
 	sort.Slice(m.Tools, func(i, j int) bool { return m.Tools[i].ID < m.Tools[j].ID })
 	raw, e := json.Marshal(m)

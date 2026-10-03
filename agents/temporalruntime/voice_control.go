@@ -112,7 +112,7 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 			return nil, errors.New("control tool absent from resolved definition")
 		}
 		enabled := false
-		for id, candidate := range d.AI.Tools {
+		for id, candidate := range agents.ModelTools(d.AI.Tools) {
 			if id == name || candidate.Name == name {
 				enabled = enabled || agents.VoiceToolEnabled(cfg.EnabledToolIDs, id, candidate.Name)
 			}
@@ -124,7 +124,7 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 	// Directory/search reads are not CallControl ToolNames, but they must remain
 	// model-visible beside verified dial tools. Include typed remote-read tools
 	// from the resolved definition without widening the control executor set.
-	for id, tool := range d.AI.Tools {
+	for id, tool := range agents.ModelTools(d.AI.Tools) {
 		if _, read := agents.VoiceRemoteReadPolicy(tool); !read {
 			continue
 		}
@@ -145,7 +145,7 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 	// web-search from Gemini Live (only hang_up was declared). Re-attach
 	// definition web-search tools when EnabledToolIDs admits them so Live can
 	// declare native Google Search / provider web_search.
-	for id, tool := range d.AI.Tools {
+	for id, tool := range agents.ModelTools(d.AI.Tools) {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
 			name = id

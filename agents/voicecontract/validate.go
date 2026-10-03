@@ -194,7 +194,7 @@ func (e Envelope) Validate() error {
 // Validate checks current structural claims only. Cryptographic verification and
 // time, registration, nonce, owner and registry checks remain mandatory upstream.
 func (g GrantClaims) Validate() error {
-	if g.BudgetPolicy != "" && (g.BudgetPolicy != BudgetPolicyOperatorMailboxV1 || g.Version != Version || g.Context.AgentID != "call-operator" || g.Context.Scope.Kind != "agent") {
+	if g.BudgetPolicy != "" && ((g.BudgetPolicy != BudgetPolicyOperatorMailboxV1 && g.BudgetPolicy != BudgetPolicyOperatorMailboxPlaybackV1) || g.Version != Version || g.Context.AgentID != "call-operator" || g.Context.Scope.Kind != "agent") {
 		return errors.New("invalid voice budget grant")
 	}
 	if !validVersion(g.Version) || g.GrantVersion != 3 || !identifier(g.KeyID) || g.Context.ValidateForVersion(g.Version) != nil || !identifier(g.Nonce) || g.ExpiresAt <= 0 {

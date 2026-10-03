@@ -70,6 +70,7 @@ type Manifest struct {
 }
 
 type Tool struct {
+	Playback           *PlaybackPolicy `json:"playback,omitempty"`
 	ExecutionKind      string          `json:"execution_kind,omitempty"`
 	OutputSchema       json.RawMessage `json:"output_schema,omitempty"`
 	OutputSchemaDigest string          `json:"output_schema_digest,omitempty"`
@@ -196,3 +197,6 @@ type ReadRequest struct {
 
 func (t Tool) IsRead() bool   { return t.ExecutionKind == "read" }
 func (t Tool) IsAction() bool { return t.ExecutionKind == "action" }
+
+func (t Tool) IsPlayback() bool           { return t.ExecutionKind == "playback" }
+func (t Tool) IsPlaybackCompletion() bool { return t.ExecutionKind == "playback_completion" }
