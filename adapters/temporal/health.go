@@ -132,6 +132,7 @@ func reportWorkerHealth(ctx context.Context, health WorkerHealth) (string, error
 // healthTracker counts in-flight activity tasks for saturation heartbeats.
 type healthTracker struct {
 	handoff       *recoveryTaskHandoff
+	sorHandoff    *sorTaskHandoff
 	tuner         *recoveryTuner
 	uncovered     atomic.Int64
 	quiesce       chan string
