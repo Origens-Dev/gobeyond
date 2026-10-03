@@ -63,7 +63,7 @@ func VoiceActionPolicy(tool AITool) bool {
 // Voice-channel agents with zero VoiceControl tools still freeze an
 // identity-only manifest for platform admission.
 func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, string, error) {
-	m := voicecontract.Manifest{Version: voicecontract.Version, Revision: d.AI.Revision, CompiledRevision: d.AI.Revision, Tools: []voicecontract.Tool{}}
+	m := voicecontract.Manifest{BudgetPolicy: d.AI.VoiceBudgetPolicy, Version: voicecontract.Version, Revision: d.AI.Revision, CompiledRevision: d.AI.Revision, Tools: []voicecontract.Tool{}}
 	for id, t := range d.AI.Tools {
 		p, ok := VoiceControlPolicy(t)
 		read, isRead := VoiceRemoteReadPolicy(t)
@@ -112,7 +112,7 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		}
 		m.Tools = append(m.Tools, spec)
 	}
-	if len(m.Tools) == 0 && !definitionHasVoiceChannel(d.Slots) {
+	if m.BudgetPolicy == "" && len(m.Tools) == 0 && !definitionHasVoiceChannel(d.Slots) {
 		return m, nil, "", nil
 	}
 	if d.AI.Revision == "" {

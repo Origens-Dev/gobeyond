@@ -7,7 +7,41 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-type voiceToolBudget struct{ count int }
+type voiceToolBudget struct {
+	count   int
+	policy  string
+	buckets map[string]int
+	calls   map[string]string
+}
+
+func (b *voiceToolBudget) consume(toolID, callID, digest string, legacyLimit int) error {
+	if b.policy == "" {
+		if b.count >= legacyLimit {
+			return errors.New("voice tool budget exhausted")
+		}
+		b.count++
+		return nil
+	}
+	if b.calls == nil {
+		b.calls = map[string]string{}
+	}
+	if _, exists := b.calls[callID]; exists {
+		return errors.New("conflicting cross-tool replay")
+	}
+	bucket, limit, err := voicecontract.ToolBudget(b.policy, toolID)
+	if err != nil {
+		return err
+	}
+	if b.buckets == nil {
+		b.buckets = map[string]int{}
+	}
+	if b.buckets[bucket] >= limit {
+		return errors.New("voice tool budget exhausted")
+	}
+	b.buckets[bucket]++
+	b.calls[callID] = toolID + "/" + digest
+	return nil
+}
 
 type voiceReadWorkflowState struct {
 	budget  *voiceToolBudget
@@ -21,6 +55,10 @@ func newVoiceReadWorkflowState() *voiceReadWorkflowState {
 }
 func (s *voiceReadWorkflowState) execute(ctx workflow.Context, in VoiceSessionInput, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 	r := req.RemoteRead
+	if req.BudgetPolicy != "" && req.BudgetPolicy != s.budget.policy {
+		return VoiceSessionExecuteToolResult{}, errors.New("request-only budget policy rejected")
+	}
+	req.BudgetPolicy = s.budget.policy
 	if r == nil || r.Validate() != nil || in.Context == nil || *in.Context != r.Context || in.AgentID != r.Context.AgentID || in.CallID != r.Context.CallID || in.SessionID != r.Context.SessionID || in.ExecutionID != r.Context.ExecutionID {
 		return VoiceSessionExecuteToolResult{}, errors.New("read workflow scope mismatch")
 	}
@@ -50,13 +88,12 @@ func (s *voiceReadWorkflowState) execute(ctx workflow.Context, in VoiceSessionIn
 		// by the same per-session limit used for authored voice actions.
 		limit = maxVoiceSessionToolCalls
 	}
-	if s.budget.count >= limit {
+	if err := s.budget.consume(r.ToolID, r.ToolCallID, digest, limit); err != nil {
 		if r.Context.Scope.Kind == "platform_support" {
 			return VoiceSessionExecuteToolResult{Error: "support read budget exhausted"}, nil
 		}
 		return VoiceSessionExecuteToolResult{Error: "directory search budget exhausted"}, nil
 	}
-	s.budget.count++
 	s.digests[key] = digest
 	s.pending[key] = true
 	result, err := executeVoiceSessionToolLocal(ctx, req)

@@ -287,7 +287,7 @@ func voiceLiteral(e ast.Expr, depth int) (any, error) {
 
 func attachVoiceManifests(manifest *AgentsManifest, definitions []AgentDefinition) error {
 	for i, d := range definitions {
-		m := voicecontract.Manifest{Version: voicecontract.Version, Revision: d.Revision, CompiledRevision: d.Revision, Tools: []voicecontract.Tool{}}
+		m := voicecontract.Manifest{BudgetPolicy: d.VoiceBudgetPolicy, Version: voicecontract.Version, Revision: d.Revision, CompiledRevision: d.Revision, Tools: []voicecontract.Tool{}}
 		for _, tool := range d.Tools {
 			// VoiceControl holds a call-control, remote-read, or approval-gated
 			// action tool after parseVoiceTool; ExecutionKind distinguishes them.
@@ -297,7 +297,7 @@ func attachVoiceManifests(manifest *AgentsManifest, definitions []AgentDefinitio
 		}
 		// Voice-channel agents publish an identity-only manifest even with zero
 		// authored VoiceControl/VoiceRemoteRead tools so platform mint can resolve admission.
-		if len(m.Tools) == 0 && !hasVoiceChannel(d.Slots) {
+		if m.BudgetPolicy == "" && len(m.Tools) == 0 && !hasVoiceChannel(d.Slots) {
 			continue
 		}
 		raw, digest, err := voicecontract.FreezeManifest(m)

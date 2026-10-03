@@ -80,6 +80,8 @@ type AIConfig struct {
 	ToolModel string
 	// VoiceName is the default prebuilt voice for Live sessions.
 	VoiceName string
+	// VoiceBudgetPolicy is a compiler-visible frozen opt-in, never session metadata.
+	VoiceBudgetPolicy string
 
 	DurableUpdates             DurableUpdateStore
 	OnReviewPublicationFailure func(context.Context, updates.UpdateEvent, error)

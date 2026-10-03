@@ -239,6 +239,9 @@ func schema(v any, depth int) error {
 // Identity-only manifests (zero tools) are valid for voice-channel agents that
 // publish no authored VoiceControl tools; hang_up remains platform-injected only.
 func FreezeManifest(m Manifest) ([]byte, string, error) {
+	if err := validateBudgetManifest(m); err != nil {
+		return nil, "", err
+	}
 	if !validVersion(m.Version) || !identifier(m.Revision) || !identifier(m.CompiledRevision) || len(m.Tools) > MaxTools {
 		return nil, "", errors.New("invalid manifest header")
 	}

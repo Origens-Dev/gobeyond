@@ -478,3 +478,20 @@ func TestLiveToolBatchAllRemoteReads(t *testing.T) {
 		t.Fatal("dial must not count as remote-read")
 	}
 }
+
+func TestMailboxTurnLimitRequiresTrustedPolicy(t *testing.T) {
+	cfg := terminalConfig(t)
+	cfg.CallControl.ToolNames = []string{voicecontract.ToolIDHangUp}
+	cfg.CallControl.MaxAssistantTurns = 32
+	if _, err := controlTools(agents.AIDefinition{}, cfg); err == nil {
+		t.Fatal("legacy turn cap expanded")
+	}
+	cfg.CallControl.BudgetPolicy = voicecontract.BudgetPolicyOperatorMailboxV1
+	if _, err := controlTools(agents.AIDefinition{}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.CallControl.MaxAssistantTurns = 33
+	if _, err := controlTools(agents.AIDefinition{}, cfg); err == nil {
+		t.Fatal("mailbox turn cap unbounded")
+	}
+}

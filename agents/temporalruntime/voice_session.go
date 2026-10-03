@@ -36,18 +36,22 @@ const (
 
 // VoiceSessionInput is the durable voice-call workflow argument.
 type VoiceSessionInput struct {
-	Context     *voicecontract.Context `json:"context,omitempty"`
-	AgentID     string                 `json:"agent_id"`
-	CallID      string                 `json:"call_id"`
-	SessionID   string                 `json:"session_id"`
-	ExecutionID string                 `json:"execution_id"`
+	// Derived by the API from a verified signed grant and frozen declaration.
+	BudgetPolicy string                 `json:"budget_policy,omitempty"`
+	Context      *voicecontract.Context `json:"context,omitempty"`
+	AgentID      string                 `json:"agent_id"`
+	CallID       string                 `json:"call_id"`
+	SessionID    string                 `json:"session_id"`
+	ExecutionID  string                 `json:"execution_id"`
 }
 
 // VoiceSessionExecuteToolInput is the Update / LocalActivity payload for one
 // Gemini Live function call.
 type VoiceSessionExecuteToolInput struct {
-	Grant      string                     `json:"grant,omitempty"`
-	RemoteRead *voicecontract.ReadRequest `json:"remote_read,omitempty"`
+	// Workflow-owned propagation; callers cannot select a broader policy.
+	BudgetPolicy string                     `json:"budget_policy,omitempty"`
+	Grant        string                     `json:"grant,omitempty"`
+	RemoteRead   *voicecontract.ReadRequest `json:"remote_read,omitempty"`
 	// CallControl belongs to the dedicated asynchronous current-grant path.
 	CallControl    *voicecontract.Command `json:"call_control,omitempty"`
 	AgentID        string                 `json:"agent_id"`
@@ -98,6 +102,25 @@ type VoiceSessionExecuteToolResult struct {
 	Error     string                        `json:"error,omitempty"`
 }
 
+const mailboxBudgetVersionChange = "operator-mailbox-budget-v1"
+
+func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget *voiceToolBudget) error {
+	version := workflow.GetVersion(ctx, mailboxBudgetVersionChange, workflow.DefaultVersion, 1)
+	// Historical executions retain their shared two-operation budget even when
+	// replayed by a worker that understands the new opt-in.
+	if version == workflow.DefaultVersion {
+		return nil
+	}
+	if in.BudgetPolicy == "" {
+		return nil
+	}
+	if in.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxV1 || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
+		return errors.New("invalid verified workflow budget policy")
+	}
+	budget.policy = in.BudgetPolicy
+	return nil
+}
+
 // VoiceSessionWorkflow is the lifecycle workflow for an AI phone/softphone
 // call. Media may stay on Maglev (P0–P2) or colocate on the realtime
 // RoleWorker (P3); this workflow is the hosted Agents SoR handle and the
@@ -134,6 +157,10 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	control := newVoiceControlWorkflowState()
 	reads := newVoiceReadWorkflowState()
 	reads.budget = control.budget
+	if err := configureVoiceToolBudget(ctx, in, control.budget); err != nil {
+		return err
+	}
+
 	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 			if req.RemoteRead != nil {
