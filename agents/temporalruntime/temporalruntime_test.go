@@ -331,6 +331,24 @@ func TestStartAIAgentResolvesToolQueuesAndRealtimeBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := fake.args[0].(temporalai.AgentInput)
+	// Durable transport must serialize the generated conversation identity, never
+	// caller session metadata. Check the eventual authored handler after JSON.
+	rawContext, err := json.Marshal(input.ToolContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contextProjection any
+	if err := json.Unmarshal(rawContext, &contextProjection); err != nil {
+		t.Fatal(err)
+	}
+	probe := agents.DefineTool(agents.ToolConfig{}, func(ctx context.Context, _ agents.Actor, _ map[string]any) (string, error) {
+		id, _ := agents.ToolSessionID(ctx)
+		return id, nil
+	})
+	got, err := probe.Execute(context.Background(), ai.ToolCall{Input: map[string]any{}}, ai.ToolExecutionOptions{Context: contextProjection})
+	if err != nil || got != durableStartCall().Session.ID {
+		t.Fatalf("durable session=%v err=%v", got, err)
+	}
 	if len(input.Tools) != 1 || input.Tools[0].TaskQueue != "tools__preview" {
 		t.Fatalf("durable tool definitions = %#v", input.Tools)
 	}

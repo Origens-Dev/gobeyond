@@ -282,6 +282,33 @@ names such as `support__local`, and retry while user-managed Temporal is absent.
 `gobeyond preview` uses the separate `support__preview` suffix for both the
 site dispatcher and its supervised poller.
 
+### Conversation identity in tools
+
+Handlers created with `DefineTool` or `DefineToolWithCall` can read the
+framework-supplied conversation identity using `gbagents.ToolSessionID(ctx)`:
+
+```go
+sessionID, ok := gbagents.ToolSessionID(ctx)
+if !ok {
+  return LookupOutput{}, errors.New("conversation identity unavailable")
+}
+return lookupForSession(ctx, actor.ID, sessionID, input.OrderID)
+```
+
+Use this ID for conversation-scoped limits and attribution, not authorization;
+continue authorizing against the authenticated actor and current memberships.
+Direct HTTP AI runs use the generated session ID. Durable AI tool execution
+preserves that ID through its serialized tool context. Ordinary Live tools use
+the runtime voice session ID, and current scoped voice dispatch uses its
+validated context's session ID. Multiple runs in one conversation share the ID.
+
+Actor metadata, client-supplied session metadata, model arguments, and tool-call
+IDs never supply this value. Standalone tools, older durable payloads, and legacy
+approved voice-action dispatch may have no ID. Handle `ok=false` explicitly;
+do not manufacture a session identity or substitute the actor ID. Existing
+callers continue working unchanged. Raw `ai.Tool.Execute` handlers do not
+receive this helper's projection automatically; use the framework tool helpers.
+
 ## Current alpha limitations
 
 Session and event storage is process-local in the public framework runtime;

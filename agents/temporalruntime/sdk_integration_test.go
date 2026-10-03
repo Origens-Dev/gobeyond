@@ -10,6 +10,7 @@ import (
 	"github.com/Origens-Dev/go-temporal-ai-sdk/temporalai"
 	"github.com/Origens-Dev/go-temporal-ai-sdk/updates"
 	"github.com/Origens-Dev/gobeyond/agents"
+	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -40,13 +41,15 @@ func TestCompiledRuntimeExecutesModelToolModelAndOwnsTerminal(t *testing.T) {
 		OrderID string `json:"orderId"`
 	}
 	var toolActor agents.Actor
+	var toolSession string
 	lookup := agents.DefineTool(agents.ToolConfig{
 		Description: "Look up an order",
 		InputSchema: map[string]any{
 			"type": "object", "properties": map[string]any{"orderId": map[string]any{"type": "string"}},
 		},
-	}, func(_ context.Context, actor agents.Actor, input lookupInput) (map[string]string, error) {
+	}, func(ctx context.Context, actor agents.Actor, input lookupInput) (map[string]string, error) {
 		toolActor = actor
+		toolSession, _ = agents.ToolSessionID(ctx)
 		return map[string]string{"orderId": input.OrderID, "status": "ready"}, nil
 	})
 	definition := agents.DefineAI(agents.AIConfig{
@@ -72,7 +75,7 @@ func TestCompiledRuntimeExecutesModelToolModelAndOwnsTerminal(t *testing.T) {
 		Instructions: "Help the customer.", Prompt: "Where is order-1?", MaxSteps: 4,
 		Tools:       activities.ToolDefinitionsFromAI(definition.AI.Tools),
 		Stream:      updates.Options{StreamID: "run-1", Scope: updates.Scope{AgentID: "support"}},
-		ToolContext: map[string]any{"gobeyondActor": agents.Actor{ID: "user-1", Kind: "user"}},
+		ToolContext: toolsession.ExecutionContext(agents.Actor{ID: "user-1", Kind: "user", Metadata: map[string]string{"session_id": "forged"}}, "conversation-1"),
 	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -80,6 +83,9 @@ func TestCompiledRuntimeExecutesModelToolModelAndOwnsTerminal(t *testing.T) {
 	var result temporalai.AgentResult
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatal(err)
+	}
+	if toolSession != "conversation-1" {
+		t.Fatalf("tool session=%q", toolSession)
 	}
 	if result.Text != "order-1 is ready" || modelCalls != 2 || toolActor.ID != "user-1" {
 		t.Fatalf("result/calls/actor = %#v/%d/%#v", result, modelCalls, toolActor)

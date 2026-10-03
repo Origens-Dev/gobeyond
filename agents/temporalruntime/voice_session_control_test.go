@@ -38,8 +38,12 @@ func TestControlActivityRegistryAndAcknowledgement(t *testing.T) {
 		t.Fatal(e)
 	}
 	calls := 0
-	tool := agents.DefineTool(agents.ToolConfig{Name: "dial_contact", Description: fixture.Tools[0].Description, InputSchema: schema, VoiceControl: &agents.VoiceToolPolicy{DestinationClasses: []string{"extension"}, TerminalOnSuccess: true}}, func(_ context.Context, actor agents.Actor, input map[string]any) (voicecontract.Operation, error) {
+	tool := agents.DefineTool(agents.ToolConfig{Name: "dial_contact", Description: fixture.Tools[0].Description, InputSchema: schema, VoiceControl: &agents.VoiceToolPolicy{DestinationClasses: []string{"extension"}, TerminalOnSuccess: true}}, func(ctx context.Context, actor agents.Actor, input map[string]any) (voicecontract.Operation, error) {
 		calls++
+		id, ok := agents.ToolSessionID(ctx)
+		if !ok || id != command.Context.SessionID {
+			t.Fatalf("scoped voice session=%q/%v", id, ok)
+		}
 		if actor.Metadata["voice_session_grant"] != "opaque" || actor.Metadata["execution_id"] != command.Context.ExecutionID || actor.Metadata["announcement_barrier_id"] != "1" || actor.Metadata["operation_id"] != command.OperationID {
 			t.Fatal("grant-derived metadata lost")
 		}
