@@ -65,12 +65,12 @@ func postSorIngest(ctx context.Context, in ReportSorEventInput) error {
 		return err
 	}
 
-	// Prefer host-report UDS when present (gbhost can forward); fall back to
-	// public API URL sealed into the tip.
+	// Hosted SoR is UDS-only (ORI-2): host persists Dynamo and forwards wakes.
+	// HTTPS fallback remains for local/dev when no host-report socket exists.
 	if err := postSorViaHostReport(ctx, body); err == nil {
 		return nil
 	} else if !isMissingSocket(err) {
-		// Non-socket errors still try HTTPS below.
+		return err
 	}
 
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv(envAPIURL)), "/")
@@ -140,7 +140,9 @@ func isMissingSocket(err error) bool {
 	return os.IsNotExist(err) ||
 		strings.Contains(msg, "no such file") ||
 		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "not found")
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "invalid argument") || // macOS unix dial of missing path
+		strings.Contains(msg, "no such device")
 }
 
 func fillSorIdentity(in ReportSorEventInput) ReportSorEventInput {
