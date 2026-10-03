@@ -31,6 +31,9 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 		if definition.ToolModel != "" {
 			source.WriteString(fmt.Sprintf("\tdefinition.AI.ToolModel = %q\n", definition.ToolModel))
 		}
+		if definition.VoiceBudgetPolicy != "" {
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceBudgetPolicy = %q\n", definition.VoiceBudgetPolicy))
+		}
 		if definition.VoiceName != "" {
 			source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceName = %q\n", definition.VoiceName))
 		}
@@ -48,6 +51,9 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 		}
 		if definition.ToolModel != "" {
 			source.WriteString(fmt.Sprintf("\tdefinition.AI.ToolModel = %q\n", definition.ToolModel))
+		}
+		if definition.VoiceBudgetPolicy != "" {
+			source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceBudgetPolicy = %q\n", definition.VoiceBudgetPolicy))
 		}
 		if definition.VoiceName != "" {
 			source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceName = %q\n", definition.VoiceName))
@@ -82,6 +88,9 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 			if definition.ToolModel != "" {
 				source.WriteString(fmt.Sprintf("\tdefinition.AI.ToolModel = %q\n", definition.ToolModel))
 			}
+			if definition.VoiceBudgetPolicy != "" {
+				source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceBudgetPolicy = %q\n", definition.VoiceBudgetPolicy))
+			}
 			if definition.VoiceName != "" {
 				source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceName = %q\n", definition.VoiceName))
 			}
@@ -100,6 +109,9 @@ func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 			source.WriteString(fmt.Sprintf("\tdefinition.AI.LiveModel = %q\n", definition.LiveModel))
 			if definition.ToolModel != "" {
 				source.WriteString(fmt.Sprintf("\tdefinition.AI.ToolModel = %q\n", definition.ToolModel))
+			}
+			if definition.VoiceBudgetPolicy != "" {
+				source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceBudgetPolicy = %q\n", definition.VoiceBudgetPolicy))
 			}
 			if definition.VoiceName != "" {
 				source.WriteString(fmt.Sprintf("\tdefinition.AI.VoiceName = %q\n", definition.VoiceName))

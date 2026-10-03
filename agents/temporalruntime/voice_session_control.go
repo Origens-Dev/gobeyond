@@ -26,6 +26,10 @@ func newVoiceControlWorkflowState() *voiceControlWorkflowState {
 }
 func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessionInput, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 	c := req.CallControl
+	if req.BudgetPolicy != "" && req.BudgetPolicy != s.budget.policy {
+		return VoiceSessionExecuteToolResult{}, errors.New("request-only budget policy rejected")
+	}
+	req.BudgetPolicy = s.budget.policy
 	expected, err := WorkflowID(c.Context.SessionID, c.Context.ExecutionID)
 	if err != nil || c.Validate() != nil || in.Context == nil || *in.Context != c.Context || c.Context.AgentID != in.AgentID || c.Context.CallID != in.CallID || c.Context.SessionID != in.SessionID || c.Context.ExecutionID != in.ExecutionID || expected != workflow.GetInfo(ctx).WorkflowExecution.ID {
 		return VoiceSessionExecuteToolResult{}, errors.New("call control workflow scope mismatch")
@@ -37,8 +41,20 @@ func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessio
 		return VoiceSessionExecuteToolResult{}, errors.New("unsupported durable control phase")
 	}
 	key := c.ToolID + "/" + c.ToolCallID
+	replayDigest := c.InputDigest
+	if s.budget.policy != "" {
+		raw, err := json.Marshal(c)
+		if err != nil {
+			return VoiceSessionExecuteToolResult{}, err
+		}
+		canonical, err := voicecontract.CanonicalJSON(raw, voicecontract.MaxEnvelopeBytes)
+		if err != nil {
+			return VoiceSessionExecuteToolResult{}, err
+		}
+		replayDigest = voicecontract.Digest(canonical)
+	}
 	if digest, ok := s.digests[key]; ok {
-		if digest != c.InputDigest {
+		if digest != replayDigest {
 			return VoiceSessionExecuteToolResult{}, errors.New("conflicting control replay")
 		}
 		if err = workflow.Await(ctx, func() bool { return !s.pending[key] }); err != nil {
@@ -46,12 +62,14 @@ func (s *voiceControlWorkflowState) execute(ctx workflow.Context, in VoiceSessio
 		}
 		return s.results[key], nil
 	}
-	if s.budget.count >= 2 || c.AnnouncementBarrierID <= s.lastBarrier {
+	if c.AnnouncementBarrierID <= s.lastBarrier {
 		return VoiceSessionExecuteToolResult{}, errors.New("control budget or drain fence exhausted")
 	}
-	s.budget.count++
+	if err := s.budget.consume(c.ToolID, c.ToolCallID, replayDigest, 2); err != nil {
+		return VoiceSessionExecuteToolResult{}, err
+	}
 	s.lastBarrier = c.AnnouncementBarrierID
-	s.digests[key] = c.InputDigest
+	s.digests[key] = replayDigest
 	s.pending[key] = true
 	result, err := executeVoiceSessionToolLocal(ctx, req)
 	s.pending[key] = false
@@ -103,6 +121,11 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 	var manifest voicecontract.Manifest
 	if err := voicecontract.Decode(raw, voicecontract.MaxManifestBytes, &manifest); err != nil {
 		return VoiceSessionExecuteToolResult{}, err
+	}
+	if req.BudgetPolicy != "" {
+		if err := voicecontract.ValidateBudgetPolicy(req.BudgetPolicy, c.Context, manifest); err != nil {
+			return VoiceSessionExecuteToolResult{}, err
+		}
 	}
 	if manifest.CompiledRevision != c.Context.AgentRevision {
 		return VoiceSessionExecuteToolResult{}, errors.New("control revision mismatch")

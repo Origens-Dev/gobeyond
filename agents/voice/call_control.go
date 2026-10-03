@@ -11,8 +11,10 @@ import (
 // schema validation, and return only after authoritative operation acceptance.
 type CallControlConfig struct {
 	MaxAssistantTurns int
-	ToolNames         []string
-	Execute           func(context.Context, ai.ToolCall) (any, error)
+	// BudgetPolicy comes from verified signed grant and matching frozen manifest.
+	BudgetPolicy string
+	ToolNames    []string
+	Execute      func(context.Context, ai.ToolCall) (any, error)
 	// Announcement supplies finite, application-controlled audio before a dial
 	// or transfer. The adapter gates provider output, plays this clip in the
 	// negotiated format, then requires OnPlayoutBarrier before Execute.

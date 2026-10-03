@@ -26,31 +26,32 @@ const (
 // It intentionally records slots even though this slice does not yet bind
 // their provider implementations or generate execution wiring.
 type AgentDefinition struct {
-	ID           string
-	Key          string
-	Kind         string
-	Mode         string
-	TaskQueue    string
-	TaskQueueSet bool
-	Durable      bool
-	Realtime     bool
-	Public       bool
-	Model        string
-	LiveModel    string
-	ToolModel    string
-	VoiceName    string
-	MaxSteps     int
-	Instructions string
-	Revision     string
-	SourceDir    string
-	EntryFile    string
-	PackageName  string
-	Handler      string
-	InputType    string
-	OutputType   string
-	SourceFiles  []string
-	Slots        AgentSlots
-	Tools        []AgentToolDefinition
+	ID                string
+	Key               string
+	Kind              string
+	Mode              string
+	TaskQueue         string
+	TaskQueueSet      bool
+	Durable           bool
+	Realtime          bool
+	Public            bool
+	Model             string
+	LiveModel         string
+	ToolModel         string
+	VoiceName         string
+	VoiceBudgetPolicy string
+	MaxSteps          int
+	Instructions      string
+	Revision          string
+	SourceDir         string
+	EntryFile         string
+	PackageName       string
+	Handler           string
+	InputType         string
+	OutputType        string
+	SourceFiles       []string
+	Slots             AgentSlots
+	Tools             []AgentToolDefinition
 	// DurableSet is true when Durable appeared as an explicit field in the
 	// authored config literal. Realtime requires an explicit Durable: true.
 	DurableSet bool
@@ -145,6 +146,10 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 	}
 	taskQueue, durable, durableSet, realtime, public, model, liveModel, toolModel, voiceName, maxSteps, err := parseAgentConfig(call.Config, call.Kind)
+	voiceBudgetPolicy, budgetErr := parseVoiceBudgetPolicy(call.Config)
+	if budgetErr != nil {
+		return AgentDefinition{}, budgetErr
+	}
 	if err != nil {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 	}
@@ -171,7 +176,7 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 		TaskQueueSet: taskQueue != "", Durable: durable, DurableSet: durableSet, Realtime: realtime, Public: public, SourceDir: authorPath(root, dir),
 		EntryFile: authorPath(root, entryFile), PackageName: packageName,
 		Handler: call.Handler, SourceFiles: files, Slots: call.Slots,
-		Model: model, LiveModel: liveModel, ToolModel: toolModel, VoiceName: voiceName, MaxSteps: maxSteps, Tools: tools, SIPHandlers: sipHandlers,
+		Model: model, LiveModel: liveModel, ToolModel: toolModel, VoiceName: voiceName, VoiceBudgetPolicy: voiceBudgetPolicy, MaxSteps: maxSteps, Tools: tools, SIPHandlers: sipHandlers,
 	}
 	for _, tool := range tools {
 		if !containsString(definition.Slots.Tools, tool.ID) {
@@ -339,6 +344,13 @@ func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable b
 			}
 			voiceName, err = staticString(field.Value, "VoiceName")
 			if err != nil {
+				return "", false, false, false, false, "", "", "", "", 0, err
+			}
+		case "VoiceBudgetPolicy":
+			if kind != AgentKindAI {
+				return "", false, false, false, false, "", "", "", "", 0, errors.New("VoiceBudgetPolicy requires DefineAI")
+			}
+			if _, err = staticString(field.Value, "VoiceBudgetPolicy"); err != nil {
 				return "", false, false, false, false, "", "", "", "", 0, err
 			}
 		case "MaxSteps":
@@ -958,8 +970,26 @@ func staticInt(expression ast.Expr, field string) (int, error) {
 	return value, nil
 }
 
+func parseVoiceBudgetPolicy(config ast.Expr) (string, error) {
+	composite, ok := config.(*ast.CompositeLit)
+	if !ok {
+		return "", errors.New("agent config literal required")
+	}
+	for _, element := range composite.Elts {
+		if field, ok := element.(*ast.KeyValueExpr); ok {
+			if key, ok := field.Key.(*ast.Ident); ok && key.Name == "VoiceBudgetPolicy" {
+				return staticString(field.Value, "VoiceBudgetPolicy")
+			}
+		}
+	}
+	return "", nil
+}
+
 func agentRuntimeRevision(root string, definition AgentDefinition) (string, error) {
 	digest := sha256.New()
+	if definition.VoiceBudgetPolicy != "" {
+		_, _ = digest.Write([]byte("voice-budget\x00" + definition.VoiceBudgetPolicy + "\x00"))
+	}
 	_, _ = digest.Write([]byte("gobeyond-agent-runtime-v1\x00"))
 	_, _ = digest.Write([]byte(definition.ID))
 	_, _ = digest.Write([]byte("\x00" + definition.Model + "\x00" + strconv.Itoa(definition.MaxSteps)))
