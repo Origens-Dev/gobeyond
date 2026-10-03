@@ -13,6 +13,7 @@ import (
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
+	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 )
 
 var (
@@ -179,7 +180,7 @@ func (adapter aiAdapter) Start(ctx context.Context, call StartCall, emit EventEm
 	}
 	// G4 StartConfig.Instructions should use the same ResolveInstructions overlay
 	// before opening a Live session (voice path acceptance is deferred to G4).
-	result, err := definition.Stream(ctx, call.Actor, input)
+	result, err := definition.Stream(toolsession.WithID(ctx, call.Session.ID), call.Actor, input)
 	if err != nil {
 		return err
 	}

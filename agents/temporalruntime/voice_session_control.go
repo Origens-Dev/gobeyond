@@ -8,6 +8,7 @@ import (
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
+	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go.temporal.io/sdk/workflow"
 )
@@ -165,7 +166,7 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 	if err = json.Unmarshal(input, &args); err != nil {
 		return VoiceSessionExecuteToolResult{}, err
 	}
-	result, err := tool.Execute(ctx, ai.ToolCall{ToolCallID: c.ToolCallID, ToolName: spec.Name, Input: args}, ai.ToolExecutionOptions{Context: map[string]any{"gobeyondActor": actor}})
+	result, err := tool.Execute(ctx, ai.ToolCall{ToolCallID: c.ToolCallID, ToolName: spec.Name, Input: args}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContext(actor, c.Context.SessionID)})
 	if err != nil {
 		// Keep the stable operator-facing prefix; append the concrete cause so
 		// Temporal Update payloads and Maglev logs stop swallowing the failure.

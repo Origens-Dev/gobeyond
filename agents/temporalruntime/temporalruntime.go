@@ -22,6 +22,7 @@ import (
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
+	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -664,7 +665,7 @@ func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AID
 			CompiledRevision: definition.AI.Revision,
 			Scope:            updates.Scope{AgentID: call.Run.AgentID},
 		},
-		ToolContext: map[string]any{"gobeyondActor": call.Actor},
+		ToolContext: toolsession.ExecutionContext(call.Actor, call.Session.ID),
 	}
 	// G4 StartConfig.Instructions should use the same ResolveInstructions overlay
 	// before opening a Live session (voice path acceptance is deferred to G4).

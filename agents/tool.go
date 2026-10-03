@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
+	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 )
 
 const toolActorContextKey = "gobeyondActor"
@@ -128,7 +129,7 @@ func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCa
 			if err := json.Unmarshal(data, &input); err != nil {
 				return nil, fmt.Errorf("decode agent tool input: %w", err)
 			}
-			return handler(ctx, actor, call, input)
+			return handler(toolsession.Bind(ctx, options.Context), actor, call, input)
 		},
 	}
 }

@@ -77,8 +77,10 @@ func (session *fakeLiveSession) Close() error {
 
 func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 	var toolSeen agents.Actor
-	tool := agents.DefineTool(agents.ToolConfig{Name: "lookup"}, func(_ context.Context, actor agents.Actor, input map[string]any) (map[string]any, error) {
+	var toolSession string
+	tool := agents.DefineTool(agents.ToolConfig{Name: "lookup"}, func(ctx context.Context, actor agents.Actor, input map[string]any) (map[string]any, error) {
 		toolSeen = actor
+		toolSession, _ = agents.ToolSessionID(ctx)
 		return map[string]any{"ok": true, "q": input["q"]}, nil
 	})
 	provider := ai.NewMockProvider()
@@ -113,7 +115,7 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 
 	handle, _, err := adapter.Start(context.Background(), voice.StartConfig{
 		AgentID: "operator", SessionID: "sess", RunID: "run",
-		Actor:    agents.Actor{ID: "user-1", Kind: "user", Metadata: map[string]string{"network_id": "net-1"}},
+		Actor:    agents.Actor{ID: "user-1", Kind: "user", Metadata: map[string]string{"network_id": "net-1", "session_id": "actor-forged"}},
 		Metadata: map[string]string{"instructions": "Overlay.", "voice_name": "Puck"},
 	}, pcmIn, pcmOut)
 	if err != nil {
@@ -176,6 +178,9 @@ func TestGeminiLiveAdapterPumpsPCMAndTools(t *testing.T) {
 	}
 	if len(fake.responses) != 1 || fake.responses[0].FunctionResponses[0].Name != "lookup" {
 		t.Fatalf("tool responses = %#v", fake.responses)
+	}
+	if toolSession != "sess" {
+		t.Fatalf("voice tool session=%q", toolSession)
 	}
 	if toolSeen.ID != "user-1" || toolSeen.Metadata["network_id"] != "net-1" {
 		t.Fatalf("tool actor = %#v", toolSeen)
