@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -94,9 +95,19 @@ func executeVoiceRemoteReadActivity(ctx context.Context, req VoiceSessionExecute
 	return executeVoiceRegistryActivity(ctx, req, true)
 }
 func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteToolInput, read bool) (VoiceSessionExecuteToolResult, error) {
+	return executeVoiceRegistryActivityKind(ctx, req, read, false)
+}
+func executeVoiceRegistryActivityKind(ctx context.Context, req VoiceSessionExecuteToolInput, read, playback bool) (VoiceSessionExecuteToolResult, error) {
 	c := req.CallControl
 	if read {
 		r := req.RemoteRead
+		if playback {
+			p := req.SourcePlayback
+			if p == nil || p.Validate() != nil {
+				return VoiceSessionExecuteToolResult{}, errors.New("invalid source playback")
+			}
+			r = &voicecontract.ReadRequest{Version: p.Version, Context: p.Context, ToolID: p.ToolID, ToolCallID: p.ToolCallID, InputDigest: p.InputDigest, Arguments: p.Arguments}
+		}
 		if r == nil || r.Validate() != nil {
 			return VoiceSessionExecuteToolResult{}, errors.New("invalid remote read")
 		}
@@ -137,7 +148,7 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 			break
 		}
 	}
-	if spec == nil || spec.IsRead() != read {
+	if spec == nil || (!playback && spec.IsRead() != read) || (playback && !spec.IsPlayback()) {
 		return VoiceSessionExecuteToolResult{}, errors.New("control tool not deployed")
 	}
 	if req.ToolName != "" && req.ToolName != spec.Name {
@@ -157,6 +168,13 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 	}
 	_, controlPolicy := agents.VoiceControlPolicy(tool)
 	_, readPolicy := agents.VoiceRemoteReadPolicy(tool)
+	playbackPolicy, hasPlaybackPolicy := agents.VoicePlaybackPolicyFor(tool)
+	if playback {
+		if !hasPlaybackPolicy || spec.Playback == nil || playbackPolicy != *spec.Playback || agents.VoicePlaybackCompletionPolicy(tool) {
+			return VoiceSessionExecuteToolResult{}, errors.New("playback policy unavailable")
+		}
+		readPolicy = true
+	}
 	if (!read && !controlPolicy) || (read && !readPolicy) {
 		return VoiceSessionExecuteToolResult{}, errors.New("control policy unavailable")
 	}
@@ -200,9 +218,15 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 		if e != nil {
 			return VoiceSessionExecuteToolResult{}, e
 		}
-		raw, e = voicecontract.ValidateToolOutput(*spec, raw)
-		if e != nil {
-			return VoiceSessionExecuteToolResult{Error: "directory result rejected"}, nil
+		if playback {
+			if _, e = voicecontract.ResolvePlaybackSource(*spec, raw, time.Now().UTC()); e != nil {
+				return VoiceSessionExecuteToolResult{}, errors.New("playback source rejected")
+			}
+		} else {
+			raw, e = voicecontract.ValidateToolOutput(*spec, raw)
+			if e != nil {
+				return VoiceSessionExecuteToolResult{Error: "directory result rejected"}, nil
+			}
 		}
 		return VoiceSessionExecuteToolResult{Result: raw}, nil
 	}
