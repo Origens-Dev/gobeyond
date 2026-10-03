@@ -1,6 +1,7 @@
 package temporal
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -82,10 +83,14 @@ func TestWorkflowInterceptorReportsFailedTerminalStatus(t *testing.T) {
 	defer server.Close()
 	t.Setenv(envAPIURL, server.URL)
 
+	h := newSorTaskHandoff()
+	h.post = func(_ context.Context, event ReportSorEventInput) error {
+		events <- event
+		return nil
+	}
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
-	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&sorWorkerInterceptor{}}})
-	env.RegisterActivity(ReportSorEvent)
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&sorWorkerInterceptor{handoff: h}}})
 	env.ExecuteWorkflow(func(workflow.Context) error { return errors.New("boom") })
 	if !env.IsWorkflowCompleted() {
 		t.Fatal("workflow did not complete")
@@ -93,6 +98,16 @@ func TestWorkflowInterceptorReportsFailedTerminalStatus(t *testing.T) {
 	if env.GetWorkflowError() == nil {
 		t.Fatal("workflow should fail")
 	}
+
+	// Testsuite does not invoke the gRPC handoff flush; drain the queue as the
+	// complete interceptor would before acknowledging the workflow task.
+	h.mu.Lock()
+	for _, batch := range h.pending {
+		for _, in := range batch {
+			_ = h.post(context.Background(), *in)
+		}
+	}
+	h.mu.Unlock()
 
 	select {
 	case event := <-events:

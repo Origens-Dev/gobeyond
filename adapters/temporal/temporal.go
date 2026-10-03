@@ -106,7 +106,16 @@ func Serve(ctx context.Context, options Options) error {
 		return err
 	}
 
-	tracker := &healthTracker{maxConcurrent: 100, quiesce: make(chan string, 1), recoveryLost: make(chan error, 1)}
+	tracker := &healthTracker{
+		maxConcurrent: 100,
+		quiesce:       make(chan string, 1),
+		recoveryLost:  make(chan error, 1),
+		sorHandoff:    newSorTaskHandoff(),
+	}
+	clientOptions.ConnectionOptions.DialOptions = append(
+		clientOptions.ConnectionOptions.DialOptions,
+		grpc.WithChainUnaryInterceptor(tracker.sorHandoff.intercept),
+	)
 	if os.Getenv(recoveryEnabledEnv) == "1" {
 		tracker.handoff = newRecoveryTaskHandoff(&tracker.uncovered)
 		clientOptions.ConnectionOptions.DialOptions = append(clientOptions.ConnectionOptions.DialOptions, grpc.WithChainUnaryInterceptor(tracker.handoff.intercept))
@@ -383,7 +392,7 @@ func temporalWorkerOptions(options Options, tracker *healthTracker) worker.Optio
 		WorkerStopTimeout:                  workerStopTimeout(os.Getenv("GOBEYOND_SHUTDOWN_GRACE")),
 		Interceptors: []interceptor.WorkerInterceptor{
 			&healthInterceptor{tracker: tracker},
-			&sorWorkerInterceptor{},
+			&sorWorkerInterceptor{handoff: tracker.sorHandoff},
 			&recoveryWorkerInterceptor{handoff: tracker.handoff, enabled: os.Getenv(recoveryEnabledEnv) == "1", uncovered: &tracker.uncovered},
 		},
 	}

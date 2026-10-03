@@ -14,17 +14,27 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
+const (
+	// sorHandoffVersionChange records the cut from ReportSorEvent local
+	// activities to gRPC-before-ack UDS flush (ORI-2).
+	sorHandoffVersionChange = "gobeyond-sor-handoff"
+)
+
+type sorHandoffContextKey struct{}
+
 // sorWorkerInterceptor installs workflow + activity inbound interceptors that
-// emit SoR timeline / activity rows via ReportSorEvent (ADR 010).
+// emit SoR timeline / activity rows via ReportSorEvent (ADR 010) or the SoR
+// handoff (ORI-2).
 type sorWorkerInterceptor struct {
 	interceptor.WorkerInterceptorBase
+	handoff *sorTaskHandoff
 }
 
 func (s *sorWorkerInterceptor) InterceptWorkflow(
 	_ workflow.Context,
 	next interceptor.WorkflowInboundInterceptor,
 ) interceptor.WorkflowInboundInterceptor {
-	i := &sorWorkflowInbound{}
+	i := &sorWorkflowInbound{handoff: s.handoff}
 	i.Next = next
 	return i
 }
@@ -40,10 +50,12 @@ func (s *sorWorkerInterceptor) InterceptActivity(
 
 type sorWorkflowInbound struct {
 	interceptor.WorkflowInboundInterceptorBase
+	handoff *sorTaskHandoff
+	useHandoff bool
 }
 
 func (s *sorWorkflowInbound) Init(outbound interceptor.WorkflowOutboundInterceptor) error {
-	o := &sorWorkflowOutbound{}
+	o := &sorWorkflowOutbound{handoff: s.handoff}
 	o.Next = outbound
 	return s.Next.Init(o)
 }
@@ -52,11 +64,17 @@ func (s *sorWorkflowInbound) ExecuteWorkflow(
 	ctx workflow.Context,
 	in *interceptor.ExecuteWorkflowInput,
 ) (any, error) {
+	// Version preserves histories that already recorded ReportSorEvent local
+	// activities. New executions take the handoff path (no LA markers).
+	s.useHandoff = workflow.GetVersion(ctx, sorHandoffVersionChange, workflow.DefaultVersion, 1) == 1
+	if s.useHandoff && s.handoff != nil {
+		ctx = workflow.WithValue(ctx, sorHandoffContextKey{}, s.handoff)
+	}
 	// The wrapped workflow must finish before the terminal event can be
 	// classified, but scheduling a local activity after ExecuteWorkflow returns
 	// is too late: the SDK is already serializing completion of the current
 	// workflow task. Keep this interceptor coroutine alive while the terminal
-	// report is committed.
+	// report is committed (LA path) or enqueued (handoff path).
 	done := workflow.NewChannel(ctx)
 	var (
 		ret any
@@ -75,6 +93,7 @@ func (s *sorWorkflowInbound) ExecuteWorkflow(
 // (ADR 010 Dynamo-first wake) and cross-queue schedule wakes.
 type sorWorkflowOutbound struct {
 	interceptor.WorkflowOutboundInterceptorBase
+	handoff     *sorTaskHandoff
 	timerSeq    int
 	childSeq    int
 	scheduleSeq int
@@ -187,19 +206,14 @@ func reportSiblingScheduled(
 		payload["child_workflow_type"] = scheduledName
 	}
 	stampParentHint(payload, info)
-	in := ReportSorEventInput{
+	emitWorkflowSor(ctx, ReportSorEventInput{
 		WorkflowID: info.WorkflowExecution.ID,
 		RunID:      info.WorkflowExecution.RunID,
 		DedupeKey:  fmt.Sprintf("sibling-sched-%s-%d-%s", info.WorkflowExecution.RunID, seq, eventType),
 		Type:       eventType,
 		Kind:       "event",
 		Payload:    payload,
-	}
-	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
-		StartToCloseTimeout: 5 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
-	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
 
 func reportTimerEvent(ctx workflow.Context, seq int, eventType string, d time.Duration, summary string) {
@@ -214,21 +228,14 @@ func reportTimerEvent(ctx workflow.Context, seq int, eventType string, d time.Du
 		payload["summary"] = s
 	}
 	stampParentHint(payload, info)
-	in := ReportSorEventInput{
+	emitWorkflowSor(ctx, ReportSorEventInput{
 		WorkflowID: info.WorkflowExecution.ID,
 		RunID:      info.WorkflowExecution.RunID,
 		DedupeKey:  fmt.Sprintf("timer-%s-%d-%s", info.WorkflowExecution.RunID, seq, eventType),
 		Type:       eventType,
 		Kind:       "event",
 		Payload:    payload,
-	}
-	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
-		StartToCloseTimeout: 5 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
-		},
 	})
-	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
 
 func reportChildStarted(ctx workflow.Context, seq int, parent *workflow.Info, child workflow.Execution) {
@@ -246,19 +253,14 @@ func reportChildStarted(ctx workflow.Context, seq int, parent *workflow.Info, ch
 		"parent_workflow_type": parent.WorkflowType.Name,
 	}
 	stampParentHint(payload, parent)
-	in := ReportSorEventInput{
+	emitWorkflowSor(ctx, ReportSorEventInput{
 		WorkflowID: parent.WorkflowExecution.ID,
 		RunID:      parent.WorkflowExecution.RunID,
 		DedupeKey:  fmt.Sprintf("child-started-%s-%d-%s", parent.WorkflowExecution.RunID, seq, child.RunID),
 		Type:       "child.started",
 		Kind:       "event",
 		Payload:    payload,
-	}
-	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
-		StartToCloseTimeout: 5 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
-	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
 
 func stampParentHint(payload map[string]string, info *workflow.Info) {
@@ -305,7 +307,7 @@ func reportWorkflowTerminal(ctx workflow.Context, runErr error) {
 			payload["parent_namespace"] = info.ParentWorkflowNamespace
 		}
 	}
-	in := ReportSorEventInput{
+	emitWorkflowSor(ctx, ReportSorEventInput{
 		WorkflowID: info.WorkflowExecution.ID,
 		RunID:      info.WorkflowExecution.RunID,
 		DedupeKey:  fmt.Sprintf("wf-terminal-%s-%s", info.WorkflowExecution.RunID, eventType),
@@ -313,12 +315,23 @@ func reportWorkflowTerminal(ctx workflow.Context, runErr error) {
 		Kind:       "event",
 		Status:     status,
 		Payload:    payload,
+	})
+}
+
+// emitWorkflowSor enqueues onto the SoR handoff when versioned in, otherwise
+// falls back to a ReportSorEvent local activity for in-flight histories.
+// Replay skips enqueue so Dynamo is not re-stamped for every later WFT.
+func emitWorkflowSor(ctx workflow.Context, in ReportSorEventInput) {
+	if h, ok := ctx.Value(sorHandoffContextKey{}).(*sorTaskHandoff); ok && h != nil {
+		if workflow.IsReplaying(ctx) {
+			return
+		}
+		h.enqueue(in)
+		return
 	}
 	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
 		StartToCloseTimeout: 5 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
-		},
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
 	_ = workflow.ExecuteLocalActivity(laCtx, ReportSorEventName, in).Get(ctx, nil)
 }
