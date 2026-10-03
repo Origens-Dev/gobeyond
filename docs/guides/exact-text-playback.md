@@ -45,3 +45,19 @@ missing final marker, partial synthesis and stale/replayed identities cannot
 create such a receipt. Retries must reuse the immutable clip identity and mutation
 operation. Completion means transport delivery, not proof that a human heard the
 message. Marking and metering remain gated on the separate integration.
+
+`agents.PlaybackCompletionFromContext(ctx)` returns a text-free
+`voicecontract.PlaybackCompletionReceipt` only when the framework has installed
+its private marker and the receipt remains fresh. There is no exported setter.
+A decoded receipt or actor metadata cannot supply that authority. No runtime
+currently populates the marker; application completion handlers must return an
+unavailable error when the accessor returns false. After runtime integration,
+they must still match the exact authenticated calling-line context and perform
+an immutable-message CAS over ID, creation timestamp, text digest and expiry.
+The accessor is not a substitute for that catalog authorization or mutation fence.
+
+Clip IDs are `clip_` followed by lowercase SHA256 of canonical context JSON,
+a NUL byte, then the tool-call ID. Public/private contexts use canonical JSON so
+Go field declaration order cannot alter identity. Completion timestamps use UTC
+`time.Time`, retaining RFC3339Nano precision on the wire. Validation alone never
+authenticates a receipt and must not be used to install a trusted marker.
