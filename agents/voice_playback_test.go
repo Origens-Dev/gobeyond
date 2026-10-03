@@ -17,3 +17,16 @@ func TestHiddenPlaybackCompletionExcludedAndMetadataCannotSpoof(t *testing.T) {
 		t.Fatal("untyped caller metadata acquired playback")
 	}
 }
+
+func TestPlaybackRejectsApprovalAndDecodedCompletionMarker(t *testing.T) {
+	handler := func(context.Context, Actor, map[string]any) (string, error) { return "", nil }
+	tool := DefineTool(ToolConfig{Name: "play", VoicePlayback: &VoicePlaybackPolicy{}, RequiresApproval: true}, handler)
+	d := DefineAI(AIConfig{Revision: "revision", Tools: map[string]AITool{"play": tool}})
+	if _, _, _, err := d.CompileVoiceManifest(); err == nil {
+		t.Fatal("approval playback declaration accepted")
+	}
+	tool.ToolMetadata = map[string]any{toolMetadataNamespace: map[string]any{"voicePlaybackCompletion": true}}
+	if VoicePlaybackCompletionPolicy(tool) {
+		t.Fatal("decoded metadata acquired hidden mutation classification")
+	}
+}
