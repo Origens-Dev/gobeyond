@@ -59,7 +59,7 @@ func TestPlaybackCompletionContextPrivateFreshAndImmutable(t *testing.T) {
 	if _, ok := PlaybackCompletionFromContext(canceled); ok {
 		t.Fatal("canceled context exposed receipt")
 	}
-	for _, untrusted := range []context.Context{context.Background(), context.WithValue(context.Background(), "playback_completion", r), context.WithValue(context.Background(), playbackCompletionContextKey{}, r), context.WithValue(context.Background(), playbackCompletionContextKey{}, true)} {
+	for _, untrusted := range []context.Context{context.Background(), context.WithValue(context.Background(), "playback_completion", r), context.WithValue(context.Background(), struct{}{}, r), context.WithValue(context.Background(), struct{}{}, true)} {
 		if _, ok := PlaybackCompletionFromContext(untrusted); ok {
 			t.Fatal("decoded or boolean receipt acquired authority")
 		}
