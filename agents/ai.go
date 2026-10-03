@@ -256,7 +256,7 @@ func (definition AIDefinition) preparedAgent(actor Actor, input AIInput) (*ai.To
 	settings := ai.ToolLoopAgentSettings{
 		Instructions: strings.TrimSpace(definition.AI.Instructions),
 		Model:        model,
-		Tools:        definition.AI.Tools,
+		Tools:        ModelTools(definition.AI.Tools),
 		StopWhen:     []ai.StopCondition{ai.StepCount(maxSteps)},
 		PrepareStep: func(ai.PrepareStepOptions) (*ai.PrepareStepResult, error) {
 			return &ai.PrepareStepResult{ToolsContext: map[string]any{toolActorContextKey: actor}}, nil

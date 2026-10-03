@@ -68,10 +68,21 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		p, ok := VoiceControlPolicy(t)
 		read, isRead := VoiceRemoteReadPolicy(t)
 		action := VoiceActionPolicy(t)
-		if (ok && isRead) || (action && (ok || isRead)) {
+		playback, isPlayback := VoicePlaybackPolicyFor(t)
+		completion := VoicePlaybackCompletionPolicy(t)
+		count := 0
+		for _, present := range []bool{ok, isRead, action, isPlayback, completion} {
+			if present {
+				count++
+			}
+		}
+		if count > 1 {
 			return m, nil, "", errors.New("voice tool cannot have multiple execution policies")
 		}
-		if !ok && !isRead && !action {
+		if (isPlayback || completion) && (t.RequiresApproval || t.NeedsApproval != nil) {
+			return m, nil, "", errors.New("playback requires authenticated receipt policy, not provider approval")
+		}
+		if !ok && !isRead && !action && !isPlayback && !completion {
 			continue
 		}
 		if action && !t.RequiresApproval {
@@ -90,7 +101,24 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 			return m, nil, "", e
 		}
 		spec := voicecontract.Tool{ID: id, Name: name, Description: t.Description, InputSchema: c, SchemaDigest: voicecontract.Digest(c), DestinationClasses: p.DestinationClasses, TargetKinds: p.TargetKinds, InputModes: p.InputModes, HandoffMode: p.HandoffMode, TerminalBehavior: p.TerminalBehavior, TerminalOnSuccess: p.TerminalOnSuccess, ExecutionKind: "call_control"}
-		if action {
+		if isPlayback || completion {
+			spec.ExecutionKind = "playback_completion"
+			if isPlayback {
+				spec.ExecutionKind = "playback"
+				spec.Playback = &playback
+				output, e := json.Marshal(t.OutputSchema)
+				if e != nil {
+					return m, nil, "", e
+				}
+				output, e = voicecontract.CanonicalJSON(output, voicecontract.MaxSchemaBytes)
+				if e != nil {
+					return m, nil, "", e
+				}
+				spec.OutputSchema = output
+				spec.OutputSchemaDigest = voicecontract.Digest(output)
+				spec.MaxResultBytes = playback.MaxResultBytes
+			}
+		} else if action {
 			spec.ExecutionKind = "action"
 			spec.RequiresApproval = true
 			// Match the compiler-published action manifest representation.

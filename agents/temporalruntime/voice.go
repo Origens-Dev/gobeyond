@@ -614,7 +614,7 @@ func liveToolsFromSelected(tools map[string]ai.Tool) []*genai.Tool {
 	}
 	declarations := make([]*genai.FunctionDeclaration, 0, len(tools))
 	nativeGoogleSearch := false
-	for key, tool := range tools {
+	for key, tool := range agents.ModelTools(tools) {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
 			name = key
@@ -651,7 +651,7 @@ func clientToolsFromSelected(tools map[string]ai.Tool) map[string]ai.Tool {
 		return nil
 	}
 	out := make(map[string]ai.Tool, len(tools))
-	for key, tool := range tools {
+	for key, tool := range agents.ModelTools(tools) {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
 			name = key
@@ -688,7 +688,7 @@ func clientToolsFromDefinition(definition agents.AIDefinition, enabled []string)
 		return nil
 	}
 	out := make(map[string]ai.Tool, len(tools))
-	for key, tool := range tools {
+	for key, tool := range agents.ModelTools(tools) {
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
 			name = key
@@ -710,6 +710,12 @@ func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) 
 	}
 	out := make(map[string]ai.Tool)
 	for key, tool := range definition.AI.Tools {
+		if agents.VoicePlaybackCompletionPolicy(tool) {
+			continue
+		}
+		if _, playback := agents.VoicePlaybackPolicyFor(tool); playback {
+			continue
+		}
 		if _, read := agents.VoiceRemoteReadPolicy(tool); read {
 			continue
 		}
