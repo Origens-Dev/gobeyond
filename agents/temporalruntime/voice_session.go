@@ -48,6 +48,8 @@ type VoiceSessionInput struct {
 // VoiceSessionExecuteToolInput is the Update / LocalActivity payload for one
 // Gemini Live function call.
 type VoiceSessionExecuteToolInput struct {
+	SourcePlayback   *voicecontract.SourcePlaybackRequest   `json:"source_playback,omitempty"`
+	HiddenCompletion *voicecontract.HiddenCompletionRequest `json:"hidden_completion,omitempty"`
 	// Workflow-owned propagation; callers cannot select a broader policy.
 	BudgetPolicy string                     `json:"budget_policy,omitempty"`
 	Grant        string                     `json:"grant,omitempty"`
@@ -114,7 +116,7 @@ func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget
 	if in.BudgetPolicy == "" {
 		return nil
 	}
-	if in.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxV1 || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
+	if (in.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxV1 && in.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxPlaybackV1) || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
 		return errors.New("invalid verified workflow budget policy")
 	}
 	budget.policy = in.BudgetPolicy
@@ -157,12 +159,19 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	control := newVoiceControlWorkflowState()
 	reads := newVoiceReadWorkflowState()
 	reads.budget = control.budget
+	playback := configureVoicePlayback(ctx, control.budget)
 	if err := configureVoiceToolBudget(ctx, in, control.budget); err != nil {
 		return err
 	}
 
 	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+			if !exclusiveVoiceDispatch(req) {
+				return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
+			}
+			if req.SourcePlayback != nil || req.HiddenCompletion != nil {
+				return playback.execute(ctx, in, req)
+			}
 			if req.RemoteRead != nil {
 				if req.CallControl != nil {
 					return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
@@ -324,6 +333,15 @@ func makeVoiceApprovalResult(interactionID string, req VoiceSessionExecuteToolIn
 // and runs it in-process on the realtime worker (LocalActivity). Maglev cannot
 // hold customer tools; the agent worker can.
 func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+	if !exclusiveVoiceDispatch(req) {
+		return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
+	}
+	if req.HiddenCompletion != nil {
+		return executeVoicePlaybackCompletionActivity(ctx, req)
+	}
+	if req.SourcePlayback != nil {
+		return executeVoiceSourcePlaybackActivity(ctx, req)
+	}
 	if req.RemoteRead != nil {
 		if req.CallControl != nil {
 			return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
@@ -351,6 +369,9 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("unknown tool %q", toolName)}, nil
 	}
 
+	if _, playback := agents.VoicePlaybackPolicyFor(tool); playback || agents.VoicePlaybackCompletionPolicy(tool) {
+		return VoiceSessionExecuteToolResult{}, errors.New("playback requires typed runtime dispatch")
+	}
 	if _, read := agents.VoiceRemoteReadPolicy(tool); read {
 		return VoiceSessionExecuteToolResult{}, errors.New("remote read requires current scoped dispatch")
 	}

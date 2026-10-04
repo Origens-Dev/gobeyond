@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -94,9 +95,19 @@ func executeVoiceRemoteReadActivity(ctx context.Context, req VoiceSessionExecute
 	return executeVoiceRegistryActivity(ctx, req, true)
 }
 func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteToolInput, read bool) (VoiceSessionExecuteToolResult, error) {
+	return executeVoiceRegistryActivityKind(ctx, req, read, false)
+}
+func executeVoiceRegistryActivityKind(ctx context.Context, req VoiceSessionExecuteToolInput, read, playback bool) (VoiceSessionExecuteToolResult, error) {
 	c := req.CallControl
 	if read {
 		r := req.RemoteRead
+		if playback {
+			p := req.SourcePlayback
+			if p == nil || p.Validate() != nil {
+				return VoiceSessionExecuteToolResult{}, errors.New("invalid source playback")
+			}
+			r = &voicecontract.ReadRequest{Version: p.Version, Context: p.Context, ToolID: p.ToolID, ToolCallID: p.ToolCallID, InputDigest: p.InputDigest, Arguments: p.Arguments}
+		}
 		if r == nil || r.Validate() != nil {
 			return VoiceSessionExecuteToolResult{}, errors.New("invalid remote read")
 		}
@@ -137,7 +148,7 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 			break
 		}
 	}
-	if spec == nil || spec.IsRead() != read {
+	if spec == nil || (!playback && spec.IsRead() != read) || (playback && !spec.IsPlayback()) {
 		return VoiceSessionExecuteToolResult{}, errors.New("control tool not deployed")
 	}
 	if req.ToolName != "" && req.ToolName != spec.Name {
@@ -157,32 +168,18 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 	}
 	_, controlPolicy := agents.VoiceControlPolicy(tool)
 	_, readPolicy := agents.VoiceRemoteReadPolicy(tool)
+	playbackPolicy, hasPlaybackPolicy := agents.VoicePlaybackPolicyFor(tool)
+	if playback {
+		if !hasPlaybackPolicy || spec.Playback == nil || playbackPolicy != *spec.Playback || agents.VoicePlaybackCompletionPolicy(tool) {
+			return VoiceSessionExecuteToolResult{}, errors.New("playback policy unavailable")
+		}
+		readPolicy = true
+	}
 	if (!read && !controlPolicy) || (read && !readPolicy) {
 		return VoiceSessionExecuteToolResult{}, errors.New("control policy unavailable")
 	}
-	metadata := map[string]string{"organization_id": c.Context.OrganizationID, "project_id": c.Context.ProjectID, "environment_id": c.Context.EnvironmentID, "network_id": c.Context.NetworkID, "line_id": c.Context.Scope.LineID, "call_id": c.Context.CallID, "session_id": c.Context.SessionID, "execution_id": c.Context.ExecutionID, "agent_id": c.Context.AgentID, "agent_revision": c.Context.AgentRevision, "manifest_digest": c.Context.ManifestDigest, "generation": strconv.FormatUint(c.Context.Generation, 10), "voice_session_grant": req.Grant, "operation_id": c.OperationID, "announcement_barrier_id": strconv.FormatUint(c.AnnouncementBarrierID, 10)}
-	// v2 agent sessions bind transport/hop identity into the signed grant.
-	// Customer tools re-verify Claims.Context == expected; omitting these keys
-	// caused call-operator to synthesize hop_<session_id> and fail closed as
-	// "call control could not start" before operations/start.
-	if c.Context.TransportCallID != "" {
-		metadata["transport_call_id"] = c.Context.TransportCallID
-	}
-	if c.Context.ParentCallID != "" {
-		metadata["parent_call_id"] = c.Context.ParentCallID
-	}
-	if c.Context.HopID != "" {
-		metadata["hop_id"] = c.Context.HopID
-	}
-	if c.Context.HopCount != 0 {
-		metadata["hop_count"] = strconv.FormatUint(uint64(c.Context.HopCount), 10)
-	}
-	if read {
-		delete(metadata, "operation_id")
-		delete(metadata, "announcement_barrier_id")
-	}
-	actor := agents.Actor{ID: c.Context.ActorID, Kind: c.Context.ActorKind, Metadata: metadata}
-	if err = actor.Validate(); err != nil {
+	actor, err := voiceScopedActor(c.Context, req.Grant, c.OperationID, c.AnnouncementBarrierID, read)
+	if err != nil {
 		return VoiceSessionExecuteToolResult{}, err
 	}
 	var args map[string]any
@@ -200,9 +197,15 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 		if e != nil {
 			return VoiceSessionExecuteToolResult{}, e
 		}
-		raw, e = voicecontract.ValidateToolOutput(*spec, raw)
-		if e != nil {
-			return VoiceSessionExecuteToolResult{Error: "directory result rejected"}, nil
+		if playback {
+			if _, e = voicecontract.ResolvePlaybackSource(*spec, raw, time.Now().UTC()); e != nil {
+				return VoiceSessionExecuteToolResult{}, errors.New("playback source rejected")
+			}
+		} else {
+			raw, e = voicecontract.ValidateToolOutput(*spec, raw)
+			if e != nil {
+				return VoiceSessionExecuteToolResult{Error: "directory result rejected"}, nil
+			}
 		}
 		return VoiceSessionExecuteToolResult{Result: raw}, nil
 	}
@@ -219,4 +222,33 @@ func executeVoiceRegistryActivity(ctx context.Context, req VoiceSessionExecuteTo
 		return VoiceSessionExecuteToolResult{}, errors.New("invalid operation acknowledgement")
 	}
 	return VoiceSessionExecuteToolResult{Operation: &operation}, nil
+}
+
+func voiceScopedActor(c voicecontract.Context, grant, operation string, barrier uint64, read bool) (agents.Actor, error) {
+	metadata := map[string]string{"organization_id": c.OrganizationID, "project_id": c.ProjectID, "environment_id": c.EnvironmentID, "network_id": c.NetworkID, "line_id": c.Scope.LineID, "call_id": c.CallID, "session_id": c.SessionID, "execution_id": c.ExecutionID, "agent_id": c.AgentID, "agent_revision": c.AgentRevision, "manifest_digest": c.ManifestDigest, "generation": strconv.FormatUint(c.Generation, 10), "voice_session_grant": grant, "operation_id": operation, "announcement_barrier_id": strconv.FormatUint(barrier, 10)}
+	// v2 agent sessions bind transport/hop identity into the signed grant.
+	// Customer tools re-verify Claims.Context == expected; omitting these keys
+	// caused call-operator to synthesize hop_<session_id> and fail closed as
+	// "call control could not start" before operations/start.
+	if c.TransportCallID != "" {
+		metadata["transport_call_id"] = c.TransportCallID
+	}
+	if c.ParentCallID != "" {
+		metadata["parent_call_id"] = c.ParentCallID
+	}
+	if c.HopID != "" {
+		metadata["hop_id"] = c.HopID
+	}
+	if c.HopCount != 0 {
+		metadata["hop_count"] = strconv.FormatUint(uint64(c.HopCount), 10)
+	}
+	if read {
+		delete(metadata, "operation_id")
+		delete(metadata, "announcement_barrier_id")
+	}
+	actor := agents.Actor{ID: c.ActorID, Kind: c.ActorKind, Metadata: metadata}
+	if err := actor.Validate(); err != nil {
+		return agents.Actor{}, err
+	}
+	return actor, nil
 }
