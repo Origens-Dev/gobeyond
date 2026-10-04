@@ -9,8 +9,8 @@ import (
 
 // PlaybackCompletionFromContext returns only a current runtime-owned receipt.
 // Actor/session metadata, decoded payloads and tool options cannot populate it.
-// No runtime currently installs this marker: durable authentication and hidden
-// mutation dispatch remain separate integration gates.
+// The scoped voice runtime installs it only after the fixed host relay resolves
+// a durable delivered receipt for the current signed grant and frozen tool pair.
 func PlaybackCompletionFromContext(ctx context.Context) (voicecontract.PlaybackCompletionReceipt, bool) {
 	return playbackcompletion.From(ctx)
 }

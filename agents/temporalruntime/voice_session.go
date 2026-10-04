@@ -337,7 +337,7 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 		return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
 	}
 	if req.HiddenCompletion != nil {
-		return VoiceSessionExecuteToolResult{}, errors.New("authenticated playback completion unavailable")
+		return executeVoicePlaybackCompletionActivity(ctx, req)
 	}
 	if req.SourcePlayback != nil {
 		return executeVoiceSourcePlaybackActivity(ctx, req)
