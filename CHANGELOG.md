@@ -16,6 +16,11 @@
 
 - Match runtime voice write manifest digests to compiler-published manifests.
 
+- Remove unused `ScreeningContext.voicemail_enabled`. Add authorable
+  `generic_v1` voice budget skeleton with no product agent-id bind and no
+  mailbox allowlist expansion. Add M2 RingPlan and ring lifecycle event
+  contract goldens (encode/decode only).
+
 ## 0.1.0-alpha.105 - 2026-09-26
 
 - Add manifest-bound voice actions with exact-input user approval for HTTP and

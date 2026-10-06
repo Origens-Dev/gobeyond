@@ -112,6 +112,13 @@ type VoiceSessionExecuteToolResult struct {
 const mailboxBudgetVersionChange = "operator-mailbox-budget-v1"
 
 func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget *voiceToolBudget) error {
+	if voicecontract.IsGenericBudgetPolicy(in.BudgetPolicy) {
+		if in.Context == nil || in.Context.Validate() != nil || in.AgentID != in.Context.AgentID {
+			return errors.New("invalid verified workflow budget policy")
+		}
+		// Skeleton: recognized without mailbox buckets or a product agent-id bind.
+		return nil
+	}
 	version := workflow.GetVersion(ctx, mailboxBudgetVersionChange, workflow.DefaultVersion, 1)
 	// Historical executions retain their shared two-operation budget even when
 	// replayed by a worker that understands the new opt-in.
@@ -121,7 +128,7 @@ func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget
 	if in.BudgetPolicy == "" {
 		return nil
 	}
-	if (in.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxV1 && in.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxPlaybackV1) || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
+	if !voicecontract.IsMailboxBudgetPolicy(in.BudgetPolicy) || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
 		return errors.New("invalid verified workflow budget policy")
 	}
 	budget.policy = in.BudgetPolicy

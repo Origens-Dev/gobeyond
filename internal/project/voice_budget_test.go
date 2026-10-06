@@ -36,3 +36,30 @@ func TestVoiceBudgetCompilerRejectsIncompleteDeclaration(t *testing.T) {
 		t.Fatal("budget without mailbox tool declaration admitted")
 	}
 }
+
+func TestGenericVoiceBudgetCompilesWithoutProductAgent(t *testing.T) {
+	expr, err := parser.ParseExpr(`agents.AIConfig{Model:"google/test", VoiceBudgetPolicy:"generic_v1"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := parseVoiceBudgetPolicy(expr)
+	if err != nil || policy != voicecontract.BudgetPolicyGenericV1 {
+		t.Fatalf("policy=%q %v", policy, err)
+	}
+	generated, err := generatedAgentRegistration(AgentDefinition{ID: "assistant", Kind: AgentKindAI, PackageName: "assistant", VoiceBudgetPolicy: policy})
+	if err != nil || !strings.Contains(string(generated), `definition.AI.VoiceBudgetPolicy = "generic_v1"`) {
+		t.Fatalf("generated declaration missing %s %v", generated, err)
+	}
+	definitions := []AgentDefinition{{
+		ID: "assistant", Revision: "revision", VoiceBudgetPolicy: voicecontract.BudgetPolicyGenericV1,
+		Slots: AgentSlots{Channels: []AgentChannel{{ID: "voice", Connector: "assistant-line"}}},
+	}}
+	published := portableAgentsManifest(definitions, "revision")
+	if err := attachVoiceManifests(&published, definitions); err != nil {
+		t.Fatal(err)
+	}
+	got := published.Agents[0]
+	if got.VoiceManifest == nil || got.VoiceManifest.BudgetPolicy != voicecontract.BudgetPolicyGenericV1 || len(got.VoiceManifest.Tools) != 0 {
+		t.Fatalf("generic skeleton: %#v", got.VoiceManifest)
+	}
+}

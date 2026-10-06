@@ -33,3 +33,7 @@ This package does not activate mailbox tools, add generic mutation dispatch, or
 claim playback completion. The host must provide policy selection from signed
 claims; model turn completion and a permissive playout timeout cannot authorize
 marking a message read.
+
+`generic_v1` is a separate authorable skeleton. It does not bind `call-operator`,
+does not expand this allowlist, and does not assign numeric buckets. Current
+host/admission/workflow limits stay documented in `agents/voicecontract/budget.go`.

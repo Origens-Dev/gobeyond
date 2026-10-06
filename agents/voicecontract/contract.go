@@ -182,7 +182,6 @@ type ScreeningContext struct {
 	RecipientIDs          []string `json:"recipient_ids"`
 	ScreeningEnabled      bool     `json:"screening_enabled"`
 	AllowUnsolicitedCalls bool     `json:"allow_unsolicited_calls"`
-	VoicemailEnabled      bool     `json:"voicemail_enabled"`
 }
 
 // ReadRequest is a current-grant registry read; it cannot start an operation.

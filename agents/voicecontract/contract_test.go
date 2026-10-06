@@ -227,7 +227,7 @@ func TestAllGoldenContracts(t *testing.T) {
 		name string
 		v    interface{ Validate() error }
 	}{
-		{"grant", &GrantClaims{}}, {"event-accepted", &Operation{}}, {"event-ringing", &Operation{}}, {"event-answered", &Operation{}}, {"terminal", &TerminalResult{}}, {"assistant-envelope", &Envelope{}}, {"screener-envelope", &Envelope{}}, {"softphone-event", &SoftphoneEvent{}},
+		{"grant", &GrantClaims{}}, {"event-accepted", &Operation{}}, {"event-ringing", &Operation{}}, {"event-answered", &Operation{}}, {"terminal", &TerminalResult{}}, {"assistant-envelope", &Envelope{}}, {"screener-envelope", &Envelope{}}, {"softphone-event", &SoftphoneEvent{}}, {"ring-plan", &RingPlan{}}, {"ring-event-no-answer", &RingLifecycleEvent{}}, {"ring-event-busy", &RingLifecycleEvent{}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

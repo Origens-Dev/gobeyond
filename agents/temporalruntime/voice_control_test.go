@@ -495,3 +495,17 @@ func TestMailboxTurnLimitRequiresTrustedPolicy(t *testing.T) {
 		t.Fatal("mailbox turn cap unbounded")
 	}
 }
+
+func TestGenericBudgetKeepsDefaultTurnCap(t *testing.T) {
+	cfg := terminalConfig(t)
+	cfg.CallControl.ToolNames = []string{voicecontract.ToolIDHangUp}
+	cfg.CallControl.BudgetPolicy = voicecontract.BudgetPolicyGenericV1
+	cfg.CallControl.MaxAssistantTurns = 10
+	if _, err := controlTools(agents.AIDefinition{}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.CallControl.MaxAssistantTurns = 11
+	if _, err := controlTools(agents.AIDefinition{}, cfg); err == nil {
+		t.Fatal("generic invented mailbox turn cap")
+	}
+}
