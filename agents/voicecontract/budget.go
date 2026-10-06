@@ -54,12 +54,12 @@ func validateBudgetManifest(m Manifest) error {
 			}
 			required[t.ID] = true
 		case "dial-contact":
-			if t.IsRead() || t.IsWrite() || t.IsAction() {
+			if t.IsRead() || t.IsWrite() {
 				return errors.New("placement budget requires call control")
 			}
 			required[t.ID] = true
 		case ToolIDHangUp, "hang-up":
-			if t.IsRead() || t.IsWrite() || t.IsAction() {
+			if t.IsRead() || t.IsWrite() {
 				return errors.New("hangup budget requires call control")
 			}
 		default:

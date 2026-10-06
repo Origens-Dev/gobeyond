@@ -39,7 +39,7 @@ func TestWriteGoldenManifest(t *testing.T) {
 	if err != nil || digest != want || !bytes.Equal(c, got) {
 		t.Fatalf("write fixture digest drifted %s %s %v", digest, want, err)
 	}
-	if !m.Tools[0].IsWrite() || m.Tools[0].IsRead() || m.Tools[0].IsAction() {
+	if !m.Tools[0].IsWrite() || m.Tools[0].IsRead() {
 		t.Fatal("write kind aliases")
 	}
 }
@@ -81,8 +81,12 @@ func TestWriteFreezeRejectsConflictingKinds(t *testing.T) {
 	if _, _, err := FreezeManifest(writeFixture()); err != nil {
 		t.Fatal(err)
 	}
+	approved := writeFixture()
+	approved.Tools[0].RequiresApproval = true
+	if _, _, err := FreezeManifest(approved); err != nil {
+		t.Fatal(err)
+	}
 	for name, mutate := range map[string]func(*Tool){
-		"approval":          func(t *Tool) { t.RequiresApproval = true },
 		"destination":       func(t *Tool) { t.DestinationClasses = []string{"extension"} },
 		"target kind":       func(t *Tool) { t.TargetKinds = []string{"line"} },
 		"input mode":        func(t *Tool) { t.InputModes = []string{"destination_id"} },
@@ -93,9 +97,15 @@ func TestWriteFreezeRejectsConflictingKinds(t *testing.T) {
 		"oversize result":   func(t *Tool) { t.MaxResultBytes = 4097 },
 		"missing output":    func(t *Tool) { t.OutputSchema = nil; t.OutputSchemaDigest = "" },
 		"control mix":       func(t *Tool) { t.ExecutionKind = "call_control" },
-		"action mix":        func(t *Tool) { t.ExecutionKind = "action"; t.RequiresApproval = true },
-		"playback mix":      func(t *Tool) { t.Playback = &PlaybackPolicy{CompletionToolID: "complete"} },
-		"unknown kind":      func(t *Tool) { t.ExecutionKind = "write_action" },
+		"removed action": func(t *Tool) {
+			t.ExecutionKind = "action"
+			t.RequiresApproval = true
+			t.OutputSchema = nil
+			t.OutputSchemaDigest = ""
+			t.MaxResultBytes = 0
+		},
+		"playback mix": func(t *Tool) { t.Playback = &PlaybackPolicy{CompletionToolID: "complete"} },
+		"unknown kind": func(t *Tool) { t.ExecutionKind = "write_action" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := writeFixture()

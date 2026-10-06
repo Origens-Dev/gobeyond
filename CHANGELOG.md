@@ -4,12 +4,17 @@
 
 - Accept JSON Schema `boolean` (`{"type":"boolean"}` only) in voice contract
   input/output validation, and freeze `execution_kind: "write"` with the same
-  closed output object and `max_result_bytes` rules as `read`. `action` is
-  unchanged. Schema keyword `description` remains prohibited.
+  closed output object and `max_result_bytes` rules as `read`. Schema keyword
+  `description` remains prohibited.
 
-- Match runtime voice action manifest digests to compiler-published manifests.
+- Replace `VoiceAction` / `execution_kind: "action"` with `VoiceWrite` /
+  `execution_kind: "write"`. `RequiresApproval` is independent of kind
+  (default off). Temporal writes reserve before dispatch, pass a
+  platform-derived idempotency key through the execute-tool envelope, coalesce
+  identical in-flight calls, reject ToolCallID/key reuse with changed
+  input/scope, and never blindly retry an unknown outcome.
 
-- Include approval-gated `VoiceAction` tools in compiler-generated voice manifests.
+- Match runtime voice write manifest digests to compiler-published manifests.
 
 ## 0.1.0-alpha.105 - 2026-09-26
 

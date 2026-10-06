@@ -722,6 +722,9 @@ func voiceToolsFromDefinition(definition agents.AIDefinition, enabled []string) 
 		if _, controlled := agents.VoiceControlPolicy(tool); controlled {
 			continue
 		}
+		if agents.VoiceWritePolicy(tool) {
+			continue
+		}
 		name := strings.TrimSpace(tool.Name)
 		if name == "" {
 			name = key

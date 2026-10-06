@@ -55,8 +55,9 @@ winning managed dialog. No fixture grants SIP/header serialization authority.
 Registry remote reads use `execution_kind: "read"`, a closed output object schema,
 `output_schema_digest`, and `max_result_bytes` (1–4096). They have no destinations
 and cannot be terminal. Registry writes use `execution_kind: "write"` with the
-same output-schema and `max_result_bytes` freeze rules. Write is not an alias for
-`action`; `action` remains approval-gated and must not carry an output schema.
+same output-schema and `max_result_bytes` freeze rules. `RequiresApproval` is
+independent of kind (default off) and is not implied by write. The `action`
+execution kind is removed.
 Arrays are bounded to at most five items. Current compilation emits `call_control`
 for operation tools; omitted execution kind in existing version-1 fixtures retains
 the same call-control meaning and digest.

@@ -13,3 +13,10 @@ import (
 func ToolSessionID(ctx context.Context) (id string, ok bool) {
 	return toolsession.ID(ctx)
 }
+
+// ToolWriteID returns the platform-derived write idempotency key supplied to
+// VoiceWrite handlers. It never reads actor metadata, model input, or a
+// caller-forged envelope field.
+func ToolWriteID(ctx context.Context) (id string, ok bool) {
+	return toolsession.WriteID(ctx)
+}

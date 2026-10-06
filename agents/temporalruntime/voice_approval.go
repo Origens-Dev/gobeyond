@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
+	"github.com/Origens-Dev/gobeyond/agents"
 )
 
 var errVoiceApprovalUnavailable = errors.New("voice client approval interaction is unavailable")
@@ -16,6 +17,9 @@ var errVoiceApprovalUnavailable = errors.New("voice client approval interaction 
 func executeVoiceAgentTool(ctx context.Context, tool ai.Tool, call ai.ToolCall, options ai.ToolExecutionOptions) (any, error) {
 	if tool.Execute == nil {
 		return nil, errors.New("voice tool execution handler is unavailable")
+	}
+	if agents.VoiceWritePolicy(tool) {
+		return nil, errors.New("voice write requires durable session dispatch")
 	}
 	if tool.RequiresApproval {
 		return nil, errVoiceApprovalUnavailable

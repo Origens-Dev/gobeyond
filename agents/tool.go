@@ -37,11 +37,10 @@ type ToolConfig struct {
 	// VoicePlaybackCompletion is hidden from provider tool schemas. Only a trusted
 	// runtime completion receipt may invoke it; it is a mutation, never a read.
 	VoicePlaybackCompletion bool
-	// VoiceAction opts an authenticated application action into the voice
+	// VoiceWrite opts an authenticated application mutation into the voice
 	// manifest. It is intentionally separate from call control and reads.
-	// Action tools must also set RequiresApproval; the workflow enforces that
-	// approval against the exact server-held tool call before execution.
-	VoiceAction bool
+	// RequiresApproval is independent of this kind and defaults to off.
+	VoiceWrite bool
 }
 
 type ToolHandler[Input any, Output any] func(context.Context, Actor, Input) (Output, error)
@@ -117,7 +116,7 @@ func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCa
 		ns["voiceControl"] = policy
 		metadata[toolMetadataNamespace] = ns
 	}
-	if config.VoiceAction {
+	if config.VoiceWrite {
 		if metadata == nil {
 			metadata = ai.ProviderMetadata{}
 		}
@@ -125,7 +124,7 @@ func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCa
 		if ns == nil {
 			ns = map[string]any{}
 		}
-		ns["voiceAction"] = true
+		ns["voiceWrite"] = voiceWriteMarker{}
 		metadata[toolMetadataNamespace] = ns
 	}
 	return ai.Tool{

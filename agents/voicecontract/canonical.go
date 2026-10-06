@@ -299,10 +299,6 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 				return nil, "", e
 			}
 			t.OutputSchema = output
-		} else if t.IsAction() {
-			if !t.RequiresApproval || len(t.DestinationClasses) != 0 || len(t.TargetKinds) != 0 || len(t.InputModes) != 0 || t.HandoffMode != "" || t.TerminalBehavior != "" || t.TerminalOnSuccess || len(t.OutputSchema) > 0 || t.OutputSchemaDigest != "" || t.MaxResultBytes != 0 {
-				return nil, "", errors.New("invalid action policy")
-			}
 		} else {
 			if t.ExecutionKind != "" && t.ExecutionKind != "call_control" || t.RequiresApproval || len(t.OutputSchema) > 0 || t.OutputSchemaDigest != "" || t.MaxResultBytes != 0 {
 				return nil, "", errors.New("invalid execution policy")
@@ -340,10 +336,11 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 }
 
 // freezeResultSchema applies the shared read/write output contract: a closed
-// object schema, matching digest, and MaxResultBytes in 1–4096. Call-control,
-// playback, and action fields are conflicting on both kinds.
+// object schema, matching digest, and MaxResultBytes in 1–4096. Call-control
+// and playback fields are conflicting on both kinds. RequiresApproval is
+// independent for write and prohibited for read.
 func freezeResultSchema(t Tool, kind string) ([]byte, error) {
-	if t.RequiresApproval || len(t.DestinationClasses) != 0 || len(t.TargetKinds) != 0 || len(t.InputModes) != 0 || t.HandoffMode != "" || t.TerminalBehavior != "" || t.TerminalOnSuccess || t.MaxResultBytes < 1 || t.MaxResultBytes > 4096 {
+	if (kind != "write" && t.RequiresApproval) || len(t.DestinationClasses) != 0 || len(t.TargetKinds) != 0 || len(t.InputModes) != 0 || t.HandoffMode != "" || t.TerminalBehavior != "" || t.TerminalOnSuccess || t.MaxResultBytes < 1 || t.MaxResultBytes > 4096 {
 		return nil, fmt.Errorf("invalid %s policy", kind)
 	}
 	output, err := CanonicalJSON(t.OutputSchema, MaxSchemaBytes)

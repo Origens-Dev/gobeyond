@@ -24,7 +24,7 @@ func parsePlaybackVoiceTool(id string, fields map[string]ast.Expr) (*voicecontra
 	if !playback && !completion {
 		return nil, false, nil
 	}
-	for _, key := range []string{"VoiceControl", "VoiceRemoteRead", "VoiceAction"} {
+	for _, key := range []string{"VoiceControl", "VoiceRemoteRead", "VoiceWrite", "VoiceAction"} {
 		if _, ok := fields[key]; ok {
 			return nil, true, fmt.Errorf("playback cannot combine execution policies")
 		}

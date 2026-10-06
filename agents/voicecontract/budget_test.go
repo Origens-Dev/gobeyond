@@ -26,7 +26,7 @@ func TestOperatorMailboxBudgetRequiresFrozenDeclarationAndScope(t *testing.T) {
 	if err := ValidateBudgetPolicy(BudgetPolicyOperatorMailboxV1, c, m); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutate := range []func(*Context, *Manifest){func(c *Context, m *Manifest) { c.AgentID = "other" }, func(c *Context, m *Manifest) { c.Scope.Kind = "platform_support" }, func(c *Context, m *Manifest) { m.BudgetPolicy = "" }, func(c *Context, m *Manifest) { m.Tools = m.Tools[1:] }, func(c *Context, m *Manifest) { m.Tools[0].ExecutionKind = "action" }} {
+	for _, mutate := range []func(*Context, *Manifest){func(c *Context, m *Manifest) { c.AgentID = "other" }, func(c *Context, m *Manifest) { c.Scope.Kind = "platform_support" }, func(c *Context, m *Manifest) { m.BudgetPolicy = "" }, func(c *Context, m *Manifest) { m.Tools = m.Tools[1:] }, func(c *Context, m *Manifest) { m.Tools[0].ExecutionKind = "write" }} {
 		changedContext, changed := c, m
 		changed.Tools = append([]Tool(nil), m.Tools...)
 		mutate(&changedContext, &changed)

@@ -28,6 +28,19 @@ func TestLegacyVoiceNeverSelectsControlTools(t *testing.T) {
 		t.Fatal("legacy activity accepted control tool")
 	}
 }
+
+func TestVoiceWritesNeverEnterLiveProjection(t *testing.T) {
+	schema, output := voiceWriteClosedSchemas()
+	write := agents.DefineTool(agents.ToolConfig{Name: "lookup", InputSchema: schema, OutputSchema: output, VoiceWrite: true}, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		t.Fatal("write executed through Live projection")
+		return map[string]any{"ok": true}, nil
+	})
+	d := agents.DefineAI(agents.AIConfig{Tools: map[string]agents.AITool{"lookup": write, "web_search": {Name: "web_search"}}})
+	got := voiceToolsFromDefinition(d, []string{"lookup", "web_search"})
+	if len(got) != 1 || got["web_search"].Name != "web_search" {
+		t.Fatalf("live tools: %#v", got)
+	}
+}
 func TestVoiceManifestAccessorCopies(t *testing.T) {
 	r := NewVoiceRegistry()
 	r.manifests = map[string][]byte{"operator": []byte("original")}
