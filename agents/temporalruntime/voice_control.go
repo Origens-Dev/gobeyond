@@ -85,10 +85,10 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 	}
 	c := cfg.CallControl
 	maxTurns := 10
-	if c.BudgetPolicy == voicecontract.BudgetPolicyOperatorMailboxV1 || c.BudgetPolicy == voicecontract.BudgetPolicyOperatorMailboxPlaybackV1 {
+	if voicecontract.IsMailboxBudgetPolicy(c.BudgetPolicy) {
 		maxTurns = voicecontract.OperatorMailboxAssistantTurns
 	}
-	if (c.BudgetPolicy != "" && c.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxV1 && c.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxPlaybackV1) || c.MaxAssistantTurns < 0 || c.MaxAssistantTurns > maxTurns || c.Execute == nil || cfg.OnPlayoutBarrier == nil || len(c.ToolNames) == 0 || len(c.ToolNames) > 8 {
+	if !voicecontract.RecognizedBudgetPolicy(c.BudgetPolicy) || c.MaxAssistantTurns < 0 || c.MaxAssistantTurns > maxTurns || c.Execute == nil || cfg.OnPlayoutBarrier == nil || len(c.ToolNames) == 0 || len(c.ToolNames) > 8 {
 		return nil, errors.New("verified call-control executor and playout barrier required")
 	}
 	out := map[string]ai.Tool{}

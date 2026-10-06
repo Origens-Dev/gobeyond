@@ -68,6 +68,11 @@ type VoiceSessionExecuteToolInput struct {
 	// AllowedToolIDs is derived from the verified voice grant by the API. It is
 	// optional for colocated/internal tests and older direct workflow callers.
 	AllowedToolIDs []string `json:"allowed_tool_ids,omitempty"`
+	SessionID      string   `json:"session_id,omitempty"`
+	CallID         string   `json:"call_id,omitempty"`
+	// IdempotencyKey is platform-derived by the voice session workflow. Callers
+	// cannot select it; the activity re-derives and rejects a mismatch.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// Set only by the workflow after validating an approval response. The public
 	// execute-tool update always clears this field before dispatch.
 	ApprovalConfirmed bool      `json:"approval_confirmed,omitempty"`
@@ -107,6 +112,13 @@ type VoiceSessionExecuteToolResult struct {
 const mailboxBudgetVersionChange = "operator-mailbox-budget-v1"
 
 func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget *voiceToolBudget) error {
+	if voicecontract.IsGenericBudgetPolicy(in.BudgetPolicy) {
+		if in.Context == nil || in.Context.Validate() != nil || in.AgentID != in.Context.AgentID {
+			return errors.New("invalid verified workflow budget policy")
+		}
+		// Skeleton: recognized without mailbox buckets or a product agent-id bind.
+		return nil
+	}
 	version := workflow.GetVersion(ctx, mailboxBudgetVersionChange, workflow.DefaultVersion, 1)
 	// Historical executions retain their shared two-operation budget even when
 	// replayed by a worker that understands the new opt-in.
@@ -116,7 +128,7 @@ func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget
 	if in.BudgetPolicy == "" {
 		return nil
 	}
-	if (in.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxV1 && in.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxPlaybackV1) || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
+	if !voicecontract.IsMailboxBudgetPolicy(in.BudgetPolicy) || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
 		return errors.New("invalid verified workflow budget policy")
 	}
 	budget.policy = in.BudgetPolicy
@@ -136,8 +148,6 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 		"execution_id", in.ExecutionID,
 	)
 
-	toolCalls := 0
-	completed := map[string]VoiceSessionExecuteToolResult{}
 	pendingApprovals := map[string]VoiceSessionExecuteToolInput{}
 	pendingByCall := map[string]string{}
 	type approvalOutcome struct {
@@ -159,6 +169,7 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	control := newVoiceControlWorkflowState()
 	reads := newVoiceReadWorkflowState()
 	reads.budget = control.budget
+	writes := newVoiceWriteWorkflowState()
 	playback := configureVoicePlayback(ctx, control.budget)
 	if err := configureVoiceToolBudget(ctx, in, control.budget); err != nil {
 		return err
@@ -181,26 +192,15 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 			if req.CallControl != nil {
 				return control.execute(ctx, in, req)
 			}
-			if strings.TrimSpace(req.AgentID) == "" {
-				req.AgentID = in.AgentID
+			req, identity, replay, err := bindVoiceWriteRequest(in, req)
+			if err != nil {
+				if errors.Is(err, errWriteToolCallID) {
+					return VoiceSessionExecuteToolResult{Error: err.Error()}, nil
+				}
+				return VoiceSessionExecuteToolResult{}, err
 			}
-			if in.Context != nil && (req.ActorID != in.Context.ActorID || req.ActorKind != in.Context.ActorKind || req.AgentID != in.Context.AgentID || req.NetworkID != in.Context.NetworkID) {
-				return VoiceSessionExecuteToolResult{}, errors.New("voice tool actor or scope does not match the verified session")
-			}
-			if in.Context == nil {
-				return VoiceSessionExecuteToolResult{}, errors.New("voice action requires a verified session context")
-			}
-			req.ManifestDigest = in.Context.ManifestDigest
-			req.AgentRevision = in.Context.AgentRevision
 			callID := strings.TrimSpace(req.ToolCallID)
-			if callID == "" {
-				return VoiceSessionExecuteToolResult{Error: "tool_call_id required"}, nil
-			}
-			// The caller cannot self-assert approval on this initial update.
 			req.ApprovalConfirmed = false
-			if result, ok := completed[callID]; ok {
-				return result, nil
-			}
 			if interactionID := pendingByCall[callID]; interactionID != "" {
 				pending := pendingApprovals[interactionID]
 				if pending.ToolName != req.ToolName || voiceToolInputHash(pending.Input) != voiceToolInputHash(req.Input) || pending.ActorID != req.ActorID || pending.ActorKind != req.ActorKind {
@@ -208,22 +208,20 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 				}
 				return makeVoiceApprovalResult(interactionID, pending), nil
 			}
-			if toolCalls >= maxVoiceSessionToolCalls {
-				return VoiceSessionExecuteToolResult{Error: "voice session tool quota exceeded"}, nil
+			cached, done, err := writes.reserve(ctx, identity, replay)
+			if err != nil || done {
+				return cached, err
 			}
-			toolCalls++
-			result, err := executeVoiceSessionToolLocal(ctx, req)
+			result, err := executeVoiceWriteToolLocal(ctx, req)
 			if err == nil && result.Approval != nil {
+				writes.pending[identity] = false
 				req.ApprovalExpiresAt = workflow.Now(ctx).Add(5 * time.Minute)
 				result.Approval.ExpiresAt = req.ApprovalExpiresAt
 				pendingApprovals[result.Approval.InteractionID] = req
 				pendingByCall[callID] = result.Approval.InteractionID
 				return result, nil
 			}
-			if err == nil && callID != "" {
-				completed[callID] = result
-			}
-			return result, err
+			return writes.finish(identity, result, err)
 		}); err != nil {
 		return err
 	}
@@ -246,24 +244,26 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 			if !req.ApprovalExpiresAt.IsZero() && !workflow.Now(ctx).Before(req.ApprovalExpiresAt) {
 				delete(pendingApprovals, interactionID)
 				delete(pendingByCall, req.ToolCallID)
-				return VoiceSessionExecuteToolResult{Error: "tool approval expired"}, nil
+				result, _ := writes.finish(voiceWriteIdentity(req.ToolName, req.ToolCallID), VoiceSessionExecuteToolResult{Error: "tool approval expired"}, nil)
+				return result, nil
 			}
 			var result VoiceSessionExecuteToolResult
+			identity := voiceWriteIdentity(req.ToolName, req.ToolCallID)
 			if !response.Approved {
-				result = VoiceSessionExecuteToolResult{Error: "tool approval denied"}
+				result, _ = writes.finish(identity, VoiceSessionExecuteToolResult{Error: "tool approval denied"}, nil)
 			} else {
 				req.ApprovalConfirmed = true
 				var err error
-				result, err = executeVoiceSessionToolLocal(ctx, req)
+				result, err = executeVoiceWriteToolLocal(ctx, req)
+				if result.Approval != nil && err == nil {
+					return VoiceSessionExecuteToolResult{}, errors.New("approved voice tool unexpectedly requested another approval")
+				}
+				result, err = writes.finish(identity, result, err)
 				if err != nil {
 					return VoiceSessionExecuteToolResult{}, err
 				}
-				if result.Approval != nil {
-					return VoiceSessionExecuteToolResult{}, errors.New("approved voice tool unexpectedly requested another approval")
-				}
 			}
 			approvalResults[interactionID] = approvalOutcome{actorID: response.ActorID, actorKind: response.ActorKind, approved: response.Approved, result: result}
-			completed[req.ToolCallID] = result
 			delete(pendingApprovals, interactionID)
 			delete(pendingByCall, req.ToolCallID)
 			return result, nil
@@ -378,87 +378,7 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 	if _, controlled := agents.VoiceControlPolicy(tool); controlled {
 		return VoiceSessionExecuteToolResult{}, errors.New("voice control tool requires current grant operation dispatch")
 	}
-	if !agents.VoiceActionPolicy(tool) || !tool.RequiresApproval {
-		return VoiceSessionExecuteToolResult{Error: "tool is not an approved voice action"}, nil
-	}
-	manifestRaw, manifestDigest, ok := reg.Manifest(agentID)
-	if !ok || manifestDigest == "" || req.ManifestDigest != manifestDigest || req.AgentRevision != definition.AI.Revision {
-		return VoiceSessionExecuteToolResult{}, errors.New("voice action manifest binding mismatch")
-	}
-	var manifest voicecontract.Manifest
-	if err := voicecontract.Decode(manifestRaw, voicecontract.MaxManifestBytes, &manifest); err != nil || manifest.CompiledRevision != req.AgentRevision {
-		return VoiceSessionExecuteToolResult{}, errors.New("voice action manifest unavailable")
-	}
-	var spec *voicecontract.Tool
-	for i := range manifest.Tools {
-		if manifest.Tools[i].Name == tool.Name && manifest.Tools[i].ID == toolName {
-			spec = &manifest.Tools[i]
-			break
-		}
-	}
-	if spec == nil || !spec.IsAction() || !spec.RequiresApproval || !voiceToolAllowed(req.AllowedToolIDs, spec.ID) {
-		return VoiceSessionExecuteToolResult{Error: "voice action is not allowed"}, nil
-	}
-	canonicalInput, err := voicecontract.ValidateToolInput(*spec, req.Input)
-	if err != nil {
-		return VoiceSessionExecuteToolResult{Error: "voice action input rejected"}, nil
-	}
-	var args map[string]any
-	if len(canonicalInput) > 0 {
-		if err := json.Unmarshal(canonicalInput, &args); err != nil {
-			return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("invalid tool input: %v", err)}, nil
-		}
-	}
-	actorMetadata := map[string]string{}
-	if networkID := strings.TrimSpace(req.NetworkID); networkID != "" {
-		actorMetadata["network_id"] = networkID
-	}
-	actor := agents.Actor{
-		ID:       strings.TrimSpace(req.ActorID),
-		Kind:     strings.TrimSpace(req.ActorKind),
-		Metadata: actorMetadata,
-	}
-	if err := actor.Validate(); err != nil {
-		return VoiceSessionExecuteToolResult{Error: "voice session actor unavailable"}, nil
-	}
-	if len(req.AllowedToolIDs) > 0 && !voiceToolAllowed(req.AllowedToolIDs, toolName) {
-		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("tool %q is not allowed", toolName)}, nil
-	}
-	toolCall := ai.ToolCall{
-		ToolCallID: strings.TrimSpace(req.ToolCallID),
-		ToolName:   toolName,
-		Input:      args,
-	}
-	decision := ai.ApprovalDecision{Type: ai.ApprovalDecisionNotApplicable}
-	if tool.NeedsApproval != nil {
-		var err error
-		decision, err = ai.ResolveToolApproval(ctx, map[string]ai.Tool{toolName: tool}, toolCall)
-		if err != nil {
-			return VoiceSessionExecuteToolResult{Error: "tool approval policy failed"}, nil
-		}
-	}
-	if decision.Type == ai.ApprovalDecisionDenied {
-		return VoiceSessionExecuteToolResult{Error: decision.Reason}, nil
-	}
-	requiresUserApproval := tool.RequiresApproval || decision.Type == ai.ApprovalDecisionUserApproval
-	if requiresUserApproval && !req.ApprovalConfirmed {
-		approval, err := newVoiceSessionToolApproval(req, toolCall)
-		if err != nil {
-			return VoiceSessionExecuteToolResult{}, err
-		}
-		return VoiceSessionExecuteToolResult{Approval: approval}, nil
-	}
-	result, err := tool.Execute(ctx, toolCall, ai.ToolExecutionOptions{
-		Context: map[string]any{"gobeyondActor": actor},
-	})
-	if err != nil {
-		return VoiceSessionExecuteToolResult{Error: err.Error()}, nil
-	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("encode tool result: %v", err)}, nil
-	}
-	return VoiceSessionExecuteToolResult{Result: raw}, nil
+	return executeVoiceWriteActivity(ctx, req, definition, tool, toolName)
 }
 
 func voiceToolAllowed(ids []string, name string) bool {

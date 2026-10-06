@@ -48,3 +48,22 @@ func TestToolSessionUsesRuntimeProjectionAcrossSerialization(t *testing.T) {
 		t.Fatalf("nil context session=%q/%v", id, ok)
 	}
 }
+
+func TestToolWriteIDUsesRuntimeProjectionNotModelInput(t *testing.T) {
+	actor := Actor{ID: "same-user", Kind: "user"}
+	tool := DefineTool(ToolConfig{}, func(ctx context.Context, _ Actor, _ map[string]any) (string, error) {
+		id, ok := ToolWriteID(ctx)
+		if !ok {
+			return "", nil
+		}
+		return id, nil
+	})
+	result, err := tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"gobeyondWriteID": "model-forged"}}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(actor, "session-one", "write-key-one")})
+	if err != nil || result != "write-key-one" {
+		t.Fatalf("write id result=%v err=%v", result, err)
+	}
+	result, err = tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"gobeyondWriteID": "model-forged"}}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContext(actor, "session-one")})
+	if err != nil || result != "" {
+		t.Fatalf("missing write projection result=%v err=%v", result, err)
+	}
+}

@@ -27,3 +27,30 @@ func TestValidateDeployedToolInput(t *testing.T) {
 		}
 	}
 }
+
+func TestBooleanPropertyInput(t *testing.T) {
+	schema := []byte(`{"additionalProperties":false,"properties":{"enabled":{"type":"boolean"}},"required":["enabled"],"type":"object"}`)
+	canonical, err := CanonicalJSON(schema, MaxSchemaBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := Tool{ID: "set-flag", Name: "set_flag", Description: "Toggle a bounded flag.", InputSchema: canonical, SchemaDigest: Digest(canonical), DestinationClasses: []string{"extension"}}
+	m := Manifest{Version: Version, Revision: "boolean-1", CompiledRevision: "boolean-1", Tools: []Tool{tool}}
+	if _, _, err = FreezeManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{`{"enabled":true}`, `{"enabled":false}`} {
+		got, err := ValidateToolInput(tool, []byte(raw))
+		if err != nil {
+			t.Fatalf("boolean input %s: %v", raw, err)
+		}
+		if string(got) != raw {
+			t.Fatalf("canonical boolean %q", got)
+		}
+	}
+	for _, raw := range []string{`{"enabled":"true"}`, `{"enabled":1}`, `{"enabled":0}`, `{"enabled":null}`, `{}`} {
+		if _, err := ValidateToolInput(tool, []byte(raw)); err == nil {
+			t.Fatalf("accepted invalid boolean input %s", raw)
+		}
+	}
+}

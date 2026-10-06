@@ -182,7 +182,6 @@ type ScreeningContext struct {
 	RecipientIDs          []string `json:"recipient_ids"`
 	ScreeningEnabled      bool     `json:"screening_enabled"`
 	AllowUnsolicitedCalls bool     `json:"allow_unsolicited_calls"`
-	VoicemailEnabled      bool     `json:"voicemail_enabled"`
 }
 
 // ReadRequest is a current-grant registry read; it cannot start an operation.
@@ -195,8 +194,8 @@ type ReadRequest struct {
 	Arguments   json.RawMessage `json:"arguments"`
 }
 
-func (t Tool) IsRead() bool   { return t.ExecutionKind == "read" }
-func (t Tool) IsAction() bool { return t.ExecutionKind == "action" }
+func (t Tool) IsRead() bool  { return t.ExecutionKind == "read" }
+func (t Tool) IsWrite() bool { return t.ExecutionKind == "write" }
 
 func (t Tool) IsPlayback() bool           { return t.ExecutionKind == "playback" }
 func (t Tool) IsPlaybackCompletion() bool { return t.ExecutionKind == "playback_completion" }

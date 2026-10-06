@@ -227,7 +227,7 @@ func TestAllGoldenContracts(t *testing.T) {
 		name string
 		v    interface{ Validate() error }
 	}{
-		{"grant", &GrantClaims{}}, {"event-accepted", &Operation{}}, {"event-ringing", &Operation{}}, {"event-answered", &Operation{}}, {"terminal", &TerminalResult{}}, {"assistant-envelope", &Envelope{}}, {"screener-envelope", &Envelope{}}, {"softphone-event", &SoftphoneEvent{}},
+		{"grant", &GrantClaims{}}, {"event-accepted", &Operation{}}, {"event-ringing", &Operation{}}, {"event-answered", &Operation{}}, {"terminal", &TerminalResult{}}, {"assistant-envelope", &Envelope{}}, {"screener-envelope", &Envelope{}}, {"softphone-event", &SoftphoneEvent{}}, {"ring-plan", &RingPlan{}}, {"ring-event-no-answer", &RingLifecycleEvent{}}, {"ring-event-busy", &RingLifecycleEvent{}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -326,7 +326,12 @@ func TestSchemaKeywordMismatch(t *testing.T) {
 	if e = Decode(raw, MaxManifestBytes, &m); e != nil {
 		t.Fatal(e)
 	}
-	for _, s := range []string{`{"type":"object","properties":{},"required":[],"additionalProperties":false,"maxLength":3}`, `{"type":"string","maxLength":128}`} {
+	for _, s := range []string{
+		`{"type":"object","properties":{},"required":[],"additionalProperties":false,"maxLength":3}`,
+		`{"type":"string","maxLength":128}`,
+		`{"type":"object","properties":{"ok":{"type":"boolean","description":"flag"}},"required":["ok"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"ok":{"type":"boolean","enum":[true,false]}},"required":["ok"],"additionalProperties":false}`,
+	} {
 		m.Tools[0].InputSchema = []byte(s)
 		c, _ := CanonicalJSON([]byte(s), MaxSchemaBytes)
 		m.Tools[0].SchemaDigest = Digest(c)

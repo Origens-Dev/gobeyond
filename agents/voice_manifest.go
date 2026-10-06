@@ -44,14 +44,18 @@ func VoiceControlPolicy(tool AITool) (VoiceToolPolicy, bool) {
 	return p, ok
 }
 
-// VoiceActionPolicy identifies an authored app action selected for authenticated
+// voiceWriteMarker is installed only by DefineTool. Decoded provider/client
+// metadata maps cannot acquire write dispatch by setting a boolean flag.
+type voiceWriteMarker struct{}
+
+// VoiceWritePolicy identifies an authored app mutation selected for authenticated
 // voice dispatch. The typed marker can only be emitted by DefineTool.
-func VoiceActionPolicy(tool AITool) bool {
+func VoiceWritePolicy(tool AITool) bool {
 	ns, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)
 	if !ok {
 		return false
 	}
-	enabled, _ := ns["voiceAction"].(bool)
+	_, enabled := ns["voiceWrite"].(voiceWriteMarker)
 	return enabled
 }
 
@@ -67,11 +71,11 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 	for id, t := range d.AI.Tools {
 		p, ok := VoiceControlPolicy(t)
 		read, isRead := VoiceRemoteReadPolicy(t)
-		action := VoiceActionPolicy(t)
+		write := VoiceWritePolicy(t)
 		playback, isPlayback := VoicePlaybackPolicyFor(t)
 		completion := VoicePlaybackCompletionPolicy(t)
 		count := 0
-		for _, present := range []bool{ok, isRead, action, isPlayback, completion} {
+		for _, present := range []bool{ok, isRead, write, isPlayback, completion} {
 			if present {
 				count++
 			}
@@ -82,11 +86,8 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		if (isPlayback || completion) && (t.RequiresApproval || t.NeedsApproval != nil) {
 			return m, nil, "", errors.New("playback requires authenticated receipt policy, not provider approval")
 		}
-		if !ok && !isRead && !action && !isPlayback && !completion {
+		if !ok && !isRead && !write && !isPlayback && !completion {
 			continue
-		}
-		if action && !t.RequiresApproval {
-			return m, nil, "", fmt.Errorf("voice action %s must require approval", id)
 		}
 		name := t.Name
 		if name == "" {
@@ -118,12 +119,25 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 				spec.OutputSchemaDigest = voicecontract.Digest(output)
 				spec.MaxResultBytes = playback.MaxResultBytes
 			}
-		} else if action {
-			spec.ExecutionKind = "action"
-			spec.RequiresApproval = true
-			// Match the compiler-published action manifest representation.
-			spec.DestinationClasses = nil
+		} else if write {
+			if t.OutputSchema == nil {
+				return m, nil, "", fmt.Errorf("voice write %s requires a closed output schema", id)
+			}
+			output, e := json.Marshal(t.OutputSchema)
+			if e != nil {
+				return m, nil, "", e
+			}
+			output, e = voicecontract.CanonicalJSON(output, voicecontract.MaxSchemaBytes)
+			if e != nil {
+				return m, nil, "", e
+			}
+			spec.ExecutionKind = "write"
+			spec.RequiresApproval = t.RequiresApproval
+			spec.DestinationClasses = []string{}
 			spec.TerminalOnSuccess = false
+			spec.OutputSchema = output
+			spec.OutputSchemaDigest = voicecontract.Digest(output)
+			spec.MaxResultBytes = 4096
 		} else if isRead {
 			output, e := json.Marshal(t.OutputSchema)
 			if e != nil {

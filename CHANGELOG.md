@@ -2,9 +2,24 @@
 
 ## Unreleased
 
-- Match runtime voice action manifest digests to compiler-published manifests.
+- Accept JSON Schema `boolean` (`{"type":"boolean"}` only) in voice contract
+  input/output validation, and freeze `execution_kind: "write"` with the same
+  closed output object and `max_result_bytes` rules as `read`. Schema keyword
+  `description` remains prohibited.
 
-- Include approval-gated `VoiceAction` tools in compiler-generated voice manifests.
+- Replace `VoiceAction` / `execution_kind: "action"` with `VoiceWrite` /
+  `execution_kind: "write"`. `RequiresApproval` is independent of kind
+  (default off). Temporal writes reserve before dispatch, pass a
+  platform-derived idempotency key through the execute-tool envelope, coalesce
+  identical in-flight calls, reject ToolCallID/key reuse with changed
+  input/scope, and never blindly retry an unknown outcome.
+
+- Match runtime voice write manifest digests to compiler-published manifests.
+
+- Remove unused `ScreeningContext.voicemail_enabled`. Add authorable
+  `generic_v1` voice budget skeleton with no product agent-id bind and no
+  mailbox allowlist expansion. Add M2 RingPlan and ring lifecycle event
+  contract goldens (encode/decode only).
 
 ## 0.1.0-alpha.105 - 2026-09-26
 

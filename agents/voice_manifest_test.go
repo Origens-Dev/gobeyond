@@ -72,3 +72,20 @@ func TestClientMetadataCannotOptInVoiceControl(t *testing.T) {
 		t.Fatal("client metadata gained control capability")
 	}
 }
+
+func TestClientMetadataCannotOptInVoiceWrite(t *testing.T) {
+	tool := DefineTool(ToolConfig{Name: "save"}, func(context.Context, Actor, map[string]any) (string, error) { return "", nil })
+	if tool.ToolMetadata == nil {
+		tool.ToolMetadata = map[string]any{}
+	}
+	tool.ToolMetadata["gobeyond"] = map[string]any{"voiceWrite": true}
+	if VoiceWritePolicy(tool) {
+		t.Fatal("client metadata gained write capability")
+	}
+	marked := DefineTool(ToolConfig{Name: "save", VoiceWrite: true, InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{}, "required": []string{}}, OutputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []string{"ok"}}}, func(context.Context, Actor, map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	if !VoiceWritePolicy(marked) {
+		t.Fatal("DefineTool VoiceWrite not installed")
+	}
+}

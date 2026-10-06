@@ -34,37 +34,40 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 	controlExpr, hasControl := fields["VoiceControl"]
 	readExpr, hasRead := fields["VoiceRemoteRead"]
 	readPolicy := hasRead && !isNilVoicePolicy(readExpr)
-	actionExpr, hasAction := fields["VoiceAction"]
-	action := false
-	if hasAction {
-		value, err := voiceLiteral(actionExpr, 0)
+	if _, hasAction := fields["VoiceAction"]; hasAction {
+		return nil, fmt.Errorf("VoiceAction is removed; use VoiceWrite")
+	}
+	writeExpr, hasWrite := fields["VoiceWrite"]
+	write := false
+	if hasWrite {
+		value, err := voiceLiteral(writeExpr, 0)
 		if err != nil {
-			return nil, fmt.Errorf("voice action flag must be a literal boolean")
+			return nil, fmt.Errorf("voice write flag must be a literal boolean")
 		}
 		var ok bool
-		action, ok = value.(bool)
+		write, ok = value.(bool)
 		if !ok {
-			return nil, fmt.Errorf("voice action flag must be a literal boolean")
+			return nil, fmt.Errorf("voice write flag must be a literal boolean")
 		}
 	}
 	if hasControl && hasRead {
 		return nil, fmt.Errorf("tool cannot be read and call control")
 	}
 	var tool voicecontract.Tool
-	if action {
+	if write {
 		if hasControl && !isNilVoicePolicy(controlExpr) || hasRead && !isNilVoicePolicy(readExpr) {
-			return nil, fmt.Errorf("tool cannot combine voice action with read or call control")
+			return nil, fmt.Errorf("tool cannot combine voice write with read or call control")
 		}
-		approvalExpr, ok := fields["RequiresApproval"]
-		if !ok {
-			return nil, fmt.Errorf("voice action requires RequiresApproval: true")
+		if expr, ok := fields["RequiresApproval"]; ok {
+			approval, err := voiceLiteral(expr, 0)
+			approved, isBool := approval.(bool)
+			if err != nil || !isBool {
+				return nil, fmt.Errorf("voice write approval must be a literal boolean")
+			}
+			tool = voicecontract.Tool{ID: id, Name: id, ExecutionKind: "write", RequiresApproval: approved, MaxResultBytes: 4096, DestinationClasses: []string{}}
+		} else {
+			tool = voicecontract.Tool{ID: id, Name: id, ExecutionKind: "write", MaxResultBytes: 4096, DestinationClasses: []string{}}
 		}
-		approval, err := voiceLiteral(approvalExpr, 0)
-		approved, isBool := approval.(bool)
-		if err != nil || !isBool || !approved {
-			return nil, fmt.Errorf("voice action requires RequiresApproval: true")
-		}
-		tool = voicecontract.Tool{ID: id, Name: id, ExecutionKind: "action", RequiresApproval: true}
 	} else {
 		if !hasControl && !hasRead {
 			return nil, nil
@@ -200,6 +203,22 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 		tool.OutputSchema = outRaw
 		tool.OutputSchemaDigest = voicecontract.Digest(outRaw)
 	}
+	if write {
+		output, err := voiceLiteral(fields["OutputSchema"], 0)
+		if err != nil {
+			return nil, fmt.Errorf("voice output schema: %w", err)
+		}
+		outRaw, err := json.Marshal(output)
+		if err != nil {
+			return nil, err
+		}
+		outRaw, err = voicecontract.CanonicalJSON(outRaw, voicecontract.MaxSchemaBytes)
+		if err != nil {
+			return nil, err
+		}
+		tool.OutputSchema = outRaw
+		tool.OutputSchemaDigest = voicecontract.Digest(outRaw)
+	}
 	_, _, err = voicecontract.FreezeManifest(voicecontract.Manifest{Version: voicecontract.Version, Revision: "validation", CompiledRevision: "validation", Tools: []voicecontract.Tool{tool}})
 	if err != nil {
 		return nil, err
@@ -292,8 +311,8 @@ func attachVoiceManifests(manifest *AgentsManifest, definitions []AgentDefinitio
 	for i, d := range definitions {
 		m := voicecontract.Manifest{BudgetPolicy: d.VoiceBudgetPolicy, Version: voicecontract.Version, Revision: d.Revision, CompiledRevision: d.Revision, Tools: []voicecontract.Tool{}}
 		for _, tool := range d.Tools {
-			// VoiceControl holds a call-control, remote-read, or approval-gated
-			// action tool after parseVoiceTool; ExecutionKind distinguishes them.
+			// VoiceControl holds a call-control, remote-read, or voice-write
+			// tool after parseVoiceTool; ExecutionKind distinguishes them.
 			if tool.VoiceControl != nil {
 				m.Tools = append(m.Tools, *tool.VoiceControl)
 			}

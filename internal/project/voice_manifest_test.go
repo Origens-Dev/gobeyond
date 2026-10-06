@@ -170,11 +170,12 @@ func TestVoiceManifestRejectsControlAndReadOnSameTool(t *testing.T) {
 	}
 }
 
-func TestVoiceActionCompilerRuntimeManifestParity(t *testing.T) {
+func TestVoiceWriteCompilerRuntimeManifestParity(t *testing.T) {
 	const source = `agents.DefineTool(agents.ToolConfig{
  Name:"rename-network", Description:"Rename a network after approval.",
- RequiresApproval:true, VoiceAction:true,
+ RequiresApproval:true, VoiceWrite:true,
  InputSchema:map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{"name":map[string]any{"type":"string","maxLength":120}},"required":[]string{"name"}},
+ OutputSchema:map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{"saved":map[string]any{"type":"boolean"}},"required":[]string{"saved"}},
  }, handler)`
 	expr, err := parser.ParseExpr(source)
 	if err != nil {
@@ -184,20 +185,25 @@ func TestVoiceActionCompilerRuntimeManifestParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tool == nil {
-		t.Fatal("compiler omitted action")
+	if tool == nil || !tool.IsWrite() || !tool.RequiresApproval {
+		t.Fatalf("compiler omitted write: %#v", tool)
 	}
 	defs := []AgentDefinition{{ID: "support", Revision: "build-1", Tools: []AgentToolDefinition{{ID: "rename-network", VoiceControl: tool}}}}
 	published := portableAgentsManifest(defs, "build-1")
 	if err := attachVoiceManifests(&published, defs); err != nil {
 		t.Fatal(err)
 	}
-	var input any
+	var input, output any
 	if err := json.Unmarshal(tool.InputSchema, &input); err != nil {
 		t.Fatal(err)
 	}
+	if err := json.Unmarshal(tool.OutputSchema, &output); err != nil {
+		t.Fatal(err)
+	}
 	runtime := agents.DefineAI(agents.AIConfig{Revision: "build-1", Tools: map[string]agents.AITool{
-		"rename-network": agents.DefineTool(agents.ToolConfig{Name: tool.Name, Description: tool.Description, InputSchema: input, VoiceAction: true, RequiresApproval: true}, func(context.Context, agents.Actor, map[string]any) (string, error) { return "", nil }),
+		"rename-network": agents.DefineTool(agents.ToolConfig{Name: tool.Name, Description: tool.Description, InputSchema: input, OutputSchema: output, VoiceWrite: true, RequiresApproval: true}, func(context.Context, agents.Actor, map[string]any) (map[string]any, error) {
+			return map[string]any{"saved": true}, nil
+		}),
 	}})
 	_, runtimeRaw, runtimeDigest, err := runtime.CompileVoiceManifest()
 	if err != nil {
@@ -209,5 +215,32 @@ func TestVoiceActionCompilerRuntimeManifestParity(t *testing.T) {
 	}
 	if runtimeDigest != buildDigest || !bytes.Equal(runtimeRaw, buildRaw) {
 		t.Fatalf("compiler/runtime manifest mismatch\nbuild: %s\nruntime: %s", buildRaw, runtimeRaw)
+	}
+}
+
+func TestVoiceActionAuthoringRejected(t *testing.T) {
+	const source = `agents.DefineTool(agents.ToolConfig{Name:"rename-network", VoiceAction:true, InputSchema:map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{},"required":[]string{}},}, handler)`
+	expr, err := parser.ParseExpr(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = parseVoiceTool("rename-network", expr.(*ast.CallExpr)); err == nil || !strings.Contains(err.Error(), "VoiceAction is removed") {
+		t.Fatalf("VoiceAction accepted: %v", err)
+	}
+}
+
+func TestVoiceWriteApprovalDefaultsOff(t *testing.T) {
+	const source = `agents.DefineTool(agents.ToolConfig{
+ Name:"save-note", Description:"Save a short note.", VoiceWrite:true,
+ InputSchema:map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{"text":map[string]any{"type":"string","maxLength":32}},"required":[]string{"text"}},
+ OutputSchema:map[string]any{"type":"object","additionalProperties":false,"properties":map[string]any{"saved":map[string]any{"type":"boolean"}},"required":[]string{"saved"}},
+ }, handler)`
+	expr, err := parser.ParseExpr(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, err := parseVoiceTool("save-note", expr.(*ast.CallExpr))
+	if err != nil || tool == nil || !tool.IsWrite() || tool.RequiresApproval {
+		t.Fatalf("write default approval: %#v %v", tool, err)
 	}
 }

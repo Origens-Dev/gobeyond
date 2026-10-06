@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
@@ -31,5 +32,13 @@ func TestVoiceBudgetFrozenOptInChangesManifestAndRequiresEligibleTools(t *testin
 	delete(d.AI.Tools, "get-text-message")
 	if _, _, _, err = d.CompileVoiceManifest(); err == nil {
 		t.Fatal("partial mailbox declaration admitted")
+	}
+}
+
+func TestGenericVoiceBudgetCompilesWithoutMailboxTools(t *testing.T) {
+	d := DefineAI(AIConfig{Revision: "build", VoiceBudgetPolicy: voicecontract.BudgetPolicyGenericV1}, Slots{Channels: []Channel{{ID: "voice"}}})
+	m, raw, _, err := d.CompileVoiceManifest()
+	if err != nil || m.BudgetPolicy != voicecontract.BudgetPolicyGenericV1 || len(m.Tools) != 0 || !strings.Contains(string(raw), `"budget_policy":"generic_v1"`) {
+		t.Fatalf("generic compile: %#v raw=%s err=%v", m, raw, err)
 	}
 }
