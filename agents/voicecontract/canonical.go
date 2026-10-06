@@ -200,6 +200,10 @@ func schema(v any, depth int) error {
 		if err := schema(m["items"], depth+1); err != nil {
 			return err
 		}
+	case "boolean":
+		if len(m) != 1 {
+			return errors.New("invalid boolean schema keyword")
+		}
 	case "string":
 		for k := range m {
 			if k != "type" && k != "minLength" && k != "maxLength" && k != "enum" {
@@ -229,7 +233,7 @@ func schema(v any, depth int) error {
 			}
 		}
 	default:
-		return errors.New("schema permits only objects, strings, and bounded anyOf")
+		return errors.New("schema permits only objects, bounded strings, booleans, and bounded anyOf")
 	}
 	return nil
 }
@@ -284,25 +288,15 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 		} else if t.Playback != nil {
 			return nil, "", errors.New("playback mapping on other tool")
 		} else if t.IsRead() {
-			if t.RequiresApproval || len(t.DestinationClasses) != 0 || t.TerminalOnSuccess || t.MaxResultBytes < 1 || t.MaxResultBytes > 4096 {
-				return nil, "", errors.New("invalid read policy")
-			}
-			output, e := CanonicalJSON(t.OutputSchema, MaxSchemaBytes)
+			output, e := freezeResultSchema(*t, "read")
 			if e != nil {
 				return nil, "", e
 			}
-			var definition any
-			if e = json.Unmarshal(output, &definition); e != nil {
+			t.OutputSchema = output
+		} else if t.IsWrite() {
+			output, e := freezeResultSchema(*t, "write")
+			if e != nil {
 				return nil, "", e
-			}
-			if e = schema(definition, 0); e != nil {
-				return nil, "", e
-			}
-			if root, ok := definition.(map[string]any); !ok || root["type"] != "object" {
-				return nil, "", errors.New("read output root must be object")
-			}
-			if Digest(output) != t.OutputSchemaDigest {
-				return nil, "", errors.New("read output schema digest mismatch")
 			}
 			t.OutputSchema = output
 		} else if t.IsAction() {
@@ -343,6 +337,33 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 		return nil, "", e
 	}
 	return c, Digest(c), nil
+}
+
+// freezeResultSchema applies the shared read/write output contract: a closed
+// object schema, matching digest, and MaxResultBytes in 1–4096. Call-control,
+// playback, and action fields are conflicting on both kinds.
+func freezeResultSchema(t Tool, kind string) ([]byte, error) {
+	if t.RequiresApproval || len(t.DestinationClasses) != 0 || len(t.TargetKinds) != 0 || len(t.InputModes) != 0 || t.HandoffMode != "" || t.TerminalBehavior != "" || t.TerminalOnSuccess || t.MaxResultBytes < 1 || t.MaxResultBytes > 4096 {
+		return nil, fmt.Errorf("invalid %s policy", kind)
+	}
+	output, err := CanonicalJSON(t.OutputSchema, MaxSchemaBytes)
+	if err != nil {
+		return nil, err
+	}
+	var definition any
+	if err = json.Unmarshal(output, &definition); err != nil {
+		return nil, err
+	}
+	if err = schema(definition, 0); err != nil {
+		return nil, err
+	}
+	if root, ok := definition.(map[string]any); !ok || root["type"] != "object" {
+		return nil, fmt.Errorf("%s output root must be object", kind)
+	}
+	if Digest(output) != t.OutputSchemaDigest {
+		return nil, fmt.Errorf("%s output schema digest mismatch", kind)
+	}
+	return output, nil
 }
 func identifier(s string) bool {
 	if len(s) == 0 || len(s) > 128 {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Accept JSON Schema `boolean` (`{"type":"boolean"}` only) in voice contract
+  input/output validation, and freeze `execution_kind: "write"` with the same
+  closed output object and `max_result_bytes` rules as `read`. `action` is
+  unchanged. Schema keyword `description` remains prohibited.
+
 - Match runtime voice action manifest digests to compiler-published manifests.
 
 - Include approval-gated `VoiceAction` tools in compiler-generated voice manifests.

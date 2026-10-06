@@ -196,6 +196,7 @@ type ReadRequest struct {
 }
 
 func (t Tool) IsRead() bool   { return t.ExecutionKind == "read" }
+func (t Tool) IsWrite() bool  { return t.ExecutionKind == "write" }
 func (t Tool) IsAction() bool { return t.ExecutionKind == "action" }
 
 func (t Tool) IsPlayback() bool           { return t.ExecutionKind == "playback" }

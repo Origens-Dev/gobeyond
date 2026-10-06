@@ -326,7 +326,12 @@ func TestSchemaKeywordMismatch(t *testing.T) {
 	if e = Decode(raw, MaxManifestBytes, &m); e != nil {
 		t.Fatal(e)
 	}
-	for _, s := range []string{`{"type":"object","properties":{},"required":[],"additionalProperties":false,"maxLength":3}`, `{"type":"string","maxLength":128}`} {
+	for _, s := range []string{
+		`{"type":"object","properties":{},"required":[],"additionalProperties":false,"maxLength":3}`,
+		`{"type":"string","maxLength":128}`,
+		`{"type":"object","properties":{"ok":{"type":"boolean","description":"flag"}},"required":["ok"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"ok":{"type":"boolean","enum":[true,false]}},"required":["ok"],"additionalProperties":false}`,
+	} {
 		m.Tools[0].InputSchema = []byte(s)
 		c, _ := CanonicalJSON([]byte(s), MaxSchemaBytes)
 		m.Tools[0].SchemaDigest = Digest(c)

@@ -87,6 +87,9 @@ func matchesSchema(s map[string]any, v any) bool {
 			}
 		}
 		return true
+	case "boolean":
+		_, ok := v.(bool)
+		return ok
 	case "string":
 		value, ok := v.(string)
 		if !ok || !utf8.ValidString(value) {
@@ -113,8 +116,8 @@ func matchesSchema(s map[string]any, v any) bool {
 }
 
 func ValidateToolOutput(tool Tool, raw []byte) ([]byte, error) {
-	if !tool.IsRead() || tool.MaxResultBytes < 1 || tool.MaxResultBytes > 4096 || len(raw) > tool.MaxResultBytes {
-		return nil, errors.New("read result exceeds policy")
+	if (!tool.IsRead() && !tool.IsWrite()) || tool.MaxResultBytes < 1 || tool.MaxResultBytes > 4096 || len(raw) > tool.MaxResultBytes {
+		return nil, errors.New("result exceeds policy")
 	}
 	return ValidateToolInput(Tool{InputSchema: tool.OutputSchema, SchemaDigest: tool.OutputSchemaDigest}, raw)
 }
