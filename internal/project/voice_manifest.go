@@ -31,6 +31,15 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 	if tool, handled, err := parsePlaybackVoiceTool(id, fields); handled {
 		return tool, err
 	}
+	mailbox := false
+	if expr, present := fields["VoiceMailboxMessage"]; present {
+		value, err := voiceLiteral(expr, 0)
+		var ok bool
+		mailbox, ok = value.(bool)
+		if err != nil || !ok {
+			return nil, fmt.Errorf("voice mailbox message flag must be a literal boolean")
+		}
+	}
 	controlExpr, hasControl := fields["VoiceControl"]
 	readExpr, hasRead := fields["VoiceRemoteRead"]
 	readPolicy := hasRead && !isNilVoicePolicy(readExpr)
@@ -51,7 +60,18 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 		return nil, fmt.Errorf("tool cannot be read and call control")
 	}
 	var tool voicecontract.Tool
-	if action {
+	if mailbox {
+		if action || hasControl && !isNilVoicePolicy(controlExpr) || hasRead && !isNilVoicePolicy(readExpr) {
+			return nil, fmt.Errorf("mailbox message cannot combine voice policies")
+		}
+		if expr, present := fields["RequiresApproval"]; present {
+			value, err := voiceLiteral(expr, 0)
+			if err != nil || value != false {
+				return nil, fmt.Errorf("mailbox message cannot require approval")
+			}
+		}
+		tool = voicecontract.Tool{ID: id, Name: id, ExecutionKind: "mailbox_message"}
+	} else if action {
 		if hasControl && !isNilVoicePolicy(controlExpr) || hasRead && !isNilVoicePolicy(readExpr) {
 			return nil, fmt.Errorf("tool cannot combine voice action with read or call control")
 		}
@@ -181,7 +201,10 @@ func parseVoiceTool(id string, call *ast.CallExpr) (*voicecontract.Tool, error) 
 	}
 	tool.InputSchema = raw
 	tool.SchemaDigest = voicecontract.Digest(raw)
-	if readPolicy {
+	if readPolicy || mailbox {
+		if mailbox {
+			tool.MaxResultBytes = voicecontract.MaxMailboxMessageResultBytes
+		}
 		if tool.MaxResultBytes < 1 {
 			return nil, fmt.Errorf("voice remote read requires MaxResultBytes")
 		}

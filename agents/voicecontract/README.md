@@ -62,3 +62,20 @@ output schema. Only typed authored opt-in can enter this manifest.
 
 The bounded manifest JSON envelope permits depth 12 to carry nested closed output
 objects and array item schemas; byte, property, tool, and item limits still apply.
+
+
+Managed voicemail message dispatch uses the additive `mailbox_message` execution
+kind, authored with `ToolConfig.VoiceMailboxMessage: true`. It is closed to the
+`voice-mail` agent and `leave-text-message` tool (`leave_text_message` name).
+The frozen input/output schemas remain closed and bounded; booleans permit only
+`{"type":"boolean"}`. Input and output each have a 4096-byte ceiling.
+
+`MailboxMessageRequest` contains the current verified context, tool-call ID,
+canonical input digest and arguments. The platform must revalidate the signed
+grant and live owner on every request. The tenant workflow checks its initial
+context and workflow identity, allows 16 calls for offer/draft/readback/confirm,
+returns cached same-input results, and rejects changed-input replay. Dispatch
+projects only the verified destination network, mailbox line and session into the
+actor; model arguments cannot select these. The application still owns message
+confirmation and persistence. This path does not use approval UI, call-control
+announcement fences, or read capabilities.

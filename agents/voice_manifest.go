@@ -68,10 +68,11 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		p, ok := VoiceControlPolicy(t)
 		read, isRead := VoiceRemoteReadPolicy(t)
 		action := VoiceActionPolicy(t)
+		mailbox := VoiceMailboxMessagePolicy(t)
 		playback, isPlayback := VoicePlaybackPolicyFor(t)
 		completion := VoicePlaybackCompletionPolicy(t)
 		count := 0
-		for _, present := range []bool{ok, isRead, action, isPlayback, completion} {
+		for _, present := range []bool{ok, isRead, action, isPlayback, completion, mailbox} {
 			if present {
 				count++
 			}
@@ -79,10 +80,10 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 		if count > 1 {
 			return m, nil, "", errors.New("voice tool cannot have multiple execution policies")
 		}
-		if (isPlayback || completion) && (t.RequiresApproval || t.NeedsApproval != nil) {
-			return m, nil, "", errors.New("playback requires authenticated receipt policy, not provider approval")
+		if (isPlayback || completion || mailbox) && (t.RequiresApproval || t.NeedsApproval != nil) {
+			return m, nil, "", errors.New("playback and mailbox messages use authenticated runtime policy, not provider approval")
 		}
-		if !ok && !isRead && !action && !isPlayback && !completion {
+		if !ok && !isRead && !action && !isPlayback && !completion && !mailbox {
 			continue
 		}
 		if action && !t.RequiresApproval {
@@ -118,6 +119,20 @@ func (d AIDefinition) CompileVoiceManifest() (voicecontract.Manifest, []byte, st
 				spec.OutputSchemaDigest = voicecontract.Digest(output)
 				spec.MaxResultBytes = playback.MaxResultBytes
 			}
+		} else if mailbox {
+			spec.ExecutionKind = "mailbox_message"
+			spec.DestinationClasses = nil
+			output, e := json.Marshal(t.OutputSchema)
+			if e != nil {
+				return m, nil, "", e
+			}
+			output, e = voicecontract.CanonicalJSON(output, voicecontract.MaxSchemaBytes)
+			if e != nil {
+				return m, nil, "", e
+			}
+			spec.OutputSchema = output
+			spec.OutputSchemaDigest = voicecontract.Digest(output)
+			spec.MaxResultBytes = voicecontract.MaxMailboxMessageResultBytes
 		} else if action {
 			spec.ExecutionKind = "action"
 			spec.RequiresApproval = true

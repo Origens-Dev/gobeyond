@@ -42,6 +42,8 @@ type ToolConfig struct {
 	// Action tools must also set RequiresApproval; the workflow enforces that
 	// approval against the exact server-held tool call before execution.
 	VoiceAction bool
+	// VoiceMailboxMessage opts the managed voicemail message tool into scoped voice dispatch.
+	VoiceMailboxMessage bool
 }
 
 type ToolHandler[Input any, Output any] func(context.Context, Actor, Input) (Output, error)
@@ -115,6 +117,17 @@ func DefineToolWithCall[Input any, Output any](config ToolConfig, handler ToolCa
 		policy.TargetKinds = append([]string(nil), policy.TargetKinds...)
 		policy.InputModes = append([]string(nil), policy.InputModes...)
 		ns["voiceControl"] = policy
+		metadata[toolMetadataNamespace] = ns
+	}
+	if config.VoiceMailboxMessage {
+		if metadata == nil {
+			metadata = ai.ProviderMetadata{}
+		}
+		ns, _ := metadata[toolMetadataNamespace].(map[string]any)
+		if ns == nil {
+			ns = map[string]any{}
+		}
+		ns["voiceMailboxMessage"] = voiceMailboxMessageMarker{}
 		metadata[toolMetadataNamespace] = ns
 	}
 	if config.VoiceAction {

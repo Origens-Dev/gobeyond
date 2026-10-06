@@ -200,6 +200,10 @@ func schema(v any, depth int) error {
 		if err := schema(m["items"], depth+1); err != nil {
 			return err
 		}
+	case "boolean":
+		if len(m) != 1 {
+			return errors.New("invalid boolean schema keyword")
+		}
 	case "string":
 		for k := range m {
 			if k != "type" && k != "minLength" && k != "maxLength" && k != "enum" {
@@ -229,7 +233,7 @@ func schema(v any, depth int) error {
 			}
 		}
 	default:
-		return errors.New("schema permits only objects, strings, and bounded anyOf")
+		return errors.New("schema permits only objects, bounded strings, booleans, and bounded anyOf")
 	}
 	return nil
 }
@@ -303,6 +307,29 @@ func FreezeManifest(m Manifest) ([]byte, string, error) {
 			}
 			if Digest(output) != t.OutputSchemaDigest {
 				return nil, "", errors.New("read output schema digest mismatch")
+			}
+			t.OutputSchema = output
+		} else if t.IsMailboxMessage() {
+			if t.ID != MailboxMessageToolID || t.Name != MailboxMessageToolName || t.RequiresApproval || len(t.DestinationClasses) != 0 || len(t.TargetKinds) != 0 || len(t.InputModes) != 0 || t.HandoffMode != "" || t.TerminalBehavior != "" || t.TerminalOnSuccess || t.MaxResultBytes != MaxMailboxMessageResultBytes {
+				return nil, "", errors.New("invalid mailbox message policy")
+			}
+
+			output, e := CanonicalJSON(t.OutputSchema, MaxSchemaBytes)
+			if e != nil {
+				return nil, "", e
+			}
+			var definition any
+			if e = json.Unmarshal(output, &definition); e != nil {
+				return nil, "", e
+			}
+			if e = schema(definition, 0); e != nil {
+				return nil, "", e
+			}
+			if root, ok := definition.(map[string]any); !ok || root["type"] != "object" {
+				return nil, "", errors.New("mailbox output root must be object")
+			}
+			if Digest(output) != t.OutputSchemaDigest {
+				return nil, "", errors.New("mailbox output digest mismatch")
 			}
 			t.OutputSchema = output
 		} else if t.IsAction() {

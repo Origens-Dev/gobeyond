@@ -48,6 +48,7 @@ type VoiceSessionInput struct {
 // VoiceSessionExecuteToolInput is the Update / LocalActivity payload for one
 // Gemini Live function call.
 type VoiceSessionExecuteToolInput struct {
+	MailboxMessage   *voicecontract.MailboxMessageRequest   `json:"mailbox_message,omitempty"`
 	SourcePlayback   *voicecontract.SourcePlaybackRequest   `json:"source_playback,omitempty"`
 	HiddenCompletion *voicecontract.HiddenCompletionRequest `json:"hidden_completion,omitempty"`
 	// Workflow-owned propagation; callers cannot select a broader policy.
@@ -159,6 +160,7 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	control := newVoiceControlWorkflowState()
 	reads := newVoiceReadWorkflowState()
 	reads.budget = control.budget
+	mailbox := newVoiceMailboxWorkflowState()
 	playback := configureVoicePlayback(ctx, control.budget)
 	if err := configureVoiceToolBudget(ctx, in, control.budget); err != nil {
 		return err
@@ -168,6 +170,9 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 			if !exclusiveVoiceDispatch(req) {
 				return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
+			}
+			if req.MailboxMessage != nil {
+				return mailbox.execute(ctx, in, req)
 			}
 			if req.SourcePlayback != nil || req.HiddenCompletion != nil {
 				return playback.execute(ctx, in, req)
@@ -336,6 +341,9 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 	if !exclusiveVoiceDispatch(req) {
 		return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
 	}
+	if req.MailboxMessage != nil {
+		return executeVoiceMailboxActivity(ctx, req)
+	}
 	if req.HiddenCompletion != nil {
 		return executeVoicePlaybackCompletionActivity(ctx, req)
 	}
@@ -371,6 +379,9 @@ func VoiceSessionExecuteToolActivity(ctx context.Context, req VoiceSessionExecut
 
 	if _, playback := agents.VoicePlaybackPolicyFor(tool); playback || agents.VoicePlaybackCompletionPolicy(tool) {
 		return VoiceSessionExecuteToolResult{}, errors.New("playback requires typed runtime dispatch")
+	}
+	if agents.VoiceMailboxMessagePolicy(tool) {
+		return VoiceSessionExecuteToolResult{}, errors.New("mailbox message requires typed scoped dispatch")
 	}
 	if _, read := agents.VoiceRemoteReadPolicy(tool); read {
 		return VoiceSessionExecuteToolResult{}, errors.New("remote read requires current scoped dispatch")

@@ -20,7 +20,7 @@ func configureVoicePlayback(ctx workflow.Context, b *voiceToolBudget) *voicePlay
 
 func exclusiveVoiceDispatch(r VoiceSessionExecuteToolInput) bool {
 	n := 0
-	for _, on := range []bool{r.RemoteRead != nil, r.CallControl != nil, r.SourcePlayback != nil, r.HiddenCompletion != nil} {
+	for _, on := range []bool{r.MailboxMessage != nil, r.RemoteRead != nil, r.CallControl != nil, r.SourcePlayback != nil, r.HiddenCompletion != nil} {
 		if on {
 			n++
 		}

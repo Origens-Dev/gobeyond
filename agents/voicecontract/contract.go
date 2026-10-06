@@ -195,8 +195,9 @@ type ReadRequest struct {
 	Arguments   json.RawMessage `json:"arguments"`
 }
 
-func (t Tool) IsRead() bool   { return t.ExecutionKind == "read" }
-func (t Tool) IsAction() bool { return t.ExecutionKind == "action" }
+func (t Tool) IsMailboxMessage() bool { return t.ExecutionKind == "mailbox_message" }
+func (t Tool) IsRead() bool           { return t.ExecutionKind == "read" }
+func (t Tool) IsAction() bool         { return t.ExecutionKind == "action" }
 
 func (t Tool) IsPlayback() bool           { return t.ExecutionKind == "playback" }
 func (t Tool) IsPlaybackCompletion() bool { return t.ExecutionKind == "playback_completion" }
