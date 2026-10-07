@@ -77,9 +77,14 @@ remain as inventoried in `budget.go`: envelope 16 KiB, manifest 32 KiB, schema
 read/control legacy two-operation cap, mailbox buckets list 4 / get 12 /
 placement 2 / hangup 1. `operator_mailbox_v1` allowlist is unchanged.
 
-RingPlan is an M2 encode/decode recipient-set contract (`version` `2`) with
-lifecycle observations `on_no_answer` / `on_busy` / `on_failed` /
-`on_cancelled`. Attached fallback is the sole automatic fallback activation.
-Events must not mint. Answer and transfer remain separate ownership transitions.
+RingPlan is the public M2 recipient-set API (`version` `2`) with lifecycle
+observations `on_no_answer` / `on_busy` / `on_failed` / `on_cancelled`.
+`FreezeRingPlan` / `FreezeRingLifecycleEvent` return canonical bytes and digest.
+`Matches` binds an observation to revision, recipient membership, and an
+authored event key. Attached fallback is the sole automatic fallback
+activation (`AutomaticFallbackDestination`); events must not mint grants or
+hops and cannot carry a destination. The platform does not interpret the plan;
+opaque policy refs stay validate-only and are not RingPlan fields. Answer and
+transfer remain separate ownership transitions (`Operation` / `SoftphoneEvent`).
 This package does not wire a second ringer or `recipient_coordinator`.
 `ScreeningContext` no longer carries unused `voicemail_enabled`.
