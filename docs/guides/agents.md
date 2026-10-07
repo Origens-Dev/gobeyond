@@ -312,7 +312,14 @@ receive this helper's projection automatically; use the framework tool helpers.
 ## Current alpha limitations
 
 Session and event storage is process-local in the public framework runtime;
-hosted persistence belongs to the out-of-scope hosting integration. Durable
+hosted persistence belongs to the out-of-scope hosting integration. VoiceWrite
+reservations and recoverable results are the exception: the worker write
+ledger keeps a host-local replica for process restart, and production workers
+attach a shared `VoiceWriteStore` with `RetainVoiceWriteAuthority` (hosted
+persistence or product durable receipt lookup by `ToolWriteID`) so a
+replacement host with empty local storage can reconcile without re-executing
+the handler. Pending/unknown ledger rows refresh from that authority. If the
+outcome cannot be established, the path fails closed. Durable
 typed handlers keep their legacy one-activity workflow. Durable AI agents use
 the released `github.com/Origens-Dev/go-ai` and
 `github.com/Origens-Dev/go-temporal-ai-sdk` packages for granular
