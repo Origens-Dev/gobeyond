@@ -83,7 +83,7 @@ observations `on_no_answer` / `on_busy` / `on_failed` / `on_cancelled`.
 `Matches` binds an observation to revision, recipient membership, and an
 authored event key. Attached fallback is the sole automatic fallback
 activation (`AutomaticFallbackDestination`); events must not mint grants or
-hops and cannot carry a destination. Origens does not interpret the plan;
+hops and cannot carry a destination. The platform does not interpret the plan;
 opaque policy refs stay validate-only and are not RingPlan fields. Answer and
 transfer remain separate ownership transitions (`Operation` / `SoftphoneEvent`).
 This package does not wire a second ringer or `recipient_coordinator`.

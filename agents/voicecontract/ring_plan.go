@@ -18,8 +18,8 @@ const (
 // events (on_no_answer, on_busy, on_failed, on_cancelled) are observations:
 // they must not mint grants or hops and cannot carry a destination. Answer
 // and transfer remain separate ownership transitions (Operation /
-// SoftphoneEvent), not RingPlan fields. Origens does not interpret the plan
-// as product policy; opaque policy refs remain validate-only elsewhere.
+// SoftphoneEvent), not RingPlan fields. The platform does not interpret the
+// plan as product policy; opaque policy refs remain validate-only elsewhere.
 type RingPlan struct {
 	AttachedFallback     *RingAttachedFallback `json:"attached_fallback,omitempty"`
 	Events               RingPlanEvents        `json:"events"`
