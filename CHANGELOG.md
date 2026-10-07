@@ -8,9 +8,10 @@
   `description` remains prohibited.
 
 - Persist VoiceWrite reservations and recoverable results on a durable worker
-  ledger (not only a process-local map). Unknown outcomes stay fail-closed /
-  reconcile-only after a replacement worker with an empty cache; committed
-  work is not re-executed and metering is retained. See
+  ledger (not only a process-local map). Host-local files cover process
+  restart; a shared authoritative store covers replacement onto a host with
+  empty local storage. Final persist errors fail closed. Unknown outcomes stay
+  reconcile-only and are not re-executed. See
   `agents/temporalruntime/voice_write_ledger.md`.
 
 - Replace `VoiceAction` / `execution_kind: "action"` with `VoiceWrite` /

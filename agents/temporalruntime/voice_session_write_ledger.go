@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,8 @@ import (
 )
 
 const voiceWriteLedgerDirEnv = "GOBEYOND_VOICE_WRITE_LEDGER_DIR"
+
+var errWriteLedgerPersist = errors.New("write ledger persist failed")
 
 type voiceWriteRecord struct {
 	key      string
@@ -33,9 +36,182 @@ type voiceWritePersistedRecord struct {
 	Metered  bool                          `json:"metered"`
 }
 
+func (r voiceWriteRecord) persisted(identity string) voiceWritePersistedRecord {
+	return voiceWritePersistedRecord{
+		Identity: identity,
+		Key:      r.key,
+		Digest:   r.digest,
+		Result:   r.result,
+		Complete: r.complete,
+		Unknown:  r.unknown,
+		Metered:  r.metered,
+	}
+}
+
+func (p voiceWritePersistedRecord) record() voiceWriteRecord {
+	return voiceWriteRecord{
+		key:      p.Key,
+		digest:   p.Digest,
+		result:   p.Result,
+		complete: p.Complete,
+		unknown:  p.Unknown,
+		metered:  p.Metered,
+	}
+}
+
+// voiceWriteStore is the durable write-result SoR used by reconcile. Host-local
+// files survive process restart on the same disk; a shared store survives
+// replacement onto a host with empty local storage. Product handlers still
+// durably dedupe by ToolWriteID.
+type voiceWriteStore interface {
+	Load(identity string) (voiceWritePersistedRecord, bool, error)
+	Reserve(identity string, rec voiceWritePersistedRecord) error
+	Persist(identity string, rec voiceWritePersistedRecord) error
+}
+
+type memoryVoiceWriteStore struct {
+	mu      sync.Mutex
+	records map[string]voiceWritePersistedRecord
+}
+
+func newMemoryVoiceWriteStore() *memoryVoiceWriteStore {
+	return &memoryVoiceWriteStore{records: map[string]voiceWritePersistedRecord{}}
+}
+
+func (s *memoryVoiceWriteStore) Load(identity string) (voiceWritePersistedRecord, bool, error) {
+	if s == nil {
+		return voiceWritePersistedRecord{}, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.records[identity]
+	return rec, ok, nil
+}
+
+func (s *memoryVoiceWriteStore) Reserve(identity string, rec voiceWritePersistedRecord) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.records[identity]; ok {
+		return os.ErrExist
+	}
+	s.records[identity] = rec
+	return nil
+}
+
+func (s *memoryVoiceWriteStore) Persist(identity string, rec voiceWritePersistedRecord) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[identity] = rec
+	return nil
+}
+
+type fileVoiceWriteStore struct {
+	dir string
+}
+
+func (s *fileVoiceWriteStore) recordPath(identity string) string {
+	sum := sha256.Sum256([]byte(identity))
+	return filepath.Join(s.dir, hex.EncodeToString(sum[:])+".json")
+}
+
+func (s *fileVoiceWriteStore) Load(identity string) (voiceWritePersistedRecord, bool, error) {
+	if s == nil || s.dir == "" {
+		return voiceWritePersistedRecord{}, false, nil
+	}
+	raw, err := os.ReadFile(s.recordPath(identity))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return voiceWritePersistedRecord{}, false, nil
+		}
+		return voiceWritePersistedRecord{}, false, err
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return voiceWritePersistedRecord{Identity: identity, Unknown: true}, true, nil
+	}
+	var persisted voiceWritePersistedRecord
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		return voiceWritePersistedRecord{Identity: identity, Unknown: true}, true, nil
+	}
+	return persisted, true, nil
+}
+
+func (s *fileVoiceWriteStore) Reserve(identity string, rec voiceWritePersistedRecord) error {
+	if s == nil || s.dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	return s.writeRecord(s.recordPath(identity), rec, true)
+}
+
+func (s *fileVoiceWriteStore) Persist(identity string, rec voiceWritePersistedRecord) error {
+	if s == nil || s.dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	return s.writeRecord(s.recordPath(identity), rec, false)
+}
+
+func (s *fileVoiceWriteStore) writeRecord(path string, rec voiceWritePersistedRecord, exclusive bool) error {
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	if exclusive {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		_, err = f.Write(raw)
+		if err == nil {
+			err = f.Sync()
+		}
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(path)
+			return err
+		}
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	_, err = tmp.Write(raw)
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
 type voiceWriteLedger struct {
 	mu      sync.Mutex
 	dir     string
+	local   voiceWriteStore
+	shared  voiceWriteStore
 	records map[string]voiceWriteRecord
 }
 
@@ -44,7 +220,16 @@ func newVoiceWriteLedger() *voiceWriteLedger {
 }
 
 func openVoiceWriteLedger(dir string) *voiceWriteLedger {
-	return &voiceWriteLedger{dir: strings.TrimSpace(dir), records: map[string]voiceWriteRecord{}}
+	return openVoiceWriteLedgerWithAuthority(dir, nil)
+}
+
+func openVoiceWriteLedgerWithAuthority(dir string, shared voiceWriteStore) *voiceWriteLedger {
+	dir = strings.TrimSpace(dir)
+	l := &voiceWriteLedger{dir: dir, shared: shared, records: map[string]voiceWriteRecord{}}
+	if dir != "" {
+		l.local = &fileVoiceWriteStore{dir: dir}
+	}
+	return l
 }
 
 func defaultVoiceWriteLedgerDir() string {
@@ -66,14 +251,29 @@ func resetVoiceWriteLedgerWithDir(dir string) {
 	processWriteLedger = openVoiceWriteLedger(dir)
 }
 
+func resetVoiceWriteLedgerWithAuthority(dir string, shared voiceWriteStore) {
+	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, shared)
+}
+
 // reopenVoiceWriteLedger drops the process-local cache and reopens the same
-// durable directory, simulating a replacement worker.
+// host-local directory, simulating a process restart on the same disk.
 func reopenVoiceWriteLedger() {
-	dir := ""
+	dir, shared := "", voiceWriteStore(nil)
 	if processWriteLedger != nil {
 		dir = processWriteLedger.dir
+		shared = processWriteLedger.shared
 	}
-	processWriteLedger = openVoiceWriteLedger(dir)
+	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, shared)
+}
+
+// replaceHostVoiceWriteLedger drops process cache and host-local files, keeping
+// the shared authoritative store. This is a replacement worker on a new host.
+func replaceHostVoiceWriteLedger(dir string) {
+	var shared voiceWriteStore
+	if processWriteLedger != nil {
+		shared = processWriteLedger.shared
+	}
+	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, shared)
 }
 
 func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly bool, run func() (VoiceSessionExecuteToolResult, error)) (VoiceSessionExecuteToolResult, error) {
@@ -135,8 +335,15 @@ func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly boo
 			finished.result = result
 			finished.complete = true
 		}
+		if err := l.persistLocked(identity, finished); err != nil {
+			failed := voiceWriteRecord{key: key, digest: digest, unknown: true, metered: true}
+			l.records[identity] = failed
+			_ = l.persistLocked(identity, failed)
+			close(wait)
+			l.mu.Unlock()
+			return VoiceSessionExecuteToolResult{}, fmt.Errorf("%w: %w", errWriteOutcomeUnknown, err)
+		}
 		l.records[identity] = finished
-		_ = l.persistLocked(identity, finished)
 		close(wait)
 		l.mu.Unlock()
 		if runErr != nil {
@@ -153,120 +360,72 @@ func (l *voiceWriteLedger) loadLocked(identity string) (voiceWriteRecord, bool, 
 	return l.loadDurableLocked(identity)
 }
 
-func (l *voiceWriteLedger) recordPath(identity string) string {
-	sum := sha256.Sum256([]byte(identity))
-	return filepath.Join(l.dir, hex.EncodeToString(sum[:])+".json")
-}
-
 func (l *voiceWriteLedger) loadDurableLocked(identity string) (voiceWriteRecord, bool, error) {
-	if l == nil || l.dir == "" {
+	if l == nil {
 		return voiceWriteRecord{}, false, nil
 	}
-	raw, err := os.ReadFile(l.recordPath(identity))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return voiceWriteRecord{}, false, nil
+	if l.shared != nil {
+		persisted, ok, err := l.shared.Load(identity)
+		if err != nil {
+			return voiceWriteRecord{}, false, err
 		}
-		return voiceWriteRecord{}, false, err
+		if ok {
+			rec := persisted.record()
+			l.records[identity] = rec
+			return rec, true, nil
+		}
 	}
-	if len(strings.TrimSpace(string(raw))) == 0 {
-		rec := voiceWriteRecord{unknown: true}
-		l.records[identity] = rec
-		return rec, true, nil
+	if l.local != nil {
+		persisted, ok, err := l.local.Load(identity)
+		if err != nil {
+			return voiceWriteRecord{}, false, err
+		}
+		if ok {
+			rec := persisted.record()
+			l.records[identity] = rec
+			return rec, true, nil
+		}
 	}
-	var persisted voiceWritePersistedRecord
-	if err := json.Unmarshal(raw, &persisted); err != nil {
-		rec := voiceWriteRecord{unknown: true}
-		l.records[identity] = rec
-		return rec, true, nil
-	}
-	rec := voiceWriteRecord{
-		key:      persisted.Key,
-		digest:   persisted.Digest,
-		result:   persisted.Result,
-		complete: persisted.Complete,
-		unknown:  persisted.Unknown,
-		metered:  persisted.Metered,
-	}
-	l.records[identity] = rec
-	return rec, true, nil
+	return voiceWriteRecord{}, false, nil
 }
 
 func (l *voiceWriteLedger) reserveLocked(identity string, rec voiceWriteRecord) error {
-	if l == nil || l.dir == "" {
-		return nil
-	}
-	if err := os.MkdirAll(l.dir, 0o700); err != nil {
-		return err
-	}
-	return l.writeRecord(l.recordPath(identity), identity, rec, true)
-}
-
-func (l *voiceWriteLedger) persistLocked(identity string, rec voiceWriteRecord) error {
-	if l == nil || l.dir == "" {
-		return nil
-	}
-	if err := os.MkdirAll(l.dir, 0o700); err != nil {
-		return err
-	}
-	return l.writeRecord(l.recordPath(identity), identity, rec, false)
-}
-
-func (l *voiceWriteLedger) writeRecord(path, identity string, rec voiceWriteRecord, exclusive bool) error {
-	raw, err := json.Marshal(voiceWritePersistedRecord{
-		Identity: identity,
-		Key:      rec.key,
-		Digest:   rec.digest,
-		Result:   rec.result,
-		Complete: rec.complete,
-		Unknown:  rec.unknown,
-		Metered:  rec.metered,
-	})
-	if err != nil {
-		return err
-	}
-	if exclusive {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
+	persisted := rec.persisted(identity)
+	if l != nil && l.shared != nil {
+		if err := l.shared.Reserve(identity, persisted); err != nil {
 			return err
 		}
-		_, err = f.Write(raw)
-		if err == nil {
-			err = f.Sync()
-		}
-		if closeErr := f.Close(); err == nil {
-			err = closeErr
-		}
-		if err != nil {
-			_ = os.Remove(path)
+	}
+	if l != nil && l.local != nil {
+		if err := l.local.Reserve(identity, persisted); err != nil {
+			if l.shared != nil {
+				return nil
+			}
 			return err
 		}
-		return nil
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	_, err = tmp.Write(raw)
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
 	}
 	return nil
 }
 
-func seedVoiceWriteUnknown(identity, key, digest string) {
+func (l *voiceWriteLedger) persistLocked(identity string, rec voiceWriteRecord) error {
+	persisted := rec.persisted(identity)
+	if l != nil && l.shared != nil {
+		if err := l.shared.Persist(identity, persisted); err != nil {
+			return fmt.Errorf("%w: %w", errWriteLedgerPersist, err)
+		}
+	}
+	if l != nil && l.local != nil {
+		if err := l.local.Persist(identity, persisted); err != nil {
+			if l.shared != nil {
+				return nil
+			}
+			return fmt.Errorf("%w: %w", errWriteLedgerPersist, err)
+		}
+	}
+	return nil
+}
+
+func seedVoiceWriteUnknown(identity, key, digest string) error {
 	if processWriteLedger == nil {
 		resetVoiceWriteLedger()
 	}
@@ -274,7 +433,7 @@ func seedVoiceWriteUnknown(identity, key, digest string) {
 	defer processWriteLedger.mu.Unlock()
 	rec := voiceWriteRecord{key: key, digest: digest, unknown: true}
 	processWriteLedger.records[identity] = rec
-	_ = processWriteLedger.persistLocked(identity, rec)
+	return processWriteLedger.persistLocked(identity, rec)
 }
 
 func voiceWriteLedgerState(identity string) (complete, unknown, metered bool, result VoiceSessionExecuteToolResult) {

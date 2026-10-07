@@ -14,7 +14,7 @@ import (
 )
 
 func TestVoiceWriteWorkflowLostResponseReconcilesOneMutation(t *testing.T) {
-	resetVoiceWriteLedgerWithDir(t.TempDir())
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), newMemoryVoiceWriteStore())
 	schema, output := voiceWriteClosedSchemas()
 	calls := 0
 	writeTool := agents.DefineTool(agents.ToolConfig{Name: "lookup", Description: "Lookup", InputSchema: schema, OutputSchema: output, VoiceWrite: true}, func(context.Context, agents.Actor, map[string]any) (any, error) {
@@ -63,8 +63,9 @@ func TestVoiceWriteWorkflowLostResponseReconcilesOneMutation(t *testing.T) {
 			if activityErr != nil {
 				return out, activityErr
 			}
-			// Replacement worker: durable reservation remains, process cache does not.
-			reopenVoiceWriteLedger()
+			// Replacement host/container: empty process cache and a new local
+			// directory. Reconcile must find the result in the shared store.
+			replaceHostVoiceWriteLedger(t.TempDir())
 			return VoiceSessionExecuteToolResult{}, errors.New("lost response")
 		}
 		return out, activityErr
@@ -165,7 +166,9 @@ func TestVoiceWriteEmptyCacheUnknownDoesNotExecute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID), key, replay)
+	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID), key, replay); err != nil {
+		t.Fatal(err)
+	}
 	reopenVoiceWriteLedger()
 	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
 		t.Fatalf("unknown after empty cache err=%v", err)
@@ -182,6 +185,102 @@ func TestVoiceWriteEmptyCacheUnknownDoesNotExecute(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("reconcile-only miss executed handler calls=%d", calls)
 	}
+}
+
+func TestVoiceWriteHostLossReconcilesFromAuthoritativeStore(t *testing.T) {
+	authority := newMemoryVoiceWriteStore()
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), authority)
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	first, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || first.Error != "" || calls != 1 {
+		t.Fatalf("commit first=%#v err=%v calls=%d", first, err, calls)
+	}
+	// Replacement host/container: fresh local storage, empty process cache.
+	// Authoritative result remains in the shared store.
+	replaceHostVoiceWriteLedger(t.TempDir())
+	second, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || second.Error != "" || calls != 1 || string(second.Result) != string(first.Result) {
+		t.Fatalf("host-loss retry first=%s second=%s err=%v calls=%d", first.Result, second.Result, err, calls)
+	}
+	complete, unknown, metered, result := voiceWriteLedgerState(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID))
+	if !complete || unknown || !metered || string(result.Result) != string(first.Result) {
+		t.Fatalf("authority complete=%v unknown=%v metered=%v result=%s", complete, unknown, metered, result.Result)
+	}
+}
+
+func TestVoiceWriteHostLossWithoutAuthorityFailsClosed(t *testing.T) {
+	resetVoiceWriteLedgerWithDir(t.TempDir())
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	first, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || first.Error != "" || calls != 1 {
+		t.Fatalf("commit first=%#v err=%v calls=%d", first, err, calls)
+	}
+	replaceHostVoiceWriteLedger(t.TempDir())
+	req.WriteReconcileOnly = true
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("host-loss without authority err=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("host-loss without authority re-executed calls=%d", calls)
+	}
+}
+
+func TestVoiceWritePersistErrorFailsClosedWithoutReexecute(t *testing.T) {
+	failing := persistFailStore{inner: newMemoryVoiceWriteStore(), err: errors.New("disk full")}
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), failing)
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	_, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if !errors.Is(err, errWriteOutcomeUnknown) || !errors.Is(err, errWriteLedgerPersist) {
+		t.Fatalf("persist failure err=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("persist failure mutations=%d", calls)
+	}
+	replaceHostVoiceWriteLedger(t.TempDir())
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("persist-failure retry err=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("persist-failure retry re-executed calls=%d", calls)
+	}
+}
+
+type persistFailStore struct {
+	inner voiceWriteStore
+	err   error
+}
+
+func (s persistFailStore) Load(identity string) (voiceWritePersistedRecord, bool, error) {
+	if s.inner == nil {
+		return voiceWritePersistedRecord{}, false, nil
+	}
+	return s.inner.Load(identity)
+}
+
+func (s persistFailStore) Reserve(identity string, rec voiceWritePersistedRecord) error {
+	if s.inner == nil {
+		return nil
+	}
+	return s.inner.Reserve(identity, rec)
+}
+
+func (s persistFailStore) Persist(string, voiceWritePersistedRecord) error {
+	if s.err != nil {
+		return s.err
+	}
+	return errWriteLedgerPersist
 }
 
 func retainVoiceWriteLookup(t *testing.T, handler func(context.Context, agents.Actor, map[string]any) (any, error)) VoiceSessionExecuteToolInput {

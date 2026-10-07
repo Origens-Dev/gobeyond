@@ -244,7 +244,9 @@ func TestVoiceWriteActivityCoalescesInFlightAndUnknownDoesNotRetry(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID), key, replay)
+	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID), key, replay); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
 		t.Fatalf("unknown outcome err=%v", err)
 	}

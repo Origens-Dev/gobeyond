@@ -39,8 +39,9 @@ old full context. Every command/event compares the entire active context. The
 idempotency key is session/call/tool/tool_call_id/input_digest: changed input for
 an existing first four fields is rejected, never a second operation. Unknown
 write outcomes fail closed (reconcile/lookup only) against the durable worker
-ledger; a replacement worker with an empty process cache must not re-invoke
-the handler.
+ledger. Process restart reopens the host-local replica; host/container
+replacement with empty local storage reconciles from the shared authoritative
+store. If the outcome cannot be established, the handler is not re-invoked.
 
 Accepted acknowledges an asynchronous command. Ringing means authoritative first
 180/183; direct 200 produces answered without requiring ringing. Either is model
