@@ -37,7 +37,10 @@ Scope generation is a call-owner/scope CAS fence, not operation sequence or medi
 source generation. A screener selection advances generation exactly once using the
 old full context. Every command/event compares the entire active context. The
 idempotency key is session/call/tool/tool_call_id/input_digest: changed input for
-an existing first four fields is rejected, never a second operation.
+an existing first four fields is rejected, never a second operation. Unknown
+write outcomes fail closed (reconcile/lookup only) against the durable worker
+ledger; a replacement worker with an empty process cache must not re-invoke
+the handler.
 
 Accepted acknowledges an asynchronous command. Ringing means authoritative first
 180/183; direct 200 produces answered without requiring ringing. Either is model

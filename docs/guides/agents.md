@@ -312,7 +312,10 @@ receive this helper's projection automatically; use the framework tool helpers.
 ## Current alpha limitations
 
 Session and event storage is process-local in the public framework runtime;
-hosted persistence belongs to the out-of-scope hosting integration. Durable
+hosted persistence belongs to the out-of-scope hosting integration. VoiceWrite
+reservations and recoverable results are the exception: the worker write
+ledger persists them so a replacement process can reconcile without
+re-executing the handler. Durable
 typed handlers keep their legacy one-activity workflow. Durable AI agents use
 the released `github.com/Origens-Dev/go-ai` and
 `github.com/Origens-Dev/go-temporal-ai-sdk` packages for granular

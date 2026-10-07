@@ -7,6 +7,12 @@
   closed output object and `max_result_bytes` rules as `read`. Schema keyword
   `description` remains prohibited.
 
+- Persist VoiceWrite reservations and recoverable results on a durable worker
+  ledger (not only a process-local map). Unknown outcomes stay fail-closed /
+  reconcile-only after a replacement worker with an empty cache; committed
+  work is not re-executed and metering is retained. See
+  `agents/temporalruntime/voice_write_ledger.md`.
+
 - Replace `VoiceAction` / `execution_kind: "action"` with `VoiceWrite` /
   `execution_kind: "write"`. `RequiresApproval` is independent of kind
   (default off). Temporal writes reserve before dispatch, pass a
