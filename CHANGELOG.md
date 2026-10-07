@@ -12,9 +12,10 @@
   restart; production workers attach a shared `VoiceWriteStore` with
   `RetainVoiceWriteAuthority` (hosted persistence / product receipt lookup)
   so replacement onto a host with empty local storage can reconcile. Pending
-  and unknown process-cache rows refresh from that authority. Final persist
-  errors fail closed. Unknown outcomes stay reconcile-only and are not
-  re-executed. See `agents/temporalruntime/voice_write_ledger.md`.
+  and unknown process-cache rows refresh from that authority. Tool errors are
+  never sticky completed-failures; they stay unknown/reconcilable. Final
+  persist errors fail closed. Unknown outcomes stay reconcile-only and are
+  not re-executed. See `agents/temporalruntime/voice_write_ledger.md`.
 
 - Replace `VoiceAction` / `execution_kind: "action"` with `VoiceWrite` /
   `execution_kind: "write"`. `RequiresApproval` is independent of kind

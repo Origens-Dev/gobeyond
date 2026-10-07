@@ -32,12 +32,17 @@ restart, not host loss.
 
 1. Exclusive reserve is persisted **before** the handler runs.
 2. Success persists the recoverable result and a `metered` bit together.
+   Only certain success (`Error` empty) is `complete`. Tool errors —
+   including after a product mutation may already have committed — are
+   marked `unknown`, never sticky completed-failure.
 3. A **final persist error is fail closed** (`errWriteLedgerPersist` wrapped
    with `errWriteOutcomeUnknown`). The activity does not return durable
    success. Best-effort mark `unknown`; if that mark also fails, the exclusive
    reservation left **pending** is still enough for reconcile to refuse
    re-execute on a replacement host.
 4. Recovered pending/unknown/corrupt records fail closed (reconcile only).
+   Legacy rows that cached `Error` under `complete=true` are treated as
+   unknown and refresh from authority.
 5. Workflow unknown retries set `WriteReconcileOnly` so a miss cannot
    re-execute even when every store is empty.
 

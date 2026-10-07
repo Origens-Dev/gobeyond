@@ -52,7 +52,7 @@ func (r voiceWriteRecord) persisted(identity string) VoiceWritePersistedRecord {
 }
 
 func (p VoiceWritePersistedRecord) record() voiceWriteRecord {
-	return voiceWriteRecord{
+	rec := voiceWriteRecord{
 		key:      p.Key,
 		digest:   p.Digest,
 		result:   p.Result,
@@ -60,6 +60,20 @@ func (p VoiceWritePersistedRecord) record() voiceWriteRecord {
 		unknown:  p.Unknown,
 		metered:  p.Metered,
 	}
+	// Never treat a tool error as durable success, including legacy rows that
+	// cached Error under complete=true after a product mutation.
+	if rec.complete && voiceWriteResultUncertain(rec.result) {
+		rec.complete = false
+		rec.unknown = true
+		rec.result = VoiceSessionExecuteToolResult{}
+	}
+	return rec
+}
+
+// voiceWriteResultUncertain reports outcomes that must stay on the
+// pending/unknown reconcile path instead of sticky completed-failure.
+func voiceWriteResultUncertain(result VoiceSessionExecuteToolResult) bool {
+	return strings.TrimSpace(result.Error) != ""
 }
 
 // VoiceWriteStore is the shared authoritative write-result SoR used by
@@ -326,7 +340,7 @@ func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly boo
 				l.mu.Unlock()
 				return VoiceSessionExecuteToolResult{}, errWriteConflict
 			}
-			if rec.complete {
+			if rec.complete && !voiceWriteResultUncertain(rec.result) {
 				result := rec.result
 				l.mu.Unlock()
 				return result, nil
@@ -353,7 +367,7 @@ func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly boo
 				if existing.key != key || existing.digest != digest {
 					return VoiceSessionExecuteToolResult{}, errWriteConflict
 				}
-				if existing.complete {
+				if existing.complete && !voiceWriteResultUncertain(existing.result) {
 					return existing.result, nil
 				}
 			}
@@ -366,7 +380,10 @@ func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly boo
 
 		l.mu.Lock()
 		finished := voiceWriteRecord{key: key, digest: digest, metered: true}
-		if runErr != nil {
+		uncertain := runErr != nil || voiceWriteResultUncertain(result)
+		if uncertain {
+			// Tool errors (including after a product mutation already committed)
+			// stay reconcilable: never sticky-cache completed-failure.
 			finished.unknown = true
 		} else {
 			finished.result = result
@@ -387,8 +404,11 @@ func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly boo
 		l.records[identity] = finished
 		close(wait)
 		l.mu.Unlock()
-		if runErr != nil {
-			return VoiceSessionExecuteToolResult{}, runErr
+		if uncertain {
+			if runErr != nil {
+				return VoiceSessionExecuteToolResult{}, fmt.Errorf("%w: %w", errWriteOutcomeUnknown, runErr)
+			}
+			return VoiceSessionExecuteToolResult{}, fmt.Errorf("%w: %s", errWriteOutcomeUnknown, strings.TrimSpace(result.Error))
 		}
 		return result, nil
 	}
@@ -396,10 +416,11 @@ func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly boo
 
 func (l *voiceWriteLedger) loadLocked(identity string) (voiceWriteRecord, bool, error) {
 	if rec, ok := l.records[identity]; ok {
-		// Complete results and in-flight waits stay process-local. Pending or
-		// unknown rows must re-query durable authority so another worker's
-		// completed result becomes visible instead of sticky-caching forever.
-		if rec.complete || rec.wait != nil {
+		// Durable success and in-flight waits stay process-local. Pending,
+		// unknown, and completed-failure rows must re-query durable authority
+		// so another worker's completed result becomes visible.
+		certainComplete := rec.complete && !voiceWriteResultUncertain(rec.result)
+		if certainComplete || rec.wait != nil {
 			return rec, true, nil
 		}
 		refreshed, found, err := l.loadDurableLocked(identity)

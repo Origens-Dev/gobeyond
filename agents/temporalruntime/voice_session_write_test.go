@@ -327,6 +327,124 @@ func TestVoiceWritePendingRefreshesWhenPeerCompletes(t *testing.T) {
 	}
 }
 
+func TestVoiceWriteToolErrorIsUnknownNotCompletedFailure(t *testing.T) {
+	authority := newMemoryVoiceWriteStore()
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), authority)
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		// Product mutation may already be committed; a tool error must not
+		// become sticky completed-failure in the durable ledger.
+		return nil, errors.New("downstream write failed after commit")
+	})
+	_, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("tool error err=%v want unknown", err)
+	}
+	if calls != 1 {
+		t.Fatalf("tool error mutations=%d", calls)
+	}
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	complete, unknown, metered, cached := voiceWriteLedgerState(ledgerID)
+	if complete || !unknown || !metered || cached.Error != "" || len(cached.Result) != 0 {
+		t.Fatalf("tool error ledger complete=%v unknown=%v metered=%v result=%#v", complete, unknown, metered, cached)
+	}
+	auth, ok, loadErr := authority.Load(ledgerID)
+	if loadErr != nil || !ok || auth.Complete || !auth.Unknown || auth.Result.Error != "" {
+		t.Fatalf("authority after tool error: ok=%v complete=%v unknown=%v errField=%q loadErr=%v", ok, auth.Complete, auth.Unknown, auth.Result.Error, loadErr)
+	}
+	req.WriteReconcileOnly = true
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("reconcile after tool error err=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("reconcile after tool error re-executed calls=%d", calls)
+	}
+}
+
+func TestVoiceWriteToolErrorThenPeerCompleteRefreshes(t *testing.T) {
+	authority := newMemoryVoiceWriteStore()
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), authority)
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return nil, errors.New("handler lost response after mutation")
+	})
+	_, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("tool error err=%v", err)
+	}
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	auth, ok, loadErr := authority.Load(ledgerID)
+	if loadErr != nil || !ok || auth.Complete || !auth.Unknown {
+		t.Fatalf("authority after uncertain write: ok=%v complete=%v unknown=%v err=%v", ok, auth.Complete, auth.Unknown, loadErr)
+	}
+	// Peer / product receipt later establishes durable success under same key.
+	complete := VoiceWritePersistedRecord{
+		Identity: ledgerID, Key: auth.Key, Digest: auth.Digest, Complete: true, Metered: true,
+		Result: VoiceSessionExecuteToolResult{Result: []byte(`{"ok":true}`)},
+	}
+	if err := authority.Persist(ledgerID, complete); err != nil {
+		t.Fatal(err)
+	}
+	req.WriteReconcileOnly = true
+	second, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || second.Error != "" || calls != 1 || string(second.Result) != `{"ok":true}` {
+		t.Fatalf("uncertain→peer-complete refresh second=%s err=%v calls=%d", second.Result, err, calls)
+	}
+}
+
+func TestVoiceWriteLegacyCompletedFailureRefreshesFromAuthority(t *testing.T) {
+	authority := newMemoryVoiceWriteStore()
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), authority)
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	canonical, err := voicecontract.CanonicalJSON(req.Input, voicecontract.MaxSchemaBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Input = canonical
+	digest := voicecontract.Digest(canonical)
+	key, err := deriveVoiceWriteKey(req.SessionID, req.CallID, req.ToolName, req.ToolCallID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := voiceWriteReplayDigest(req, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	// Legacy sticky completed-failure row (Error under complete=true).
+	legacy := VoiceWritePersistedRecord{
+		Identity: ledgerID, Key: key, Digest: replay, Complete: true, Metered: true,
+		Result: VoiceSessionExecuteToolResult{Error: "stale completed failure"},
+	}
+	if err := authority.Persist(ledgerID, legacy); err != nil {
+		t.Fatal(err)
+	}
+	req.WriteReconcileOnly = true
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("legacy completed-failure err=%v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("legacy completed-failure re-executed calls=%d", calls)
+	}
+	fixed := VoiceWritePersistedRecord{
+		Identity: ledgerID, Key: key, Digest: replay, Complete: true, Metered: true,
+		Result: VoiceSessionExecuteToolResult{Result: []byte(`{"ok":true}`)},
+	}
+	if err := authority.Persist(ledgerID, fixed); err != nil {
+		t.Fatal(err)
+	}
+	second, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || second.Error != "" || calls != 0 || string(second.Result) != `{"ok":true}` {
+		t.Fatalf("legacy failure refresh second=%s err=%v calls=%d", second.Result, err, calls)
+	}
+}
+
 func TestVoiceWriteHostLossWithoutAuthorityFailsClosed(t *testing.T) {
 	resetVoiceWriteLedgerWithDir(t.TempDir())
 	calls := 0
