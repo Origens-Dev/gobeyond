@@ -150,3 +150,14 @@ func ToolBudget(policy, toolID string) (bucket string, limit int, err error) {
 	}
 	return "", 0, errors.New("tool outside operator mailbox budget")
 }
+
+// ManifestDeclaresPlayback reports authored playback/completion tools. It does
+// not authorize execution; grant, owner, and capability checks remain separate.
+func ManifestDeclaresPlayback(m Manifest) bool {
+	for _, t := range m.Tools {
+		if t.IsPlayback() || t.IsPlaybackCompletion() {
+			return true
+		}
+	}
+	return false
+}

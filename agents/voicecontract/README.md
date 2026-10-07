@@ -71,11 +71,14 @@ objects and array item schemas; byte, property, tool, and item limits still appl
 
 `VoiceBudgetPolicy: "generic_v1"` is an authorable skeleton with no product agent
 id (`call-operator`, `voice-mail`, leave-message) and no mailbox tool allowlist.
-Numeric generic buckets are unassigned. Current host/admission/workflow limits
-remain as inventoried in `budget.go`: envelope 16 KiB, manifest 32 KiB, schema
-4 KiB, 8 tools, session tool quota 8, default assistant turns 10 (mailbox 32),
+Numeric generic buckets are unassigned. Authored playback/completion pairs freeze
+under `generic_v1` (`ManifestDeclaresPlayback`); hosts apply a session-wide cap
+after `ValidateBudgetPolicy`. Current host/admission/workflow limits remain as
+inventoried in `budget.go`: envelope 16 KiB, manifest 32 KiB, schema 4 KiB, 8
+tools, session tool quota 8, default assistant turns 10 (mailbox 32),
 read/control legacy two-operation cap, mailbox buckets list 4 / get 12 /
-placement 2 / hangup 1. `operator_mailbox_v1` allowlist is unchanged.
+placement 2 / hangup 1. `operator_mailbox_v1` allowlist is unchanged during the
+pin cutover; new Operator declarations should use `generic_v1`.
 
 RingPlan is the public M2 recipient-set API (`version` `2`) with lifecycle
 observations `on_no_answer` / `on_busy` / `on_failed` / `on_cancelled`.

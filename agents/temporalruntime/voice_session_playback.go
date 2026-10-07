@@ -46,7 +46,7 @@ func (s *voicePlaybackWorkflowState) execute(ctx workflow.Context, in VoiceSessi
 	fail := func(msg string) (VoiceSessionExecuteToolResult, error) {
 		return VoiceSessionExecuteToolResult{}, errors.New(msg)
 	}
-	if !s.enabled || s.budget.policy != voicecontract.BudgetPolicyOperatorMailboxPlaybackV1 || !exclusiveVoiceDispatch(req) || (req.BudgetPolicy != "" && req.BudgetPolicy != s.budget.policy) {
+	if !s.enabled || !(voicecontract.IsGenericBudgetPolicy(s.budget.policy) || s.budget.policy == voicecontract.BudgetPolicyOperatorMailboxPlaybackV1) || !exclusiveVoiceDispatch(req) || (req.BudgetPolicy != "" && req.BudgetPolicy != s.budget.policy) {
 		return fail("playback workflow admission unavailable")
 	}
 	var c voicecontract.Context
@@ -111,7 +111,7 @@ func (s *voicePlaybackWorkflowState) execute(ctx workflow.Context, in VoiceSessi
 	return result, e
 }
 func executeVoiceSourcePlaybackActivity(ctx context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
-	if req.SourcePlayback == nil || req.SourcePlayback.Validate() != nil || req.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxPlaybackV1 {
+	if req.SourcePlayback == nil || req.SourcePlayback.Validate() != nil || !(voicecontract.IsGenericBudgetPolicy(req.BudgetPolicy) || req.BudgetPolicy == voicecontract.BudgetPolicyOperatorMailboxPlaybackV1) {
 		return VoiceSessionExecuteToolResult{}, errors.New("invalid playback source dispatch")
 	}
 	return executeVoiceRegistryActivityKind(ctx, req, true, true)

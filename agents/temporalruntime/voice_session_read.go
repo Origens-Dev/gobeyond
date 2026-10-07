@@ -28,6 +28,15 @@ func (b *voiceToolBudget) consume(toolID, callID, digest string, legacyLimit int
 	if _, exists := b.calls[callID]; exists {
 		return errors.New("conflicting cross-tool replay")
 	}
+	if voicecontract.IsGenericBudgetPolicy(b.policy) {
+		const sessionCap = 8
+		if b.count >= sessionCap {
+			return errors.New("voice tool budget exhausted")
+		}
+		b.count++
+		b.calls[callID] = toolID + "/" + digest
+		return nil
+	}
 	bucket, limit, err := voicecontract.ToolBudget(b.policy, toolID)
 	if err != nil {
 		return err
