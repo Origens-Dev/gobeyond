@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -230,6 +231,102 @@ func TestVoiceWriteHostLossReconcilesFromAuthoritativeStore(t *testing.T) {
 	}
 }
 
+func TestVoiceWriteRetainAuthorityFreshHostRecoversViaReceiptLookup(t *testing.T) {
+	// Production path: default host-local ledger, then RetainVoiceWriteAuthority
+	// with a product receipt-style SoR (keyed by ToolWriteID), not the test-only
+	// resetVoiceWriteLedgerWithAuthority helper.
+	hostA := t.TempDir()
+	t.Setenv(voiceWriteLedgerDirEnv, hostA)
+	resetVoiceWriteLedgerWithDir(hostA)
+	if ProcessVoiceWriteAuthority() != nil {
+		t.Fatal("production default must not invent a shared authority")
+	}
+	receipts := newReceiptLookupAuthority()
+	RetainVoiceWriteAuthority(receipts)
+	if ProcessVoiceWriteAuthority() != receipts {
+		t.Fatal("RetainVoiceWriteAuthority did not attach production authority")
+	}
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	first, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || first.Error != "" || calls != 1 {
+		t.Fatalf("commit first=%#v err=%v calls=%d", first, err, calls)
+	}
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	auth, ok, loadErr := receipts.Load(ledgerID)
+	if loadErr != nil || !ok || !auth.Complete || auth.Key == "" || string(auth.Result.Result) != string(first.Result) {
+		t.Fatalf("receipt authority before host loss: ok=%v complete=%v key=%q result=%s err=%v", ok, auth.Complete, auth.Key, auth.Result.Result, loadErr)
+	}
+	if _, byKey := receipts.loadByWriteID(auth.Key); !byKey {
+		t.Fatal("receipt authority did not index by ToolWriteID")
+	}
+	hostB := t.TempDir()
+	replaceHostVoiceWriteLedger(hostB)
+	if entries, err := os.ReadDir(hostB); err != nil || len(entries) != 0 {
+		t.Fatalf("fresh host local ledger not empty: entries=%v err=%v", entries, err)
+	}
+	if ProcessVoiceWriteAuthority() != receipts {
+		t.Fatal("fresh host lost retained authority")
+	}
+	second, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || second.Error != "" || calls != 1 || string(second.Result) != string(first.Result) {
+		t.Fatalf("fresh-host receipt reconcile first=%s second=%s err=%v calls=%d", first.Result, second.Result, err, calls)
+	}
+}
+
+func TestVoiceWritePendingRefreshesWhenPeerCompletes(t *testing.T) {
+	authority := newMemoryVoiceWriteStore()
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), authority)
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	canonical, err := voicecontract.CanonicalJSON(req.Input, voicecontract.MaxSchemaBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Input = canonical
+	digest := voicecontract.Digest(canonical)
+	key, err := deriveVoiceWriteKey(req.SessionID, req.CallID, req.ToolName, req.ToolCallID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := voiceWriteReplayDigest(req, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	pending := VoiceWritePersistedRecord{Identity: ledgerID, Key: key, Digest: replay}
+	if err := authority.Reserve(ledgerID, pending); err != nil {
+		t.Fatal(err)
+	}
+	// Worker B observes pending from authority and caches it (fail closed).
+	req.WriteReconcileOnly = true
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("pending reconcile err=%v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("pending reconcile executed handler calls=%d", calls)
+	}
+	// Peer worker finishes; authority advances to complete+metered.
+	complete := VoiceWritePersistedRecord{
+		Identity: ledgerID, Key: key, Digest: replay, Complete: true, Metered: true,
+		Result: VoiceSessionExecuteToolResult{Result: []byte(`{"ok":true}`)},
+	}
+	if err := authority.Persist(ledgerID, complete); err != nil {
+		t.Fatal(err)
+	}
+	// Same process must refresh pending/unknown from authority, not sticky-cache.
+	second, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || second.Error != "" || calls != 0 || string(second.Result) != `{"ok":true}` {
+		t.Fatalf("peer-complete refresh second=%s err=%v calls=%d", second.Result, err, calls)
+	}
+}
+
 func TestVoiceWriteHostLossWithoutAuthorityFailsClosed(t *testing.T) {
 	resetVoiceWriteLedgerWithDir(t.TempDir())
 	calls := 0
@@ -418,26 +515,26 @@ func TestVoiceWriteWorkflowPersistErrorHostLossDoesNotReexecute(t *testing.T) {
 }
 
 type persistFailStore struct {
-	inner        voiceWriteStore
+	inner        VoiceWriteStore
 	err          error
 	failComplete bool
 }
 
-func (s persistFailStore) Load(identity string) (voiceWritePersistedRecord, bool, error) {
+func (s persistFailStore) Load(identity string) (VoiceWritePersistedRecord, bool, error) {
 	if s.inner == nil {
-		return voiceWritePersistedRecord{}, false, nil
+		return VoiceWritePersistedRecord{}, false, nil
 	}
 	return s.inner.Load(identity)
 }
 
-func (s persistFailStore) Reserve(identity string, rec voiceWritePersistedRecord) error {
+func (s persistFailStore) Reserve(identity string, rec VoiceWritePersistedRecord) error {
 	if s.inner == nil {
 		return nil
 	}
 	return s.inner.Reserve(identity, rec)
 }
 
-func (s persistFailStore) Persist(identity string, rec voiceWritePersistedRecord) error {
+func (s persistFailStore) Persist(identity string, rec VoiceWritePersistedRecord) error {
 	if s.failComplete && !rec.Complete {
 		if s.inner == nil {
 			return nil
@@ -478,4 +575,62 @@ func retainVoiceWriteLookup(t *testing.T, handler func(context.Context, agents.A
 		ManifestDigest: manifestDigest, AgentRevision: "revision-1",
 		SessionID: "session-write", CallID: "call-write",
 	}
+}
+
+// receiptLookupAuthority simulates product durable receipts keyed by
+// ToolWriteID (VoiceWritePersistedRecord.Key), the Candlestick-style SoR that
+// production attaches via RetainVoiceWriteAuthority.
+type receiptLookupAuthority struct {
+	mu        sync.Mutex
+	byID      map[string]VoiceWritePersistedRecord
+	byWriteID map[string]VoiceWritePersistedRecord
+}
+
+func newReceiptLookupAuthority() *receiptLookupAuthority {
+	return &receiptLookupAuthority{
+		byID:      map[string]VoiceWritePersistedRecord{},
+		byWriteID: map[string]VoiceWritePersistedRecord{},
+	}
+}
+
+func (s *receiptLookupAuthority) loadByWriteID(writeID string) (VoiceWritePersistedRecord, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.byWriteID[writeID]
+	return rec, ok
+}
+
+func (s *receiptLookupAuthority) Load(identity string) (VoiceWritePersistedRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rec, ok := s.byID[identity]; ok {
+		return rec, true, nil
+	}
+	return VoiceWritePersistedRecord{}, false, nil
+}
+
+func (s *receiptLookupAuthority) Reserve(identity string, rec VoiceWritePersistedRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[identity]; ok {
+		return os.ErrExist
+	}
+	if rec.Key != "" {
+		if _, ok := s.byWriteID[rec.Key]; ok {
+			return os.ErrExist
+		}
+		s.byWriteID[rec.Key] = rec
+	}
+	s.byID[identity] = rec
+	return nil
+}
+
+func (s *receiptLookupAuthority) Persist(identity string, rec VoiceWritePersistedRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byID[identity] = rec
+	if rec.Key != "" {
+		s.byWriteID[rec.Key] = rec
+	}
+	return nil
 }

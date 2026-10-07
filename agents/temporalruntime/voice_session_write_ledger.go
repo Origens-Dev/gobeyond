@@ -26,7 +26,10 @@ type voiceWriteRecord struct {
 	wait     chan struct{}
 }
 
-type voiceWritePersistedRecord struct {
+// VoiceWritePersistedRecord is the durable ledger row for one write identity.
+// Shared-authority adapters (hosted persistence / product receipt lookup) load
+// and store this shape; Key is the platform ToolWriteID / idempotency digest.
+type VoiceWritePersistedRecord struct {
 	Identity string                        `json:"identity"`
 	Key      string                        `json:"key"`
 	Digest   string                        `json:"digest"`
@@ -36,8 +39,8 @@ type voiceWritePersistedRecord struct {
 	Metered  bool                          `json:"metered"`
 }
 
-func (r voiceWriteRecord) persisted(identity string) voiceWritePersistedRecord {
-	return voiceWritePersistedRecord{
+func (r voiceWriteRecord) persisted(identity string) VoiceWritePersistedRecord {
+	return VoiceWritePersistedRecord{
 		Identity: identity,
 		Key:      r.key,
 		Digest:   r.digest,
@@ -48,7 +51,7 @@ func (r voiceWriteRecord) persisted(identity string) voiceWritePersistedRecord {
 	}
 }
 
-func (p voiceWritePersistedRecord) record() voiceWriteRecord {
+func (p VoiceWritePersistedRecord) record() voiceWriteRecord {
 	return voiceWriteRecord{
 		key:      p.Key,
 		digest:   p.Digest,
@@ -59,28 +62,30 @@ func (p voiceWritePersistedRecord) record() voiceWriteRecord {
 	}
 }
 
-// voiceWriteStore is the durable write-result SoR used by reconcile. Host-local
-// files survive process restart on the same disk; a shared store survives
-// replacement onto a host with empty local storage. Product handlers still
-// durably dedupe by ToolWriteID.
-type voiceWriteStore interface {
-	Load(identity string) (voiceWritePersistedRecord, bool, error)
-	Reserve(identity string, rec voiceWritePersistedRecord) error
-	Persist(identity string, rec voiceWritePersistedRecord) error
+// VoiceWriteStore is the shared authoritative write-result SoR used by
+// reconcile after host/container replacement with empty local storage.
+// Host-local files only cover process restart on the same disk. Production
+// workers attach an implementation with RetainVoiceWriteAuthority (for
+// example product durable receipt lookup keyed by ToolWriteID). Product
+// handlers still durably dedupe by ToolWriteID.
+type VoiceWriteStore interface {
+	Load(identity string) (VoiceWritePersistedRecord, bool, error)
+	Reserve(identity string, rec VoiceWritePersistedRecord) error
+	Persist(identity string, rec VoiceWritePersistedRecord) error
 }
 
 type memoryVoiceWriteStore struct {
 	mu      sync.Mutex
-	records map[string]voiceWritePersistedRecord
+	records map[string]VoiceWritePersistedRecord
 }
 
 func newMemoryVoiceWriteStore() *memoryVoiceWriteStore {
-	return &memoryVoiceWriteStore{records: map[string]voiceWritePersistedRecord{}}
+	return &memoryVoiceWriteStore{records: map[string]VoiceWritePersistedRecord{}}
 }
 
-func (s *memoryVoiceWriteStore) Load(identity string) (voiceWritePersistedRecord, bool, error) {
+func (s *memoryVoiceWriteStore) Load(identity string) (VoiceWritePersistedRecord, bool, error) {
 	if s == nil {
-		return voiceWritePersistedRecord{}, false, nil
+		return VoiceWritePersistedRecord{}, false, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,7 +93,7 @@ func (s *memoryVoiceWriteStore) Load(identity string) (voiceWritePersistedRecord
 	return rec, ok, nil
 }
 
-func (s *memoryVoiceWriteStore) Reserve(identity string, rec voiceWritePersistedRecord) error {
+func (s *memoryVoiceWriteStore) Reserve(identity string, rec VoiceWritePersistedRecord) error {
 	if s == nil {
 		return nil
 	}
@@ -101,7 +106,7 @@ func (s *memoryVoiceWriteStore) Reserve(identity string, rec voiceWritePersisted
 	return nil
 }
 
-func (s *memoryVoiceWriteStore) Persist(identity string, rec voiceWritePersistedRecord) error {
+func (s *memoryVoiceWriteStore) Persist(identity string, rec VoiceWritePersistedRecord) error {
 	if s == nil {
 		return nil
 	}
@@ -120,28 +125,28 @@ func (s *fileVoiceWriteStore) recordPath(identity string) string {
 	return filepath.Join(s.dir, hex.EncodeToString(sum[:])+".json")
 }
 
-func (s *fileVoiceWriteStore) Load(identity string) (voiceWritePersistedRecord, bool, error) {
+func (s *fileVoiceWriteStore) Load(identity string) (VoiceWritePersistedRecord, bool, error) {
 	if s == nil || s.dir == "" {
-		return voiceWritePersistedRecord{}, false, nil
+		return VoiceWritePersistedRecord{}, false, nil
 	}
 	raw, err := os.ReadFile(s.recordPath(identity))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return voiceWritePersistedRecord{}, false, nil
+			return VoiceWritePersistedRecord{}, false, nil
 		}
-		return voiceWritePersistedRecord{}, false, err
+		return VoiceWritePersistedRecord{}, false, err
 	}
 	if len(strings.TrimSpace(string(raw))) == 0 {
-		return voiceWritePersistedRecord{Identity: identity, Unknown: true}, true, nil
+		return VoiceWritePersistedRecord{Identity: identity, Unknown: true}, true, nil
 	}
-	var persisted voiceWritePersistedRecord
+	var persisted VoiceWritePersistedRecord
 	if err := json.Unmarshal(raw, &persisted); err != nil {
-		return voiceWritePersistedRecord{Identity: identity, Unknown: true}, true, nil
+		return VoiceWritePersistedRecord{Identity: identity, Unknown: true}, true, nil
 	}
 	return persisted, true, nil
 }
 
-func (s *fileVoiceWriteStore) Reserve(identity string, rec voiceWritePersistedRecord) error {
+func (s *fileVoiceWriteStore) Reserve(identity string, rec VoiceWritePersistedRecord) error {
 	if s == nil || s.dir == "" {
 		return nil
 	}
@@ -151,7 +156,7 @@ func (s *fileVoiceWriteStore) Reserve(identity string, rec voiceWritePersistedRe
 	return s.writeRecord(s.recordPath(identity), rec, true)
 }
 
-func (s *fileVoiceWriteStore) Persist(identity string, rec voiceWritePersistedRecord) error {
+func (s *fileVoiceWriteStore) Persist(identity string, rec VoiceWritePersistedRecord) error {
 	if s == nil || s.dir == "" {
 		return nil
 	}
@@ -161,7 +166,7 @@ func (s *fileVoiceWriteStore) Persist(identity string, rec voiceWritePersistedRe
 	return s.writeRecord(s.recordPath(identity), rec, false)
 }
 
-func (s *fileVoiceWriteStore) writeRecord(path string, rec voiceWritePersistedRecord, exclusive bool) error {
+func (s *fileVoiceWriteStore) writeRecord(path string, rec VoiceWritePersistedRecord, exclusive bool) error {
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		return err
@@ -210,8 +215,8 @@ func (s *fileVoiceWriteStore) writeRecord(path string, rec voiceWritePersistedRe
 type voiceWriteLedger struct {
 	mu      sync.Mutex
 	dir     string
-	local   voiceWriteStore
-	shared  voiceWriteStore
+	local   VoiceWriteStore
+	shared  VoiceWriteStore
 	records map[string]voiceWriteRecord
 }
 
@@ -223,7 +228,7 @@ func openVoiceWriteLedger(dir string) *voiceWriteLedger {
 	return openVoiceWriteLedgerWithAuthority(dir, nil)
 }
 
-func openVoiceWriteLedgerWithAuthority(dir string, shared voiceWriteStore) *voiceWriteLedger {
+func openVoiceWriteLedgerWithAuthority(dir string, shared VoiceWriteStore) *voiceWriteLedger {
 	dir = strings.TrimSpace(dir)
 	l := &voiceWriteLedger{dir: dir, shared: shared, records: map[string]voiceWriteRecord{}}
 	if dir != "" {
@@ -251,18 +256,42 @@ func resetVoiceWriteLedgerWithDir(dir string) {
 	processWriteLedger = openVoiceWriteLedger(dir)
 }
 
-func resetVoiceWriteLedgerWithAuthority(dir string, shared voiceWriteStore) {
+func resetVoiceWriteLedgerWithAuthority(dir string, shared VoiceWriteStore) {
 	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, shared)
 }
 
-func resetVoiceWriteLedgerStores(local, shared voiceWriteStore) {
+func resetVoiceWriteLedgerStores(local, shared VoiceWriteStore) {
 	processWriteLedger = &voiceWriteLedger{local: local, shared: shared, records: map[string]voiceWriteRecord{}}
+}
+
+// RetainVoiceWriteAuthority attaches the shared authoritative write store for
+// this process. Production workers must call this once at startup (alongside
+// RetainVoiceRegistry) so a replacement host with empty local storage can
+// reconcile through hosted persistence or product durable receipt lookup.
+// Passing nil clears the shared store and keeps only the host-local replica.
+// The process-local in-flight cache is dropped so the next load consults the
+// newly attached authority.
+func RetainVoiceWriteAuthority(store VoiceWriteStore) {
+	dir := defaultVoiceWriteLedgerDir()
+	if processWriteLedger != nil && strings.TrimSpace(processWriteLedger.dir) != "" {
+		dir = processWriteLedger.dir
+	}
+	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, store)
+}
+
+// ProcessVoiceWriteAuthority returns the shared store retained for this
+// process, if any.
+func ProcessVoiceWriteAuthority() VoiceWriteStore {
+	if processWriteLedger == nil {
+		return nil
+	}
+	return processWriteLedger.shared
 }
 
 // reopenVoiceWriteLedger drops the process-local cache and reopens the same
 // host-local directory, simulating a process restart on the same disk.
 func reopenVoiceWriteLedger() {
-	dir, shared := "", voiceWriteStore(nil)
+	dir, shared := "", VoiceWriteStore(nil)
 	if processWriteLedger != nil {
 		dir = processWriteLedger.dir
 		shared = processWriteLedger.shared
@@ -273,18 +302,15 @@ func reopenVoiceWriteLedger() {
 // replaceHostVoiceWriteLedger drops process cache and host-local files, keeping
 // the shared authoritative store. This is a replacement worker on a new host.
 func replaceHostVoiceWriteLedger(dir string) {
-	var shared voiceWriteStore
+	var shared VoiceWriteStore
 	if processWriteLedger != nil {
 		shared = processWriteLedger.shared
 	}
 	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, shared)
 }
 
-func voiceWriteAuthorityStore() voiceWriteStore {
-	if processWriteLedger == nil {
-		return nil
-	}
-	return processWriteLedger.shared
+func voiceWriteAuthorityStore() VoiceWriteStore {
+	return ProcessVoiceWriteAuthority()
 }
 
 func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly bool, run func() (VoiceSessionExecuteToolResult, error)) (VoiceSessionExecuteToolResult, error) {
@@ -370,6 +396,20 @@ func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly boo
 
 func (l *voiceWriteLedger) loadLocked(identity string) (voiceWriteRecord, bool, error) {
 	if rec, ok := l.records[identity]; ok {
+		// Complete results and in-flight waits stay process-local. Pending or
+		// unknown rows must re-query durable authority so another worker's
+		// completed result becomes visible instead of sticky-caching forever.
+		if rec.complete || rec.wait != nil {
+			return rec, true, nil
+		}
+		refreshed, found, err := l.loadDurableLocked(identity)
+		if err != nil {
+			return voiceWriteRecord{}, false, err
+		}
+		if found {
+			return refreshed, true, nil
+		}
+		// Authority miss after a prior pending/unknown: keep fail-closed.
 		return rec, true, nil
 	}
 	return l.loadDurableLocked(identity)
