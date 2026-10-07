@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Freeze authored playback/completion pairs under `VoiceBudgetPolicy:
+  "generic_v1"` (`ManifestDeclaresPlayback`, session-wide tool consume). The
+  retired `operator_mailbox_playback_v1` name remains recognized for older
+  fixture digests during the pin cutover so Operator can migrate off that
+  product bind. Source playback admission reserves its authenticated
+  completion slot atomically so audio cannot play without a path to record
+  delivery (generic session cap and mailbox playback/completion buckets).
+
 - Accept JSON Schema `boolean` (`{"type":"boolean"}` only) in voice contract
   input/output validation, and freeze `execution_kind: "write"` with the same
   closed output object and `max_result_bytes` rules as `read`. Schema keyword

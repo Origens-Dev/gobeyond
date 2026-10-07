@@ -120,7 +120,8 @@ func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget
 		if in.Context == nil || in.Context.Validate() != nil || in.AgentID != in.Context.AgentID {
 			return errors.New("invalid verified workflow budget policy")
 		}
-		// Skeleton: recognized without mailbox buckets or a product agent-id bind.
+		// Generic retains a session-wide cap in consume; no product buckets.
+		budget.policy = in.BudgetPolicy
 		return nil
 	}
 	version := workflow.GetVersion(ctx, mailboxBudgetVersionChange, workflow.DefaultVersion, 1)
