@@ -24,17 +24,21 @@ restart, not host loss.
 1. Exclusive reserve is persisted **before** the handler runs.
 2. Success persists the recoverable result and a `metered` bit together.
 3. A **final persist error is fail closed** (`errWriteLedgerPersist` wrapped
-   with `errWriteOutcomeUnknown`). The handler is not treated as a durable
-   success, and retry does not re-execute.
+   with `errWriteOutcomeUnknown`). The activity does not return durable
+   success. Best-effort mark `unknown`; if that mark also fails, the exclusive
+   reservation left **pending** is still enough for reconcile to refuse
+   re-execute on a replacement host.
 4. Recovered pending/unknown/corrupt records fail closed (reconcile only).
 5. Workflow unknown retries set `WriteReconcileOnly` so a miss cannot
    re-execute even when every store is empty.
 
 **Host loss.** A replacement worker with a new empty ledger directory looks up
 the shared store (hosted persistence / handler-keyed SoR in production;
-in-process shared map in tests). If that store has the committed result,
-reconcile returns it and metering stays with the one logical write. If the
-outcome cannot be established, return unknown and **do not** run the handler.
+in-process shared map in tests). Evidence that the mutation survived
+*somewhere else*: the shared store still has the complete + metered record
+while the new host's local directory is empty. Reconcile returns that result.
+If the outcome cannot be established (no authority, or only pending/unknown),
+return unknown and **do not** run the handler.
 
 Product handlers (Candlestick) still must durably dedupe by `ToolWriteID`.
 This file is the platform envelope/ledger side only.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"testing"
 
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -189,7 +191,8 @@ func TestVoiceWriteEmptyCacheUnknownDoesNotExecute(t *testing.T) {
 
 func TestVoiceWriteHostLossReconcilesFromAuthoritativeStore(t *testing.T) {
 	authority := newMemoryVoiceWriteStore()
-	resetVoiceWriteLedgerWithAuthority(t.TempDir(), authority)
+	hostA := t.TempDir()
+	resetVoiceWriteLedgerWithAuthority(hostA, authority)
 	calls := 0
 	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
 		calls++
@@ -199,16 +202,31 @@ func TestVoiceWriteHostLossReconcilesFromAuthoritativeStore(t *testing.T) {
 	if err != nil || first.Error != "" || calls != 1 {
 		t.Fatalf("commit first=%#v err=%v calls=%d", first, err, calls)
 	}
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	// Authoritative mutation/result lives in the shared store — not only on host A.
+	auth, ok, loadErr := authority.Load(ledgerID)
+	if loadErr != nil || !ok || !auth.Complete || !auth.Metered || string(auth.Result.Result) != string(first.Result) {
+		t.Fatalf("authority before host loss: ok=%v complete=%v metered=%v result=%s err=%v", ok, auth.Complete, auth.Metered, auth.Result.Result, loadErr)
+	}
+	hostB := t.TempDir()
+	if hostA == hostB {
+		t.Fatal("replacement host must use a distinct empty ledger directory")
+	}
 	// Replacement host/container: fresh local storage, empty process cache.
-	// Authoritative result remains in the shared store.
-	replaceHostVoiceWriteLedger(t.TempDir())
+	replaceHostVoiceWriteLedger(hostB)
+	if entries, err := os.ReadDir(hostB); err != nil || len(entries) != 0 {
+		t.Fatalf("host B local ledger not empty: entries=%v err=%v", entries, err)
+	}
 	second, err := VoiceSessionExecuteToolActivity(context.Background(), req)
 	if err != nil || second.Error != "" || calls != 1 || string(second.Result) != string(first.Result) {
 		t.Fatalf("host-loss retry first=%s second=%s err=%v calls=%d", first.Result, second.Result, err, calls)
 	}
-	complete, unknown, metered, result := voiceWriteLedgerState(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID))
-	if !complete || unknown || !metered || string(result.Result) != string(first.Result) {
-		t.Fatalf("authority complete=%v unknown=%v metered=%v result=%s", complete, unknown, metered, result.Result)
+	if voiceWriteAuthorityStore() != authority {
+		t.Fatal("replacement host lost the authoritative store handle")
+	}
+	auth, ok, loadErr = authority.Load(ledgerID)
+	if loadErr != nil || !ok || !auth.Complete || !auth.Metered || string(auth.Result.Result) != string(first.Result) {
+		t.Fatalf("authority after host loss: ok=%v complete=%v metered=%v result=%s err=%v", ok, auth.Complete, auth.Metered, auth.Result.Result, loadErr)
 	}
 }
 
@@ -224,6 +242,7 @@ func TestVoiceWriteHostLossWithoutAuthorityFailsClosed(t *testing.T) {
 		t.Fatalf("commit first=%#v err=%v calls=%d", first, err, calls)
 	}
 	replaceHostVoiceWriteLedger(t.TempDir())
+	// Workflow unknown path: reconcile-only with no recoverable authority.
 	req.WriteReconcileOnly = true
 	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
 		t.Fatalf("host-loss without authority err=%v", err)
@@ -234,7 +253,8 @@ func TestVoiceWriteHostLossWithoutAuthorityFailsClosed(t *testing.T) {
 }
 
 func TestVoiceWritePersistErrorFailsClosedWithoutReexecute(t *testing.T) {
-	failing := persistFailStore{inner: newMemoryVoiceWriteStore(), err: errors.New("disk full")}
+	inner := newMemoryVoiceWriteStore()
+	failing := persistFailStore{inner: inner, failComplete: true}
 	resetVoiceWriteLedgerWithAuthority(t.TempDir(), failing)
 	calls := 0
 	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
@@ -248,6 +268,12 @@ func TestVoiceWritePersistErrorFailsClosedWithoutReexecute(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("persist failure mutations=%d", calls)
 	}
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	auth, ok, loadErr := inner.Load(ledgerID)
+	if loadErr != nil || !ok || auth.Complete || !auth.Unknown || !auth.Metered {
+		t.Fatalf("authority after persist fail: ok=%v complete=%v unknown=%v metered=%v err=%v", ok, auth.Complete, auth.Unknown, auth.Metered, loadErr)
+	}
+	// Replacement host with empty local storage still sees the fail-closed mark.
 	replaceHostVoiceWriteLedger(t.TempDir())
 	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
 		t.Fatalf("persist-failure retry err=%v", err)
@@ -257,9 +283,144 @@ func TestVoiceWritePersistErrorFailsClosedWithoutReexecute(t *testing.T) {
 	}
 }
 
+func TestVoiceWritePersistAlwaysFailLeavesReservationFailClosed(t *testing.T) {
+	inner := newMemoryVoiceWriteStore()
+	failing := persistFailStore{inner: inner, err: errors.New("disk full")}
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), failing)
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	_, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if !errors.Is(err, errWriteOutcomeUnknown) || !errors.Is(err, errWriteLedgerPersist) {
+		t.Fatalf("persist failure err=%v", err)
+	}
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	auth, ok, loadErr := inner.Load(ledgerID)
+	// Exclusive reserve survived; complete mark did not. Pending is fail-closed.
+	if loadErr != nil || !ok || auth.Complete || auth.Unknown {
+		t.Fatalf("reserved pending after persist fail: ok=%v complete=%v unknown=%v err=%v", ok, auth.Complete, auth.Unknown, loadErr)
+	}
+	replaceHostVoiceWriteLedger(t.TempDir())
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("reserved-pending host-loss err=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("reserved-pending host-loss re-executed calls=%d", calls)
+	}
+}
+
+func TestVoiceWriteHostLocalPersistErrorFailsClosed(t *testing.T) {
+	localDir := t.TempDir()
+	failing := persistFailStore{inner: &fileVoiceWriteStore{dir: localDir}, failComplete: true}
+	resetVoiceWriteLedgerStores(failing, nil)
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	_, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if !errors.Is(err, errWriteOutcomeUnknown) || !errors.Is(err, errWriteLedgerPersist) {
+		t.Fatalf("host-local persist failure err=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("host-local persist failure mutations=%d", calls)
+	}
+	reopen := openVoiceWriteLedger(localDir)
+	rec, ok, loadErr := reopen.loadDurableLocked(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID))
+	if loadErr != nil || !ok || rec.complete || !rec.unknown || !rec.metered {
+		t.Fatalf("host-local after persist fail: ok=%v complete=%v unknown=%v metered=%v err=%v", ok, rec.complete, rec.unknown, rec.metered, loadErr)
+	}
+	resetVoiceWriteLedgerWithDir(localDir)
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("host-local persist-fail retry err=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("host-local persist-fail retry re-executed calls=%d", calls)
+	}
+}
+
+func TestVoiceWriteWorkflowPersistErrorHostLossDoesNotReexecute(t *testing.T) {
+	inner := newMemoryVoiceWriteStore()
+	failing := persistFailStore{inner: inner, failComplete: true}
+	resetVoiceWriteLedgerWithAuthority(t.TempDir(), failing)
+	schema, output := voiceWriteClosedSchemas()
+	calls := 0
+	writeTool := agents.DefineTool(agents.ToolConfig{Name: "lookup", Description: "Lookup", InputSchema: schema, OutputSchema: output, VoiceWrite: true}, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	definition := agents.DefineAI(agents.AIConfig{Revision: "revision-1", Tools: map[string]agents.AITool{"lookup": writeTool}})
+	_, rawManifest, manifestDigest, err := definition.CompileVoiceManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := NewVoiceRegistry()
+	reg.mu.Lock()
+	reg.definitions["support"] = definition
+	reg.manifests = map[string][]byte{"support": rawManifest}
+	reg.manifestDigests = map[string]string{"support": manifestDigest}
+	reg.mu.Unlock()
+	RetainVoiceRegistry(reg)
+	t.Cleanup(func() {
+		RetainVoiceRegistry(nil)
+		resetVoiceWriteLedger()
+	})
+	ctxn := voicecontract.Context{
+		ExecutionID: "execution-1", OrganizationID: "org-1", ProjectID: "project-1", EnvironmentID: "env-1", NetworkID: "network-1",
+		CallID: "call-write", SessionID: "session-write", ActorID: "user-1", ActorKind: "user", AgentID: "support", AgentRevision: "revision-1",
+		ManifestDigest: manifestDigest, Generation: 1, Scope: voicecontract.Scope{Kind: "agent", LineID: "line-1"},
+	}
+	input, _ := json.Marshal(map[string]any{"q": "hello"})
+	base := VoiceSessionExecuteToolInput{
+		AgentID: ctxn.AgentID, ToolName: "lookup", ToolCallID: "call-persist", Input: input,
+		ActorID: ctxn.ActorID, ActorKind: ctxn.ActorKind, NetworkID: ctxn.NetworkID, AllowedToolIDs: []string{"lookup"},
+	}
+	in := VoiceSessionInput{Context: &ctxn, AgentID: ctxn.AgentID, CallID: ctxn.CallID, SessionID: ctxn.SessionID, ExecutionID: ctxn.ExecutionID}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivityWithOptions(VoiceSessionExecuteToolActivity, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		writes := newVoiceWriteWorkflowState()
+		req, identity, replay, bindErr := bindVoiceWriteRequest(in, base)
+		if bindErr != nil {
+			return bindErr
+		}
+		if _, done, reserveErr := writes.reserve(ctx, identity, replay); reserveErr != nil || done {
+			return errors.New("first reserve")
+		}
+		result, execErr := executeVoiceWriteToolLocal(ctx, req)
+		if _, finishErr := writes.finish(identity, result, execErr); !errors.Is(finishErr, errWriteOutcomeUnknown) {
+			return fmt.Errorf("persist failure finish: %v / %v", execErr, finishErr)
+		}
+		replaceHostVoiceWriteLedger(t.TempDir())
+		if _, done, reserveErr := writes.reserve(ctx, identity, replay); reserveErr != nil || done {
+			return errors.New("unknown reserve must lookup")
+		}
+		req.WriteReconcileOnly = true
+		result, execErr = executeVoiceWriteToolLocal(ctx, req)
+		if _, finishErr := writes.finish(identity, result, execErr); !errors.Is(finishErr, errWriteOutcomeUnknown) {
+			return fmt.Errorf("host-loss reconcile: %v / %v", execErr, finishErr)
+		}
+		return nil
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("mutations=%d want 1", calls)
+	}
+	auth, ok, loadErr := inner.Load(voiceWriteLedgerIdentity(in.SessionID, base.ToolName, base.ToolCallID))
+	if loadErr != nil || !ok || auth.Complete || !auth.Unknown {
+		t.Fatalf("authority after workflow persist fail: ok=%v complete=%v unknown=%v err=%v", ok, auth.Complete, auth.Unknown, loadErr)
+	}
+}
+
 type persistFailStore struct {
-	inner voiceWriteStore
-	err   error
+	inner        voiceWriteStore
+	err          error
+	failComplete bool
 }
 
 func (s persistFailStore) Load(identity string) (voiceWritePersistedRecord, bool, error) {
@@ -276,7 +437,13 @@ func (s persistFailStore) Reserve(identity string, rec voiceWritePersistedRecord
 	return s.inner.Reserve(identity, rec)
 }
 
-func (s persistFailStore) Persist(string, voiceWritePersistedRecord) error {
+func (s persistFailStore) Persist(identity string, rec voiceWritePersistedRecord) error {
+	if s.failComplete && !rec.Complete {
+		if s.inner == nil {
+			return nil
+		}
+		return s.inner.Persist(identity, rec)
+	}
 	if s.err != nil {
 		return s.err
 	}

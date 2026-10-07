@@ -255,6 +255,10 @@ func resetVoiceWriteLedgerWithAuthority(dir string, shared voiceWriteStore) {
 	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, shared)
 }
 
+func resetVoiceWriteLedgerStores(local, shared voiceWriteStore) {
+	processWriteLedger = &voiceWriteLedger{local: local, shared: shared, records: map[string]voiceWriteRecord{}}
+}
+
 // reopenVoiceWriteLedger drops the process-local cache and reopens the same
 // host-local directory, simulating a process restart on the same disk.
 func reopenVoiceWriteLedger() {
@@ -274,6 +278,13 @@ func replaceHostVoiceWriteLedger(dir string) {
 		shared = processWriteLedger.shared
 	}
 	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, shared)
+}
+
+func voiceWriteAuthorityStore() voiceWriteStore {
+	if processWriteLedger == nil {
+		return nil
+	}
+	return processWriteLedger.shared
 }
 
 func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly bool, run func() (VoiceSessionExecuteToolResult, error)) (VoiceSessionExecuteToolResult, error) {
@@ -336,6 +347,10 @@ func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly boo
 			finished.complete = true
 		}
 		if err := l.persistLocked(identity, finished); err != nil {
+			// Fail closed on the final success persist: never return durable
+			// success. Best-effort mark unknown for reconcile; if that mark
+			// also fails, the exclusive reservation left pending is still
+			// enough for a replacement host to refuse re-execute.
 			failed := voiceWriteRecord{key: key, digest: digest, unknown: true, metered: true}
 			l.records[identity] = failed
 			_ = l.persistLocked(identity, failed)
