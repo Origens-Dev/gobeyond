@@ -88,6 +88,11 @@ func (s *voicePlaybackWorkflowState) execute(ctx workflow.Context, in VoiceSessi
 		if s.errors[key] == nil && previous.Error == "" && len(previous.Result) > 0 || s.attempts[key] >= maxPlaybackDispatchAttempts {
 			return previous, s.errors[key]
 		}
+	} else if req.SourcePlayback != nil {
+		completionCallID := voicecontract.PlaybackCompletionCallID(c, id)
+		if e = s.budget.reservePlaybackPair(tool, id, digest, "complete-text-message-playback", completionCallID); e != nil {
+			return fail("playback budget exhausted")
+		}
 	} else if e = s.budget.consume(tool, id, digest, 0); e != nil {
 		return fail("playback budget exhausted")
 	}

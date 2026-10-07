@@ -18,7 +18,9 @@ Use `VoiceBudgetPolicy: "generic_v1"` with authored `play-text-message` /
 `complete-text-message-playback` pairs only after host admission and
 complete-fleet capability gates are implemented. `ManifestDeclaresPlayback`
 reports the authored tools; classification alone never authorizes completion.
-Hosts apply a session-wide cap (no product playback buckets). The retired
+Hosts apply a session-wide cap (no product playback buckets). Source playback
+admission reserves the paired completion slot so the last available capacity
+cannot play audio without a path to record delivery. The retired
 `operator_mailbox_playback_v1` name remains recognized for older fixtures during
 the pin cutover.
 
