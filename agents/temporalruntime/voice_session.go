@@ -73,6 +73,10 @@ type VoiceSessionExecuteToolInput struct {
 	// IdempotencyKey is platform-derived by the voice session workflow. Callers
 	// cannot select it; the activity re-derives and rejects a mismatch.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// WriteReconcileOnly is set by the workflow after an unknown outcome so the
+	// activity may only consult the durable write ledger. Callers cannot select
+	// it; bindVoiceWriteRequest always clears the field.
+	WriteReconcileOnly bool `json:"write_reconcile_only,omitempty"`
 	// Set only by the workflow after validating an approval response. The public
 	// execute-tool update always clears this field before dispatch.
 	ApprovalConfirmed bool      `json:"approval_confirmed,omitempty"`
@@ -213,6 +217,9 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 			if err != nil || done {
 				return cached, err
 			}
+			if writes.unknown[identity] {
+				req.WriteReconcileOnly = true
+			}
 			result, err := executeVoiceWriteToolLocal(ctx, req)
 			if err == nil && result.Approval != nil {
 				writes.pending[identity] = false
@@ -254,6 +261,9 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 				result, _ = writes.finish(identity, VoiceSessionExecuteToolResult{Error: "tool approval denied"}, nil)
 			} else {
 				req.ApprovalConfirmed = true
+				if writes.unknown[identity] {
+					req.WriteReconcileOnly = true
+				}
 				var err error
 				result, err = executeVoiceWriteToolLocal(ctx, req)
 				if result.Approval != nil && err == nil {
