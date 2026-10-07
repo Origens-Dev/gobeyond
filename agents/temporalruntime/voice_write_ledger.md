@@ -45,7 +45,8 @@ restart, not host loss.
    unknown and refresh from authority.
 5. Recovered certain successes are validated again against the frozen tool
    output schema and `max_result_bytes` without re-running the handler. Schema
-   or size failure stays unknown/reconcilable.
+   or size failure stays unknown/reconcilable and drops the sticky
+   process-local complete row so a later authority repair is visible.
 6. Expired tool approval blocks a new mutation, but an authorized unknown
    outcome may still reconcile via receipt lookup (`WriteReconcileOnly`).
 7. Workflow unknown retries set `WriteReconcileOnly` so a miss cannot

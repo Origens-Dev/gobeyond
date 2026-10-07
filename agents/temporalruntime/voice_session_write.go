@@ -288,6 +288,9 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 	// the frozen output schema/size without re-running the mutation.
 	raw, validateErr := voicecontract.ValidateToolOutput(*spec, result.Result)
 	if validateErr != nil {
+		// Do not leave the invalid payload sticky-cached as process-local
+		// complete; a later authority repair must become visible on reconcile.
+		forgetVoiceWriteProcessRecord(identity)
 		return VoiceSessionExecuteToolResult{}, errWriteOutcomeUnknown
 	}
 	result.Result = raw

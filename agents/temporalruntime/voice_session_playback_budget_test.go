@@ -64,6 +64,31 @@ func TestReservePlaybackPairRejectsStolenCompletionTool(t *testing.T) {
 	}
 }
 
+func TestReservePlaybackPairRejectsSecondSourceReusingReservedCompletionID(t *testing.T) {
+	b := &voiceToolBudget{policy: voicecontract.BudgetPolicyGenericV1}
+	if err := b.reservePlaybackPair("play-a", "source-a", "digest-a", "complete-a", "completion_a"); err != nil {
+		t.Fatal(err)
+	}
+	// A second source must not admit using the first pair's reserved completion
+	// call ID as its source call ID — that previously overwrote calls[] and
+	// broke the first completion claim.
+	if err := b.reservePlaybackPair("play-b", "completion_a", "digest-b", "complete-b", "completion_b"); err == nil {
+		t.Fatal("second source reused reserved completion ID as source call ID")
+	}
+	if err := b.reservePlaybackPair("play-b", "source-b", "digest-b", "complete-b", "completion_a"); err == nil {
+		t.Fatal("second source overwrote reserved completion ID")
+	}
+	if b.count != 2 || len(b.reservedCompletions) != 1 {
+		t.Fatalf("rejected second source leaked budget count=%d reserved=%v", b.count, b.reservedCompletions)
+	}
+	if err := b.claimPlaybackCompletion("complete-a", "completion_a", "completion-digest", "source-a"); err != nil {
+		t.Fatalf("first completion broken after second-source attempt: %v", err)
+	}
+	if len(b.reservedCompletions) != 0 || b.calls["completion_a"] == "" {
+		t.Fatalf("first completion claim state reserved=%v calls=%v", b.reservedCompletions, b.calls)
+	}
+}
+
 func TestReservePlaybackPairRejectsMailboxPlaybackWhenCompletionBucketFull(t *testing.T) {
 	b := &voiceToolBudget{policy: voicecontract.BudgetPolicyOperatorMailboxPlaybackV1, buckets: map[string]int{"completion": 12}}
 	if err := b.reservePlaybackPair("play-text-message", "source", "digest", "complete-text-message-playback", "completion_reserved"); err == nil {

@@ -327,6 +327,19 @@ func voiceWriteAuthorityStore() VoiceWriteStore {
 	return ProcessVoiceWriteAuthority()
 }
 
+// forgetVoiceWriteProcessRecord drops a sticky process-local row so the next
+// load consults durable authority again. Used when a recovered "complete"
+// result fails frozen output validation: the invalid payload must not remain
+// cached as durable complete and hide a later authority repair.
+func forgetVoiceWriteProcessRecord(identity string) {
+	if processWriteLedger == nil || identity == "" {
+		return
+	}
+	processWriteLedger.mu.Lock()
+	defer processWriteLedger.mu.Unlock()
+	delete(processWriteLedger.records, identity)
+}
+
 func (l *voiceWriteLedger) dispatch(identity, key, digest string, lookupOnly bool, run func() (VoiceSessionExecuteToolResult, error)) (VoiceSessionExecuteToolResult, error) {
 	for {
 		l.mu.Lock()

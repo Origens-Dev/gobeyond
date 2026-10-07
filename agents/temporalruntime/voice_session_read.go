@@ -115,6 +115,11 @@ func (b *voiceToolBudget) reservePlaybackPair(sourceToolID, sourceCallID, source
 	if _, exists := b.calls[completionCallID]; exists {
 		return errors.New("conflicting cross-tool replay")
 	}
+	// A reserved completion ID cannot be reused as another source's call ID
+	// (or overwritten as another pair's completion reservation).
+	if _, exists := b.reservedCompletions[sourceCallID]; exists {
+		return errors.New("conflicting cross-tool replay")
+	}
 	if _, exists := b.reservedCompletions[completionCallID]; exists {
 		return errors.New("conflicting cross-tool replay")
 	}

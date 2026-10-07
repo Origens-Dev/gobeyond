@@ -46,6 +46,19 @@ func TestVoiceWriteRecoveredSuccessValidatedWithoutRerun(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("validation failure re-ran mutation calls=%d", calls)
 	}
+	// Invalid recovered payload must not stick as process-local complete: after
+	// authority repair, the next reconcile must observe the fixed result.
+	rec.Result = VoiceSessionExecuteToolResult{Result: []byte(`{"ok":true}`)}
+	if err := authority.Persist(identity, rec); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || repaired.Error != "" || string(repaired.Result) != `{"ok":true}` {
+		t.Fatalf("repaired authority still invisible: err=%v result=%#v", err, repaired)
+	}
+	if calls != 1 {
+		t.Fatalf("repair path re-ran mutation calls=%d", calls)
+	}
 }
 
 func TestVoiceWriteGenericSessionQuotaIncludesWrites(t *testing.T) {
