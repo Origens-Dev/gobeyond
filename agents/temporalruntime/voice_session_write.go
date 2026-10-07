@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
@@ -21,74 +20,6 @@ var errWriteOutcomeUnknown = errors.New("write outcome unknown; reconcile only")
 var errWriteToolCallID = errors.New("tool_call_id required")
 var errWriteConflict = errors.New("conflicting write replay")
 var errWriteForgedKey = errors.New("forged write idempotency key")
-
-type voiceWriteRecord struct {
-	key      string
-	digest   string
-	result   VoiceSessionExecuteToolResult
-	complete bool
-	unknown  bool
-	wait     chan struct{}
-}
-
-type voiceWriteLedger struct {
-	mu      sync.Mutex
-	records map[string]voiceWriteRecord
-}
-
-func newVoiceWriteLedger() *voiceWriteLedger {
-	return &voiceWriteLedger{records: map[string]voiceWriteRecord{}}
-}
-
-func (l *voiceWriteLedger) dispatch(identity, key, digest string, run func() (VoiceSessionExecuteToolResult, error)) (VoiceSessionExecuteToolResult, error) {
-	for {
-		l.mu.Lock()
-		rec, ok := l.records[identity]
-		if ok {
-			if rec.key != key || rec.digest != digest {
-				l.mu.Unlock()
-				return VoiceSessionExecuteToolResult{}, errWriteConflict
-			}
-			if rec.complete {
-				result := rec.result
-				l.mu.Unlock()
-				return result, nil
-			}
-			if rec.unknown && rec.wait == nil {
-				l.mu.Unlock()
-				return VoiceSessionExecuteToolResult{}, errWriteOutcomeUnknown
-			}
-			if rec.wait != nil {
-				wait := rec.wait
-				l.mu.Unlock()
-				<-wait
-				continue
-			}
-		}
-		wait := make(chan struct{})
-		l.records[identity] = voiceWriteRecord{key: key, digest: digest, wait: wait}
-		l.mu.Unlock()
-
-		result, err := run()
-
-		l.mu.Lock()
-		if err != nil {
-			l.records[identity] = voiceWriteRecord{key: key, digest: digest, unknown: true}
-		} else {
-			l.records[identity] = voiceWriteRecord{key: key, digest: digest, result: result, complete: true}
-		}
-		close(wait)
-		l.mu.Unlock()
-		if err != nil {
-			return VoiceSessionExecuteToolResult{}, err
-		}
-		return result, nil
-	}
-}
-
-var processWriteLedger = newVoiceWriteLedger()
-
-func resetVoiceWriteLedger() { processWriteLedger = newVoiceWriteLedger() }
 
 type voiceWriteWorkflowState struct {
 	digests map[string]string
@@ -170,6 +101,7 @@ func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInpu
 		return req, "", "", err
 	}
 	req.IdempotencyKey = key
+	req.WriteReconcileOnly = false
 	return req, voiceWriteIdentity(req.ToolName, req.ToolCallID), replay, nil
 }
 
@@ -185,8 +117,8 @@ func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, replay
 			return result, true, nil
 		}
 		if s.unknown[identity] {
-			// Outcome unknown: dispatch again for ledger lookup only. The
-			// activity must not re-run the handler.
+			// Outcome unknown: dispatch again for durable ledger lookup only.
+			// The activity must not re-run the handler.
 			s.pending[identity] = true
 			return VoiceSessionExecuteToolResult{}, false, nil
 		}
@@ -322,7 +254,7 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 		return VoiceSessionExecuteToolResult{Approval: approval}, nil
 	}
 	identity := voiceWriteLedgerIdentity(sessionID, toolName, toolCallID)
-	return processWriteLedger.dispatch(identity, key, replay, func() (VoiceSessionExecuteToolResult, error) {
+	return processWriteLedger.dispatch(identity, key, replay, req.WriteReconcileOnly, func() (VoiceSessionExecuteToolResult, error) {
 		result, execErr := tool.Execute(ctx, toolCall, ai.ToolExecutionOptions{
 			Context: toolsession.ExecutionContextWithWrite(actor, sessionID, key),
 		})
