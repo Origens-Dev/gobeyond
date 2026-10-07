@@ -102,8 +102,11 @@ func validatePlaybackPairs(m Manifest) error {
 		if !t.IsPlayback() {
 			continue
 		}
-		if m.Version != Version || m.BudgetPolicy != BudgetPolicyOperatorMailboxPlaybackV1 {
-			return errors.New("playback requires frozen mailbox playback policy")
+		// Authored playback freezes under generic_v1 (X2 product contract). The
+		// retired mailbox playback policy name remains accepted only so older
+		// fixtures keep their digests during the pin cutover.
+		if m.Version != Version || !(IsGenericBudgetPolicy(m.BudgetPolicy) || m.BudgetPolicy == BudgetPolicyOperatorMailboxPlaybackV1) {
+			return errors.New("playback requires frozen generic or mailbox playback policy")
 		}
 		if paired[t.Playback.CompletionToolID] {
 			return errors.New("completion must have one playback source")

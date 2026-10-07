@@ -14,13 +14,13 @@ mutation. It remains in the frozen registry but is removed from ordinary direct,
 durable, and Live provider tool projections. It cannot be classified as a read.
 Decoded metadata cannot acquire either typed playback or completion markers.
 
-Use `VoiceBudgetPolicy: "operator_mailbox_playback_v1"` only after host admission
-and complete-fleet capability gates are implemented. This declaration requires
-`list-text-messages`, `get-text-message`, `dial-contact`, `play-text-message`, and
-`complete-text-message-playback`; directory search and hangup remain optional.
-Existing buckets remain list 4/get 12/placement 2/hangup 1. New independent buckets
-are playback 12/completion 12. Classification alone never authorizes completion.
-`operator_mailbox_v1` rejects these tools and remains unchanged.
+Use `VoiceBudgetPolicy: "generic_v1"` with authored `play-text-message` /
+`complete-text-message-playback` pairs only after host admission and
+complete-fleet capability gates are implemented. `ManifestDeclaresPlayback`
+reports the authored tools; classification alone never authorizes completion.
+Hosts apply a session-wide cap (no product playback buckets). The retired
+`operator_mailbox_playback_v1` name remains recognized for older fixtures during
+the pin cutover.
 
 The playback output is one closed object with six required, bounded strings:
 exact text, message ID, canonical UTC RFC3339Nano creation time, raw UTF-8 SHA256

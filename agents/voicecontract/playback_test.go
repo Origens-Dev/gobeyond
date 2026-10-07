@@ -48,6 +48,14 @@ func TestPlaybackFrozenMappingAndHiddenPair(t *testing.T) {
 		t.Fatal("legacy policy expanded")
 	}
 	m, _, _ = playbackFixture()
+	m.BudgetPolicy = BudgetPolicyGenericV1
+	if _, _, err = FreezeManifest(m); err != nil {
+		t.Fatal("generic authored playback rejected", err)
+	}
+	if !ManifestDeclaresPlayback(m) {
+		t.Fatal("playback declaration not detected")
+	}
+	m, _, _ = playbackFixture()
 	m.Tools[len(m.Tools)-1].Description = "Altered frozen declaration"
 	_, changed, err := FreezeManifest(m)
 	if err != nil || changed == digest {
