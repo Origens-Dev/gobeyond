@@ -70,7 +70,7 @@ func executeVoicePlaybackCompletionActivity(ctx context.Context, req VoiceSessio
 		return VoiceSessionExecuteToolResult{}, errors.New("authenticated playback completion unavailable")
 	}
 	r := req.HiddenCompletion
-	if ctx == nil || ctx.Err() != nil || r == nil || r.Validate() != nil || !exclusiveVoiceDispatch(req) || req.BudgetPolicy != voicecontract.BudgetPolicyOperatorMailboxPlaybackV1 || len(req.Grant) == 0 || len(req.Grant) > 8192 || len(req.Input) != 0 && string(req.Input) != "{}" {
+	if ctx == nil || ctx.Err() != nil || r == nil || r.Validate() != nil || !exclusiveVoiceDispatch(req) || !(voicecontract.IsGenericBudgetPolicy(req.BudgetPolicy) || req.BudgetPolicy == voicecontract.BudgetPolicyOperatorMailboxPlaybackV1) || len(req.Grant) == 0 || len(req.Grant) > 8192 || len(req.Input) != 0 && string(req.Input) != "{}" {
 		return fail()
 	}
 	c := r.Context
