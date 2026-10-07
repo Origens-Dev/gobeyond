@@ -7,12 +7,25 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-type voiceToolBudget struct {
-	count   int
-	policy  string
-	buckets map[string]int
-	calls   map[string]string
+// reservedPlaybackCompletion binds a reserved completion slot to the frozen
+// playback pair and authenticated completion call identity so another tool
+// cannot steal the slot by reusing the call ID.
+type reservedPlaybackCompletion struct {
+	sourceToolID     string
+	sourceCallID     string
+	sourceDigest     string
+	completionToolID string
 }
+
+type voiceToolBudget struct {
+	count               int
+	policy              string
+	buckets             map[string]int
+	calls               map[string]string
+	reservedCompletions map[string]reservedPlaybackCompletion
+}
+
+const genericVoiceSessionToolCap = 8
 
 func (b *voiceToolBudget) consume(toolID, callID, digest string, legacyLimit int) error {
 	if b.policy == "" {
@@ -25,8 +38,22 @@ func (b *voiceToolBudget) consume(toolID, callID, digest string, legacyLimit int
 	if b.calls == nil {
 		b.calls = map[string]string{}
 	}
+	// Reserved completion slots are claimable only through the authenticated
+	// playback-completion path (claimPlaybackCompletion). Ordinary consume
+	// must not steal them by call-ID reuse.
+	if _, reserved := b.reservedCompletions[callID]; reserved {
+		return errors.New("conflicting cross-tool replay")
+	}
 	if _, exists := b.calls[callID]; exists {
 		return errors.New("conflicting cross-tool replay")
+	}
+	if voicecontract.IsGenericBudgetPolicy(b.policy) {
+		if b.count >= genericVoiceSessionToolCap {
+			return errors.New("voice tool budget exhausted")
+		}
+		b.count++
+		b.calls[callID] = toolID + "/" + digest
+		return nil
 	}
 	bucket, limit, err := voicecontract.ToolBudget(b.policy, toolID)
 	if err != nil {
@@ -40,6 +67,95 @@ func (b *voiceToolBudget) consume(toolID, callID, digest string, legacyLimit int
 	}
 	b.buckets[bucket]++
 	b.calls[callID] = toolID + "/" + digest
+	return nil
+}
+
+// claimPlaybackCompletion consumes a slot reserved at source playback
+// admission. The completion tool ID and source call ID must match the frozen
+// pair binding sealed at reserve time; call-ID reuse by another tool cannot
+// claim the reservation.
+func (b *voiceToolBudget) claimPlaybackCompletion(completionToolID, completionCallID, digest, sourceCallID string) error {
+	if b == nil || b.policy == "" || completionToolID == "" || completionCallID == "" || sourceCallID == "" {
+		return errors.New("voice tool budget exhausted")
+	}
+	reserved, ok := b.reservedCompletions[completionCallID]
+	if !ok {
+		return errors.New("voice tool budget exhausted")
+	}
+	if reserved.completionToolID != completionToolID || reserved.sourceCallID != sourceCallID {
+		return errors.New("conflicting cross-tool replay")
+	}
+	if b.calls == nil {
+		b.calls = map[string]string{}
+	}
+	if _, exists := b.calls[completionCallID]; exists {
+		return errors.New("conflicting cross-tool replay")
+	}
+	delete(b.reservedCompletions, completionCallID)
+	b.calls[completionCallID] = completionToolID + "/" + digest
+	return nil
+}
+
+// reservePlaybackPair admits source playback only when its authenticated
+// completion slot is also available, and reserves both atomically bound to
+// the frozen playback pair (source tool + completion tool + call IDs).
+func (b *voiceToolBudget) reservePlaybackPair(sourceToolID, sourceCallID, sourceDigest, completionToolID, completionCallID string) error {
+	if b.policy == "" || sourceToolID == "" || sourceCallID == "" || completionToolID == "" || completionCallID == "" || sourceCallID == completionCallID || sourceToolID == completionToolID {
+		return errors.New("voice tool budget exhausted")
+	}
+	if b.calls == nil {
+		b.calls = map[string]string{}
+	}
+	if b.reservedCompletions == nil {
+		b.reservedCompletions = map[string]reservedPlaybackCompletion{}
+	}
+	if _, exists := b.calls[sourceCallID]; exists {
+		return errors.New("conflicting cross-tool replay")
+	}
+	if _, exists := b.calls[completionCallID]; exists {
+		return errors.New("conflicting cross-tool replay")
+	}
+	// A reserved completion ID cannot be reused as another source's call ID
+	// (or overwritten as another pair's completion reservation).
+	if _, exists := b.reservedCompletions[sourceCallID]; exists {
+		return errors.New("conflicting cross-tool replay")
+	}
+	if _, exists := b.reservedCompletions[completionCallID]; exists {
+		return errors.New("conflicting cross-tool replay")
+	}
+	binding := reservedPlaybackCompletion{
+		sourceToolID:     sourceToolID,
+		sourceCallID:     sourceCallID,
+		sourceDigest:     sourceDigest,
+		completionToolID: completionToolID,
+	}
+	if voicecontract.IsGenericBudgetPolicy(b.policy) {
+		if b.count+2 > genericVoiceSessionToolCap {
+			return errors.New("voice tool budget exhausted")
+		}
+		b.count += 2
+		b.calls[sourceCallID] = sourceToolID + "/" + sourceDigest
+		b.reservedCompletions[completionCallID] = binding
+		return nil
+	}
+	sourceBucket, sourceLimit, err := voicecontract.ToolBudget(b.policy, sourceToolID)
+	if err != nil {
+		return err
+	}
+	completionBucket, completionLimit, err := voicecontract.ToolBudget(b.policy, completionToolID)
+	if err != nil {
+		return err
+	}
+	if b.buckets == nil {
+		b.buckets = map[string]int{}
+	}
+	if b.buckets[sourceBucket] >= sourceLimit || b.buckets[completionBucket] >= completionLimit {
+		return errors.New("voice tool budget exhausted")
+	}
+	b.buckets[sourceBucket]++
+	b.buckets[completionBucket]++
+	b.calls[sourceCallID] = sourceToolID + "/" + sourceDigest
+	b.reservedCompletions[completionCallID] = binding
 	return nil
 }
 

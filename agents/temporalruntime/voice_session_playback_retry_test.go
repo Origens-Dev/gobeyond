@@ -97,7 +97,7 @@ func TestPlaybackWorkflowRetriesTransientCompletionWithFreshReceipt(t *testing.T
 		s := newVoicePlaybackWorkflowState(b, true)
 		c := receipt.Context
 		in := VoiceSessionInput{Context: &c, AgentID: c.AgentID, CallID: c.CallID, SessionID: c.SessionID, ExecutionID: c.ExecutionID}
-		source := voicecontract.SourcePlaybackRequest{Version: voicecontract.Version, Context: c, ToolID: receipt.ToolID, ToolCallID: receipt.ToolCallID, Arguments: []byte(`{}`), InputDigest: voicecontract.Digest([]byte(`{}`))}
+		source := voicecontract.SourcePlaybackRequest{Version: voicecontract.Version, Context: c, ToolID: receipt.ToolID, ToolCallID: receipt.ToolCallID, CompletionToolID: receipt.CompletionToolID, Arguments: []byte(`{}`), InputDigest: voicecontract.Digest([]byte(`{}`))}
 		if _, e := s.execute(ctx, in, VoiceSessionExecuteToolInput{SourcePlayback: &source}); e == nil {
 			return errors.New("initial source failure lost")
 		}

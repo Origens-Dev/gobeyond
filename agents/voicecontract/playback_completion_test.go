@@ -23,7 +23,7 @@ func TestPlaybackCompletionReceiptExactFenceAndExpiry(t *testing.T) {
 	if json.Unmarshal(raw, &restored) != nil || restored.Validate(now) != nil || !restored.MessageCreatedAt.Equal(r.MessageCreatedAt) {
 		t.Fatal("Nano receipt lost")
 	}
-	for _, name := range []string{"clip", "generation", "session", "line", "actor", "tool", "completion", "timestamp", "expired", "message_expired", "ttl", "digest"} {
+	for _, name := range []string{"clip", "generation", "session", "line", "actor", "agent", "tool", "completion", "pair", "timestamp", "expired", "message_expired", "ttl", "digest"} {
 		t.Run(name, func(t *testing.T) {
 			r := completionFixture(now)
 			switch name {
@@ -37,10 +37,14 @@ func TestPlaybackCompletionReceiptExactFenceAndExpiry(t *testing.T) {
 				r.Context.Scope.LineID = "other"
 			case "actor":
 				r.Context.ActorKind = "external_call"
+			case "agent":
+				r.Context.AgentID = ""
 			case "tool":
-				r.ToolID = "get-text-message"
+				r.ToolID = ""
 			case "completion":
-				r.CompletionToolID = "mark-text-message-read"
+				r.CompletionToolID = ""
+			case "pair":
+				r.CompletionToolID = r.ToolID
 			case "timestamp":
 				r.MessageCreatedAt = r.MessageCreatedAt.In(time.FixedZone("offset", 3600))
 			case "expired":
@@ -56,5 +60,13 @@ func TestPlaybackCompletionReceiptExactFenceAndExpiry(t *testing.T) {
 				t.Fatal("altered receipt accepted")
 			}
 		})
+	}
+	generic := completionFixture(now)
+	generic.Context.AgentID = "support-agent"
+	generic.ToolID = "play-custom-clip"
+	generic.CompletionToolID = "complete-custom-clip"
+	generic.ClipID = PlaybackClipID(generic.Context, generic.ToolCallID)
+	if err := generic.Validate(now); err != nil {
+		t.Fatal("generic frozen pair rejected", err)
 	}
 }

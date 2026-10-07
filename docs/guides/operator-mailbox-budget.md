@@ -35,5 +35,9 @@ claims; model turn completion and a permissive playout timeout cannot authorize
 marking a message read.
 
 `generic_v1` is a separate authorable skeleton. It does not bind `call-operator`,
-does not expand this allowlist, and does not assign numeric buckets. Current
-host/admission/workflow limits stay documented in `agents/voicecontract/budget.go`.
+does not expand this allowlist, and does not assign product numeric buckets.
+Authored playback/completion pairs may freeze under `generic_v1`; hosts apply a
+session-wide tool cap (including writes) after `ValidateBudgetPolicy`. Retired
+`operator_mailbox_playback_v1` remains FreezeManifest-only for older fixture
+digests; new session runtime rejects it. Current host/admission/workflow limits
+stay documented in `agents/voicecontract/budget.go`.

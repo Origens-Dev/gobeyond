@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
@@ -22,75 +21,8 @@ var errWriteToolCallID = errors.New("tool_call_id required")
 var errWriteConflict = errors.New("conflicting write replay")
 var errWriteForgedKey = errors.New("forged write idempotency key")
 
-type voiceWriteRecord struct {
-	key      string
-	digest   string
-	result   VoiceSessionExecuteToolResult
-	complete bool
-	unknown  bool
-	wait     chan struct{}
-}
-
-type voiceWriteLedger struct {
-	mu      sync.Mutex
-	records map[string]voiceWriteRecord
-}
-
-func newVoiceWriteLedger() *voiceWriteLedger {
-	return &voiceWriteLedger{records: map[string]voiceWriteRecord{}}
-}
-
-func (l *voiceWriteLedger) dispatch(identity, key, digest string, run func() (VoiceSessionExecuteToolResult, error)) (VoiceSessionExecuteToolResult, error) {
-	for {
-		l.mu.Lock()
-		rec, ok := l.records[identity]
-		if ok {
-			if rec.key != key || rec.digest != digest {
-				l.mu.Unlock()
-				return VoiceSessionExecuteToolResult{}, errWriteConflict
-			}
-			if rec.complete {
-				result := rec.result
-				l.mu.Unlock()
-				return result, nil
-			}
-			if rec.unknown && rec.wait == nil {
-				l.mu.Unlock()
-				return VoiceSessionExecuteToolResult{}, errWriteOutcomeUnknown
-			}
-			if rec.wait != nil {
-				wait := rec.wait
-				l.mu.Unlock()
-				<-wait
-				continue
-			}
-		}
-		wait := make(chan struct{})
-		l.records[identity] = voiceWriteRecord{key: key, digest: digest, wait: wait}
-		l.mu.Unlock()
-
-		result, err := run()
-
-		l.mu.Lock()
-		if err != nil {
-			l.records[identity] = voiceWriteRecord{key: key, digest: digest, unknown: true}
-		} else {
-			l.records[identity] = voiceWriteRecord{key: key, digest: digest, result: result, complete: true}
-		}
-		close(wait)
-		l.mu.Unlock()
-		if err != nil {
-			return VoiceSessionExecuteToolResult{}, err
-		}
-		return result, nil
-	}
-}
-
-var processWriteLedger = newVoiceWriteLedger()
-
-func resetVoiceWriteLedger() { processWriteLedger = newVoiceWriteLedger() }
-
 type voiceWriteWorkflowState struct {
+	budget  *voiceToolBudget
 	digests map[string]string
 	results map[string]VoiceSessionExecuteToolResult
 	pending map[string]bool
@@ -170,10 +102,11 @@ func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInpu
 		return req, "", "", err
 	}
 	req.IdempotencyKey = key
+	req.WriteReconcileOnly = false
 	return req, voiceWriteIdentity(req.ToolName, req.ToolCallID), replay, nil
 }
 
-func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, replay string) (VoiceSessionExecuteToolResult, bool, error) {
+func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, toolID, toolCallID, replay string) (VoiceSessionExecuteToolResult, bool, error) {
 	if previous, ok := s.digests[identity]; ok {
 		if previous != replay {
 			return VoiceSessionExecuteToolResult{}, true, errWriteConflict
@@ -185,14 +118,20 @@ func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, replay
 			return result, true, nil
 		}
 		if s.unknown[identity] {
-			// Outcome unknown: dispatch again for ledger lookup only. The
-			// activity must not re-run the handler.
+			// Outcome unknown: dispatch again for durable ledger lookup only.
+			// The activity must not re-run the handler.
 			s.pending[identity] = true
 			return VoiceSessionExecuteToolResult{}, false, nil
 		}
 		return VoiceSessionExecuteToolResult{}, false, nil
 	}
-	if len(s.digests) >= maxVoiceSessionToolCalls {
+	// Generic session-wide quota covers writes; they must not sit outside the
+	// claimed cap that reads/playback already consume.
+	if s.budget != nil && voicecontract.IsGenericBudgetPolicy(s.budget.policy) {
+		if err := s.budget.consume(toolID, toolCallID, replay, maxVoiceSessionToolCalls); err != nil {
+			return VoiceSessionExecuteToolResult{Error: "voice session tool quota exceeded"}, true, nil
+		}
+	} else if len(s.digests) >= maxVoiceSessionToolCalls {
 		return VoiceSessionExecuteToolResult{Error: "voice session tool quota exceeded"}, true, nil
 	}
 	s.digests[identity] = replay
@@ -322,14 +261,14 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 		return VoiceSessionExecuteToolResult{Approval: approval}, nil
 	}
 	identity := voiceWriteLedgerIdentity(sessionID, toolName, toolCallID)
-	return processWriteLedger.dispatch(identity, key, replay, func() (VoiceSessionExecuteToolResult, error) {
-		result, execErr := tool.Execute(ctx, toolCall, ai.ToolExecutionOptions{
+	result, err := processWriteLedger.dispatch(identity, key, replay, req.WriteReconcileOnly, func() (VoiceSessionExecuteToolResult, error) {
+		execResult, execErr := tool.Execute(ctx, toolCall, ai.ToolExecutionOptions{
 			Context: toolsession.ExecutionContextWithWrite(actor, sessionID, key),
 		})
 		if execErr != nil {
 			return VoiceSessionExecuteToolResult{Error: execErr.Error()}, nil
 		}
-		raw, marshalErr := json.Marshal(result)
+		raw, marshalErr := json.Marshal(execResult)
 		if marshalErr != nil {
 			return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("encode tool result: %v", marshalErr)}, nil
 		}
@@ -339,4 +278,21 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 		}
 		return VoiceSessionExecuteToolResult{Result: raw}, nil
 	})
+	if err != nil {
+		return VoiceSessionExecuteToolResult{}, err
+	}
+	if result.Approval != nil || voiceWriteResultUncertain(result) {
+		return result, nil
+	}
+	// Recovered successes (and any other non-execute return) must still match
+	// the frozen output schema/size without re-running the mutation.
+	raw, validateErr := voicecontract.ValidateToolOutput(*spec, result.Result)
+	if validateErr != nil {
+		// Do not leave the invalid payload sticky-cached as process-local
+		// complete; a later authority repair must become visible on reconcile.
+		forgetVoiceWriteProcessRecord(identity)
+		return VoiceSessionExecuteToolResult{}, errWriteOutcomeUnknown
+	}
+	result.Result = raw
+	return result, nil
 }

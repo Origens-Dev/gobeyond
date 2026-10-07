@@ -37,7 +37,11 @@ Scope generation is a call-owner/scope CAS fence, not operation sequence or medi
 source generation. A screener selection advances generation exactly once using the
 old full context. Every command/event compares the entire active context. The
 idempotency key is session/call/tool/tool_call_id/input_digest: changed input for
-an existing first four fields is rejected, never a second operation.
+an existing first four fields is rejected, never a second operation. Unknown
+write outcomes fail closed (reconcile/lookup only) against the durable worker
+ledger. Process restart reopens the host-local replica; host/container
+replacement with empty local storage reconciles from the shared authoritative
+store. If the outcome cannot be established, the handler is not re-invoked.
 
 Accepted acknowledges an asynchronous command. Ringing means authoritative first
 180/183; direct 200 produces answered without requiring ringing. Either is model
@@ -71,11 +75,18 @@ objects and array item schemas; byte, property, tool, and item limits still appl
 
 `VoiceBudgetPolicy: "generic_v1"` is an authorable skeleton with no product agent
 id (`call-operator`, `voice-mail`, leave-message) and no mailbox tool allowlist.
-Numeric generic buckets are unassigned. Current host/admission/workflow limits
-remain as inventoried in `budget.go`: envelope 16 KiB, manifest 32 KiB, schema
-4 KiB, 8 tools, session tool quota 8, default assistant turns 10 (mailbox 32),
+Numeric generic buckets are unassigned. Authored playback/completion pairs freeze
+under `generic_v1` (`ManifestDeclaresPlayback`); hosts apply a session-wide cap
+(including writes) after `ValidateBudgetPolicy`. Source playback admission
+reserves its paired completion slot bound to the frozen completion tool so the
+last available capacity cannot play without a path to record delivery, and no
+other tool can steal that call ID. Current host/admission/workflow limits remain
+as inventoried in `budget.go`: envelope 16 KiB, manifest 32 KiB, schema 4 KiB,
+8 tools, session tool quota 8, default assistant turns 10 (mailbox 32),
 read/control legacy two-operation cap, mailbox buckets list 4 / get 12 /
-placement 2 / hangup 1. `operator_mailbox_v1` allowlist is unchanged.
+placement 2 / hangup 1. `operator_mailbox_v1` allowlist is unchanged during the
+pin cutover; retired `operator_mailbox_playback_v1` remains FreezeManifest-only
+for older fixture digests. New Operator declarations should use `generic_v1`.
 
 RingPlan is the public M2 recipient-set API (`version` `2`) with lifecycle
 observations `on_no_answer` / `on_busy` / `on_failed` / `on_cancelled`.

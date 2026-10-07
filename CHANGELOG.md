@@ -2,10 +2,32 @@
 
 ## Unreleased
 
+- Freeze authored playback/completion pairs under `VoiceBudgetPolicy:
+  "generic_v1"` (`ManifestDeclaresPlayback`, session-wide tool consume
+  including writes). Any frozen agent/tool pair can execute; Operator
+  `call-operator` / `play-text-message` names are not hard gates.
+  Completion reservations bind to the frozen playback pair so another tool
+  cannot steal the slot by call-ID reuse. Recovered VoiceWrite successes are
+  re-checked against the frozen output schema/size without re-running the
+  mutation. Expired approval blocks new mutation but still allows unknown
+  reconcile via receipt lookup. New sessions reject retired
+  `operator_mailbox_playback_v1` runtime; FreezeManifest still accepts that
+  name so older fixtures keep digests during the pin cutover.
+
 - Accept JSON Schema `boolean` (`{"type":"boolean"}` only) in voice contract
   input/output validation, and freeze `execution_kind: "write"` with the same
   closed output object and `max_result_bytes` rules as `read`. Schema keyword
   `description` remains prohibited.
+
+- Persist VoiceWrite reservations and recoverable results on a durable worker
+  ledger (not only a process-local map). Host-local files cover process
+  restart; production workers attach a shared `VoiceWriteStore` with
+  `RetainVoiceWriteAuthority` (hosted persistence / product receipt lookup)
+  so replacement onto a host with empty local storage can reconcile. Pending
+  and unknown process-cache rows refresh from that authority. Tool errors are
+  never sticky completed-failures; they stay unknown/reconcilable. Final
+  persist errors fail closed. Unknown outcomes stay reconcile-only and are
+  not re-executed. See `agents/temporalruntime/voice_write_ledger.md`.
 
 - Replace `VoiceAction` / `execution_kind: "action"` with `VoiceWrite` /
   `execution_kind: "write"`. `RequiresApproval` is independent of kind

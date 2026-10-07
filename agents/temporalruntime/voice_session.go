@@ -73,6 +73,10 @@ type VoiceSessionExecuteToolInput struct {
 	// IdempotencyKey is platform-derived by the voice session workflow. Callers
 	// cannot select it; the activity re-derives and rejects a mismatch.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// WriteReconcileOnly is set by the workflow after an unknown outcome so the
+	// activity may only consult the durable write ledger. Callers cannot select
+	// it; bindVoiceWriteRequest always clears the field.
+	WriteReconcileOnly bool `json:"write_reconcile_only,omitempty"`
 	// Set only by the workflow after validating an approval response. The public
 	// execute-tool update always clears this field before dispatch.
 	ApprovalConfirmed bool      `json:"approval_confirmed,omitempty"`
@@ -110,13 +114,15 @@ type VoiceSessionExecuteToolResult struct {
 }
 
 const mailboxBudgetVersionChange = "operator-mailbox-budget-v1"
+const mailboxPlaybackRuntimeRetiredVersionChange = "operator-mailbox-playback-runtime-retired-v1"
 
 func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget *voiceToolBudget) error {
 	if voicecontract.IsGenericBudgetPolicy(in.BudgetPolicy) {
 		if in.Context == nil || in.Context.Validate() != nil || in.AgentID != in.Context.AgentID {
 			return errors.New("invalid verified workflow budget policy")
 		}
-		// Skeleton: recognized without mailbox buckets or a product agent-id bind.
+		// Generic retains a session-wide cap in consume; no product buckets.
+		budget.policy = in.BudgetPolicy
 		return nil
 	}
 	version := workflow.GetVersion(ctx, mailboxBudgetVersionChange, workflow.DefaultVersion, 1)
@@ -127,6 +133,12 @@ func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget
 	}
 	if in.BudgetPolicy == "" {
 		return nil
+	}
+	// Retire mailbox playback runtime for new sessions. FreezeManifest still
+	// accepts operator_mailbox_playback_v1 so older fixtures keep digests.
+	if in.BudgetPolicy == voicecontract.BudgetPolicyOperatorMailboxPlaybackV1 &&
+		workflow.GetVersion(ctx, mailboxPlaybackRuntimeRetiredVersionChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		return errors.New("invalid verified workflow budget policy")
 	}
 	if !voicecontract.IsMailboxBudgetPolicy(in.BudgetPolicy) || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
 		return errors.New("invalid verified workflow budget policy")
@@ -170,6 +182,7 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	reads := newVoiceReadWorkflowState()
 	reads.budget = control.budget
 	writes := newVoiceWriteWorkflowState()
+	writes.budget = control.budget
 	playback := configureVoicePlayback(ctx, control.budget)
 	if err := configureVoiceToolBudget(ctx, in, control.budget); err != nil {
 		return err
@@ -208,9 +221,12 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 				}
 				return makeVoiceApprovalResult(interactionID, pending), nil
 			}
-			cached, done, err := writes.reserve(ctx, identity, replay)
+			cached, done, err := writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, replay)
 			if err != nil || done {
 				return cached, err
+			}
+			if writes.unknown[identity] {
+				req.WriteReconcileOnly = true
 			}
 			result, err := executeVoiceWriteToolLocal(ctx, req)
 			if err == nil && result.Approval != nil {
@@ -241,18 +257,24 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 			if response.ActorID != req.ActorID || response.ActorKind != req.ActorKind || response.ActorID == "" {
 				return VoiceSessionExecuteToolResult{}, errors.New("approval actor does not own the pending voice tool call")
 			}
-			if !req.ApprovalExpiresAt.IsZero() && !workflow.Now(ctx).Before(req.ApprovalExpiresAt) {
+			identity := voiceWriteIdentity(req.ToolName, req.ToolCallID)
+			expired := !req.ApprovalExpiresAt.IsZero() && !workflow.Now(ctx).Before(req.ApprovalExpiresAt)
+			// Expired approval blocks a new mutation, but an authorized unknown
+			// outcome must still reconcile via receipt lookup.
+			if expired && !(response.Approved && writes.unknown[identity]) {
 				delete(pendingApprovals, interactionID)
 				delete(pendingByCall, req.ToolCallID)
-				result, _ := writes.finish(voiceWriteIdentity(req.ToolName, req.ToolCallID), VoiceSessionExecuteToolResult{Error: "tool approval expired"}, nil)
+				result, _ := writes.finish(identity, VoiceSessionExecuteToolResult{Error: "tool approval expired"}, nil)
 				return result, nil
 			}
 			var result VoiceSessionExecuteToolResult
-			identity := voiceWriteIdentity(req.ToolName, req.ToolCallID)
 			if !response.Approved {
 				result, _ = writes.finish(identity, VoiceSessionExecuteToolResult{Error: "tool approval denied"}, nil)
 			} else {
 				req.ApprovalConfirmed = true
+				if writes.unknown[identity] {
+					req.WriteReconcileOnly = true
+				}
 				var err error
 				result, err = executeVoiceWriteToolLocal(ctx, req)
 				if result.Approval != nil && err == nil {
