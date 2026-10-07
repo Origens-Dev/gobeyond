@@ -21,6 +21,12 @@
   mailbox allowlist expansion. Add M2 RingPlan and ring lifecycle event
   contract goldens (encode/decode only).
 
+- Finalize the public RingPlan and ring lifecycle event APIs: freeze helpers,
+  multi-recipient golden, `on_failed` / `on_cancelled` goldens, observation
+  matching, and attached-fallback-only automatic activation. Events still do
+  not mint grants or hops. Opaque policy refs remain validate-only and are
+  not interpreted from the plan.
+
 ## 0.1.0-alpha.105 - 2026-09-26
 
 - Add manifest-bound voice actions with exact-input user approval for HTTP and
