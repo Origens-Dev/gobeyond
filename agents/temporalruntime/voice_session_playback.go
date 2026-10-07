@@ -90,10 +90,13 @@ func (s *voicePlaybackWorkflowState) execute(ctx workflow.Context, in VoiceSessi
 		}
 	} else if req.SourcePlayback != nil {
 		completionCallID := voicecontract.PlaybackCompletionCallID(c, id)
-		if e = s.budget.reservePlaybackPair(tool, id, digest, "complete-text-message-playback", completionCallID); e != nil {
+		if completionCallID == "" || req.SourcePlayback.CompletionToolID == "" {
 			return fail("playback budget exhausted")
 		}
-	} else if e = s.budget.consume(tool, id, digest, 0); e != nil {
+		if e = s.budget.reservePlaybackPair(tool, id, digest, req.SourcePlayback.CompletionToolID, completionCallID); e != nil {
+			return fail("playback budget exhausted")
+		}
+	} else if e = s.budget.claimPlaybackCompletion(tool, id, digest, req.HiddenCompletion.SourceToolCallID); e != nil {
 		return fail("playback budget exhausted")
 	}
 	if e = ctx.Err(); e != nil {

@@ -173,6 +173,9 @@ func executeVoiceRegistryActivityKind(ctx context.Context, req VoiceSessionExecu
 		if !hasPlaybackPolicy || spec.Playback == nil || playbackPolicy != *spec.Playback || agents.VoicePlaybackCompletionPolicy(tool) {
 			return VoiceSessionExecuteToolResult{}, errors.New("playback policy unavailable")
 		}
+		if req.SourcePlayback == nil || req.SourcePlayback.CompletionToolID != spec.Playback.CompletionToolID {
+			return VoiceSessionExecuteToolResult{}, errors.New("playback pair binding mismatch")
+		}
 		readPolicy = true
 	}
 	if (!read && !controlPolicy) || (read && !readPolicy) {

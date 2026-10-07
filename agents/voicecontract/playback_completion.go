@@ -46,8 +46,11 @@ func PlaybackClipID(c Context, toolCallID string) string {
 
 // Validate checks structural identity and freshness only. It grants no receipt
 // authority; callers must use the trusted context accessor, not decoded JSON.
+// Tool IDs must be identifiers naming the frozen playback pair; product agent
+// binds such as call-operator are not required here so any frozen app can
+// authenticate its own completion path.
 func (r PlaybackCompletionReceipt) Validate(now time.Time) error {
-	if r.Context.ValidateForVersion(Version) != nil || r.Context.Scope.Kind != "agent" || r.Context.AgentID != "call-operator" || r.Context.ActorKind == "external_call" || !identifier(r.Context.Scope.LineID) || !identifier(r.ToolCallID) || r.ToolID != "play-text-message" || r.CompletionToolID != "complete-text-message-playback" || !identifier(r.MessageID) || r.MessageCreatedAt.IsZero() || r.MessageCreatedAt.After(now.Add(time.Second)) || r.MessageCreatedAt.Location() != time.UTC || r.MessageExpiresAt.Location() != time.UTC || r.ExpiresAt.Location() != time.UTC || !r.MessageExpiresAt.After(now) || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(5*time.Minute)) || r.ExpiresAt.After(r.MessageExpiresAt) {
+	if r.Context.ValidateForVersion(Version) != nil || r.Context.Scope.Kind != "agent" || !identifier(r.Context.AgentID) || r.Context.ActorKind == "external_call" || !identifier(r.Context.Scope.LineID) || !identifier(r.ToolCallID) || !identifier(r.ToolID) || !identifier(r.CompletionToolID) || r.CompletionToolID == r.ToolID || !identifier(r.MessageID) || r.MessageCreatedAt.IsZero() || r.MessageCreatedAt.After(now.Add(time.Second)) || r.MessageCreatedAt.Location() != time.UTC || r.MessageExpiresAt.Location() != time.UTC || r.ExpiresAt.Location() != time.UTC || !r.MessageExpiresAt.After(now) || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(5*time.Minute)) || r.ExpiresAt.After(r.MessageExpiresAt) {
 		return errors.New("invalid playback completion identity")
 	}
 	digest, err := hex.DecodeString(r.TextDigest)

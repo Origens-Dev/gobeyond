@@ -7,12 +7,18 @@ import (
 
 func TestPlaybackTypedRequestsRejectAlteredAuthority(t *testing.T) {
 	c := completionFixture(time.Now().UTC()).Context
-	r := SourcePlaybackRequest{Version: Version, Context: c, ToolID: "play-text-message", ToolCallID: "source", Arguments: []byte(`{}`), InputDigest: Digest([]byte(`{}`))}
+	r := SourcePlaybackRequest{Version: Version, Context: c, ToolID: "play-text-message", ToolCallID: "source", CompletionToolID: "complete-text-message-playback", Arguments: []byte(`{}`), InputDigest: Digest([]byte(`{}`))}
 	h := HiddenCompletionRequest{Version: Version, Context: c, ToolID: "complete-text-message-playback", ToolCallID: PlaybackCompletionCallID(c, "source"), SourceToolCallID: "source", ClipID: PlaybackClipID(c, "source")}
 	if r.Validate() != nil || h.Validate() != nil || h.ToolCallID == r.ToolCallID {
 		t.Fatal("valid pair rejected")
 	}
-	for _, field := range []string{"external", "scope", "agent", "tool", "digest", "version"} {
+	// Non-Operator agent IDs are valid when the frozen manifest says so.
+	other := r
+	other.Context.AgentID = "support-agent"
+	if other.Validate() != nil {
+		t.Fatal("generic frozen agent rejected")
+	}
+	for _, field := range []string{"external", "scope", "agent", "tool", "pair", "digest", "version"} {
 		t.Run(field, func(t *testing.T) {
 			x := r
 			switch field {
@@ -21,9 +27,11 @@ func TestPlaybackTypedRequestsRejectAlteredAuthority(t *testing.T) {
 			case "scope":
 				x.Context.Scope.Kind = "operator"
 			case "agent":
-				x.Context.AgentID = "other"
+				x.Context.AgentID = ""
 			case "tool":
-				x.ToolID = "complete-text-message-playback"
+				x.ToolID = ""
+			case "pair":
+				x.CompletionToolID = x.ToolID
 			case "digest":
 				x.InputDigest = Digest([]byte(`{"other":true}`))
 			case "version":
@@ -47,7 +55,7 @@ func TestPlaybackTypedRequestsRejectAlteredAuthority(t *testing.T) {
 			case "context":
 				x.Context.Generation++
 			case "tool":
-				x.ToolID = "mark-text-message-read"
+				x.ToolID = ""
 			}
 			if x.Validate() == nil {
 				t.Fatal("completion alteration admitted")

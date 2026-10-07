@@ -22,6 +22,7 @@ var errWriteConflict = errors.New("conflicting write replay")
 var errWriteForgedKey = errors.New("forged write idempotency key")
 
 type voiceWriteWorkflowState struct {
+	budget  *voiceToolBudget
 	digests map[string]string
 	results map[string]VoiceSessionExecuteToolResult
 	pending map[string]bool
@@ -105,7 +106,7 @@ func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInpu
 	return req, voiceWriteIdentity(req.ToolName, req.ToolCallID), replay, nil
 }
 
-func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, replay string) (VoiceSessionExecuteToolResult, bool, error) {
+func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, toolID, toolCallID, replay string) (VoiceSessionExecuteToolResult, bool, error) {
 	if previous, ok := s.digests[identity]; ok {
 		if previous != replay {
 			return VoiceSessionExecuteToolResult{}, true, errWriteConflict
@@ -124,7 +125,13 @@ func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, replay
 		}
 		return VoiceSessionExecuteToolResult{}, false, nil
 	}
-	if len(s.digests) >= maxVoiceSessionToolCalls {
+	// Generic session-wide quota covers writes; they must not sit outside the
+	// claimed cap that reads/playback already consume.
+	if s.budget != nil && voicecontract.IsGenericBudgetPolicy(s.budget.policy) {
+		if err := s.budget.consume(toolID, toolCallID, replay, maxVoiceSessionToolCalls); err != nil {
+			return VoiceSessionExecuteToolResult{Error: "voice session tool quota exceeded"}, true, nil
+		}
+	} else if len(s.digests) >= maxVoiceSessionToolCalls {
 		return VoiceSessionExecuteToolResult{Error: "voice session tool quota exceeded"}, true, nil
 	}
 	s.digests[identity] = replay
@@ -254,14 +261,14 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 		return VoiceSessionExecuteToolResult{Approval: approval}, nil
 	}
 	identity := voiceWriteLedgerIdentity(sessionID, toolName, toolCallID)
-	return processWriteLedger.dispatch(identity, key, replay, req.WriteReconcileOnly, func() (VoiceSessionExecuteToolResult, error) {
-		result, execErr := tool.Execute(ctx, toolCall, ai.ToolExecutionOptions{
+	result, err := processWriteLedger.dispatch(identity, key, replay, req.WriteReconcileOnly, func() (VoiceSessionExecuteToolResult, error) {
+		execResult, execErr := tool.Execute(ctx, toolCall, ai.ToolExecutionOptions{
 			Context: toolsession.ExecutionContextWithWrite(actor, sessionID, key),
 		})
 		if execErr != nil {
 			return VoiceSessionExecuteToolResult{Error: execErr.Error()}, nil
 		}
-		raw, marshalErr := json.Marshal(result)
+		raw, marshalErr := json.Marshal(execResult)
 		if marshalErr != nil {
 			return VoiceSessionExecuteToolResult{Error: fmt.Sprintf("encode tool result: %v", marshalErr)}, nil
 		}
@@ -271,4 +278,18 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 		}
 		return VoiceSessionExecuteToolResult{Result: raw}, nil
 	})
+	if err != nil {
+		return VoiceSessionExecuteToolResult{}, err
+	}
+	if result.Approval != nil || voiceWriteResultUncertain(result) {
+		return result, nil
+	}
+	// Recovered successes (and any other non-execute return) must still match
+	// the frozen output schema/size without re-running the mutation.
+	raw, validateErr := voicecontract.ValidateToolOutput(*spec, result.Result)
+	if validateErr != nil {
+		return VoiceSessionExecuteToolResult{}, errWriteOutcomeUnknown
+	}
+	result.Result = raw
+	return result, nil
 }

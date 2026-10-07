@@ -3,12 +3,16 @@
 ## Unreleased
 
 - Freeze authored playback/completion pairs under `VoiceBudgetPolicy:
-  "generic_v1"` (`ManifestDeclaresPlayback`, session-wide tool consume). The
-  retired `operator_mailbox_playback_v1` name remains recognized for older
-  fixture digests during the pin cutover so Operator can migrate off that
-  product bind. Source playback admission reserves its authenticated
-  completion slot atomically so audio cannot play without a path to record
-  delivery (generic session cap and mailbox playback/completion buckets).
+  "generic_v1"` (`ManifestDeclaresPlayback`, session-wide tool consume
+  including writes). Any frozen agent/tool pair can execute; Operator
+  `call-operator` / `play-text-message` names are not hard gates.
+  Completion reservations bind to the frozen playback pair so another tool
+  cannot steal the slot by call-ID reuse. Recovered VoiceWrite successes are
+  re-checked against the frozen output schema/size without re-running the
+  mutation. Expired approval blocks new mutation but still allows unknown
+  reconcile via receipt lookup. New sessions reject retired
+  `operator_mailbox_playback_v1` runtime; FreezeManifest still accepts that
+  name so older fixtures keep digests during the pin cutover.
 
 - Accept JSON Schema `boolean` (`{"type":"boolean"}` only) in voice contract
   input/output validation, and freeze `execution_kind: "write"` with the same

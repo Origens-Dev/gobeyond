@@ -43,7 +43,12 @@ restart, not host loss.
 4. Recovered pending/unknown/corrupt records fail closed (reconcile only).
    Legacy rows that cached `Error` under `complete=true` are treated as
    unknown and refresh from authority.
-5. Workflow unknown retries set `WriteReconcileOnly` so a miss cannot
+5. Recovered certain successes are validated again against the frozen tool
+   output schema and `max_result_bytes` without re-running the handler. Schema
+   or size failure stays unknown/reconcilable.
+6. Expired tool approval blocks a new mutation, but an authorized unknown
+   outcome may still reconcile via receipt lookup (`WriteReconcileOnly`).
+7. Workflow unknown retries set `WriteReconcileOnly` so a miss cannot
    re-execute even when every store is empty.
 
 **Host loss.** A replacement worker with a new empty ledger directory looks up

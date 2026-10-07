@@ -31,14 +31,36 @@ func TestReservePlaybackPairRejectsLastGenericSlotWithoutCompletion(t *testing.T
 	if err := b.reservePlaybackPair("play-text-message", "source", "source-digest", "complete-text-message-playback", "completion_reserved"); err != nil {
 		t.Fatal(err)
 	}
-	if b.count != genericVoiceSessionToolCap || !b.reservedCompletions["completion_reserved"] {
-		t.Fatalf("pair reserve count=%d reserved=%v", b.count, b.reservedCompletions)
+	if b.count != genericVoiceSessionToolCap {
+		t.Fatalf("pair reserve count=%d", b.count)
 	}
-	if err := b.consume("complete-text-message-playback", "completion_reserved", "completion-digest", 0); err != nil {
+	if reserved, ok := b.reservedCompletions["completion_reserved"]; !ok || reserved.completionToolID != "complete-text-message-playback" || reserved.sourceCallID != "source" {
+		t.Fatalf("pair binding missing reserved=%v ok=%v", reserved, ok)
+	}
+	if err := b.consume("list-text-messages", "completion_reserved", "stolen", 0); err == nil {
+		t.Fatal("ordinary consume stole reserved completion call ID")
+	}
+	if err := b.claimPlaybackCompletion("complete-text-message-playback", "completion_reserved", "completion-digest", "source"); err != nil {
 		t.Fatal(err)
 	}
-	if b.count != genericVoiceSessionToolCap || b.reservedCompletions["completion_reserved"] {
+	if b.count != genericVoiceSessionToolCap || len(b.reservedCompletions) != 0 {
 		t.Fatalf("completion claim mutated cap count=%d reserved=%v", b.count, b.reservedCompletions)
+	}
+}
+
+func TestReservePlaybackPairRejectsStolenCompletionTool(t *testing.T) {
+	b := &voiceToolBudget{policy: voicecontract.BudgetPolicyGenericV1}
+	if err := b.reservePlaybackPair("play-custom", "source", "digest", "complete-custom", "completion_reserved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.claimPlaybackCompletion("other-tool", "completion_reserved", "digest", "source"); err == nil {
+		t.Fatal("wrong completion tool claimed reserved pair")
+	}
+	if err := b.claimPlaybackCompletion("complete-custom", "completion_reserved", "digest", "other-source"); err == nil {
+		t.Fatal("wrong source call claimed reserved pair")
+	}
+	if err := b.claimPlaybackCompletion("complete-custom", "completion_reserved", "digest", "source"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -103,7 +125,7 @@ func TestPlaybackWorkflowReservesCompletionBeforeSourceAudio(t *testing.T) {
 					return e
 				}
 				h := voicecontract.HiddenCompletionRequest{
-					Version: r.Version, Context: r.Context, ToolID: "complete-text-message-playback",
+					Version: r.Version, Context: r.Context, ToolID: r.CompletionToolID,
 					ToolCallID:       voicecontract.PlaybackCompletionCallID(r.Context, r.ToolCallID),
 					SourceToolCallID: r.ToolCallID, ClipID: voicecontract.PlaybackClipID(r.Context, r.ToolCallID),
 				}

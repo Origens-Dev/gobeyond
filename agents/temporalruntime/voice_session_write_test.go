@@ -79,14 +79,14 @@ func TestVoiceWriteWorkflowLostResponseReconcilesOneMutation(t *testing.T) {
 		if bindErr != nil {
 			return bindErr
 		}
-		if _, done, reserveErr := writes.reserve(ctx, identity, replay); reserveErr != nil || done {
+		if _, done, reserveErr := writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, replay); reserveErr != nil || done {
 			return errors.New("first reserve")
 		}
 		result, execErr := executeVoiceWriteToolLocal(ctx, req)
 		if _, finishErr := writes.finish(identity, result, execErr); !errors.Is(finishErr, errWriteOutcomeUnknown) {
 			return errors.New("lost response was not marked unknown")
 		}
-		if _, done, reserveErr := writes.reserve(ctx, identity, replay); reserveErr != nil || done {
+		if _, done, reserveErr := writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, replay); reserveErr != nil || done {
 			return errors.New("unknown reserve must lookup")
 		}
 		req.WriteReconcileOnly = true
@@ -95,7 +95,7 @@ func TestVoiceWriteWorkflowLostResponseReconcilesOneMutation(t *testing.T) {
 		if execErr != nil || result.Error != "" || len(result.Result) == 0 {
 			return errors.New("reconcile failed")
 		}
-		cached, done, reserveErr := writes.reserve(ctx, identity, replay)
+		cached, done, reserveErr := writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, replay)
 		if reserveErr != nil || !done || string(cached.Result) != string(result.Result) {
 			return errors.New("cached write missing")
 		}
@@ -105,7 +105,7 @@ func TestVoiceWriteWorkflowLostResponseReconcilesOneMutation(t *testing.T) {
 		if bindErr != nil {
 			return bindErr
 		}
-		if _, _, reserveErr = writes.reserve(ctx, identity, changedReplay); !errors.Is(reserveErr, errWriteConflict) {
+		if _, _, reserveErr = writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, changedReplay); !errors.Is(reserveErr, errWriteConflict) {
 			return errors.New("changed input reused tool_call_id")
 		}
 		return nil
@@ -602,7 +602,7 @@ func TestVoiceWriteWorkflowPersistErrorHostLossDoesNotReexecute(t *testing.T) {
 		if bindErr != nil {
 			return bindErr
 		}
-		if _, done, reserveErr := writes.reserve(ctx, identity, replay); reserveErr != nil || done {
+		if _, done, reserveErr := writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, replay); reserveErr != nil || done {
 			return errors.New("first reserve")
 		}
 		result, execErr := executeVoiceWriteToolLocal(ctx, req)
@@ -610,7 +610,7 @@ func TestVoiceWriteWorkflowPersistErrorHostLossDoesNotReexecute(t *testing.T) {
 			return fmt.Errorf("persist failure finish: %v / %v", execErr, finishErr)
 		}
 		replaceHostVoiceWriteLedger(t.TempDir())
-		if _, done, reserveErr := writes.reserve(ctx, identity, replay); reserveErr != nil || done {
+		if _, done, reserveErr := writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, replay); reserveErr != nil || done {
 			return errors.New("unknown reserve must lookup")
 		}
 		req.WriteReconcileOnly = true

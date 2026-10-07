@@ -30,7 +30,7 @@ func sourceRequestFixture(t *testing.T) voicecontract.SourcePlaybackRequest {
 	c.Context.ParentCallID = "parent"
 	c.Context.HopID = "hop"
 	c.Context.HopCount = 1
-	return voicecontract.SourcePlaybackRequest{Version: voicecontract.Version, Context: c.Context, ToolID: "play-text-message", ToolCallID: "source", InputDigest: voicecontract.Digest([]byte(`{}`)), Arguments: []byte(`{}`)}
+	return voicecontract.SourcePlaybackRequest{Version: voicecontract.Version, Context: c.Context, ToolID: "play-text-message", ToolCallID: "source", CompletionToolID: "complete-text-message-playback", InputDigest: voicecontract.Digest([]byte(`{}`)), Arguments: []byte(`{}`)}
 }
 func TestPlaybackMixedDispatchAndHiddenFailsClosed(t *testing.T) {
 	r := sourceRequestFixture(t)
