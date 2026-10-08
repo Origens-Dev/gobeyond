@@ -93,6 +93,17 @@ func (s *voicePlaybackWorkflowState) execute(ctx workflow.Context, in VoiceSessi
 		if completionCallID == "" || req.SourcePlayback.CompletionToolID == "" {
 			return fail("playback budget exhausted")
 		}
+		// New sessions require the signed mint-time mailbox_playback claim to be
+		// "on" before reserving a playback pair. Completion/reconcile skip this.
+		if workflow.GetVersion(ctx, mailboxPlaybackGrantClaimVersionChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			claim := voicecontract.GrantClaims{}
+			if s.budget != nil {
+				claim.MailboxPlayback = s.budget.mailboxPlayback
+			}
+			if !claim.AllowsNewMailboxPlayback() {
+				return fail("playback workflow admission unavailable")
+			}
+		}
 		if e = s.budget.reservePlaybackPair(tool, id, digest, req.SourcePlayback.CompletionToolID, completionCallID); e != nil {
 			return fail("playback budget exhausted")
 		}

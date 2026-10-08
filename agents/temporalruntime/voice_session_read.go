@@ -20,6 +20,7 @@ type reservedPlaybackCompletion struct {
 type voiceToolBudget struct {
 	count               int
 	policy              string
+	mailboxPlayback     string
 	buckets             map[string]int
 	calls               map[string]string
 	reservedCompletions map[string]reservedPlaybackCompletion

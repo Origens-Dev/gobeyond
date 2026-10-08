@@ -37,12 +37,15 @@ const (
 // VoiceSessionInput is the durable voice-call workflow argument.
 type VoiceSessionInput struct {
 	// Derived by the API from a verified signed grant and frozen declaration.
-	BudgetPolicy string                 `json:"budget_policy,omitempty"`
-	Context      *voicecontract.Context `json:"context,omitempty"`
-	AgentID      string                 `json:"agent_id"`
-	CallID       string                 `json:"call_id"`
-	SessionID    string                 `json:"session_id"`
-	ExecutionID  string                 `json:"execution_id"`
+	BudgetPolicy string `json:"budget_policy,omitempty"`
+	// MailboxPlayback is copied from the signed grant claim at session start.
+	// New source playback requires "on"; completion/reconcile ignore it.
+	MailboxPlayback string                 `json:"mailbox_playback,omitempty"`
+	Context         *voicecontract.Context `json:"context,omitempty"`
+	AgentID         string                 `json:"agent_id"`
+	CallID          string                 `json:"call_id"`
+	SessionID       string                 `json:"session_id"`
+	ExecutionID     string                 `json:"execution_id"`
 }
 
 // VoiceSessionExecuteToolInput is the Update / LocalActivity payload for one
@@ -115,14 +118,19 @@ type VoiceSessionExecuteToolResult struct {
 
 const mailboxBudgetVersionChange = "operator-mailbox-budget-v1"
 const mailboxPlaybackRuntimeRetiredVersionChange = "operator-mailbox-playback-runtime-retired-v1"
+const mailboxPlaybackGrantClaimVersionChange = "mailbox-playback-grant-claim-v1"
 
 func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget *voiceToolBudget) error {
 	if voicecontract.IsGenericBudgetPolicy(in.BudgetPolicy) {
 		if in.Context == nil || in.Context.Validate() != nil || in.AgentID != in.Context.AgentID {
 			return errors.New("invalid verified workflow budget policy")
 		}
+		if !voicecontract.ValidMailboxPlaybackClaim(in.MailboxPlayback) {
+			return errors.New("invalid verified workflow budget policy")
+		}
 		// Generic retains a session-wide cap in consume; no product buckets.
 		budget.policy = in.BudgetPolicy
+		budget.mailboxPlayback = in.MailboxPlayback
 		return nil
 	}
 	version := workflow.GetVersion(ctx, mailboxBudgetVersionChange, workflow.DefaultVersion, 1)
@@ -143,7 +151,11 @@ func configureVoiceToolBudget(ctx workflow.Context, in VoiceSessionInput, budget
 	if !voicecontract.IsMailboxBudgetPolicy(in.BudgetPolicy) || in.Context == nil || in.Context.Validate() != nil || in.Context.AgentID != "call-operator" || in.Context.Scope.Kind != "agent" || in.AgentID != in.Context.AgentID {
 		return errors.New("invalid verified workflow budget policy")
 	}
+	if !voicecontract.ValidMailboxPlaybackClaim(in.MailboxPlayback) {
+		return errors.New("invalid verified workflow budget policy")
+	}
 	budget.policy = in.BudgetPolicy
+	budget.mailboxPlayback = in.MailboxPlayback
 	return nil
 }
 

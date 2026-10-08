@@ -208,6 +208,9 @@ func (g GrantClaims) Validate() error {
 	if len(g.Capabilities) != 3 || g.Capabilities[0] != "start" || g.Capabilities[1] != "cancel" || g.Capabilities[2] != "execute" {
 		return errors.New("invalid current capabilities")
 	}
+	if !ValidMailboxPlaybackClaim(g.MailboxPlayback) {
+		return errors.New("invalid mailbox playback claim")
+	}
 	// Identity-only manifests mint with no VoiceControl tools and therefore no
 	// destination classes. Empty is allowed; non-empty values must still be valid.
 	if len(g.DestinationClasses) > 0 {
