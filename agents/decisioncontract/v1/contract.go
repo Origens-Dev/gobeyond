@@ -24,13 +24,13 @@ type RouteID string
 type Definition struct {
 	SchemaVersion string              `json:"schemaVersion"`
 	DigestInputs  ReleaseDigestInputs `json:"digestInputs"`
+	ReleaseSHA256 string              `json:"releaseSha256"`
 	Graph         Graph               `json:"graph"`
 	PolicyGates   []PolicyGate        `json:"policyGates"`
 }
 
-// ReleaseDigestInputs identifies the versioned inputs that a future compiler
-// must include in a release digest. The final release digest is intentionally
-// computed by a later compiler integration, not by this contract package.
+// ReleaseDigestInputs carries canonical hashes of the frozen Definition's
+// content sections. ValidateForReview recomputes and compares each component.
 type ReleaseDigestInputs struct {
 	Graph          string `json:"graphSha256"`
 	Prompts        string `json:"promptsSha256"`
@@ -263,7 +263,7 @@ type ActStep struct {
 	Kind                   EffectKind `json:"kind"`
 	TargetBinding          string     `json:"targetBinding,omitempty"`
 	ReauthorizeAtExecution bool       `json:"reauthorizeAtExecution"`
-	EndsGraphOwnership     bool       `json:"endsGraphOwnership,omitempty"`
+	ReleasesCallOwnership  bool       `json:"releasesCallOwnership,omitempty"`
 }
 
 type ResultSource string
@@ -320,10 +320,11 @@ const (
 type TerminalAction string
 
 const (
-	TerminalEndSession   TerminalAction = "end_session"
-	TerminalEndGraph     TerminalAction = "end_graph"
-	TerminalAwaitReceipt TerminalAction = "await_receipt"
-	TerminalSafeStop     TerminalAction = "safe_stop"
+	TerminalEndSession           TerminalAction = "end_session"
+	TerminalEndGraph             TerminalAction = "end_graph"
+	TerminalReleaseCallOwnership TerminalAction = "release_call_ownership"
+	TerminalAwaitReceipt         TerminalAction = "await_receipt"
+	TerminalSafeStop             TerminalAction = "safe_stop"
 )
 
 type OutcomeTransition struct {
@@ -422,6 +423,11 @@ type VoiceCapabilities struct {
 	Formats          []AudioFormat                            `json:"formats"`
 	Capabilities     map[VoiceCapabilityName]CapabilityStatus `json:"capabilities"`
 	EvidenceRef      string                                   `json:"evidenceRef,omitempty"`
+}
+
+// QualificationKey binds a qualified voice profile to its immutable revision.
+func (capabilities VoiceCapabilities) QualificationKey() string {
+	return capabilities.ProfileRef + "@" + capabilities.Revision
 }
 
 type AudioFormat struct {
@@ -597,7 +603,9 @@ type EffectRequest struct {
 	Identity               EffectIdentity      `json:"identity"`
 	ToolID                 string              `json:"toolId"`
 	Kind                   EffectKind          `json:"kind"`
+	TargetBinding          string              `json:"targetBinding,omitempty"`
 	TargetOpaqueID         string              `json:"targetOpaqueId,omitempty"`
+	CandidateSetSHA256     string              `json:"candidateSetSha256,omitempty"`
 	Payload                *ProtectedReference `json:"payload,omitempty"`
 	ReauthorizeAtExecution bool                `json:"reauthorizeAtExecution"`
 }
@@ -622,11 +630,12 @@ type EffectReceipt struct {
 	ObservedAt        time.Time      `json:"observedAt"`
 }
 
-// ReleasesGraphOwnership is true only for an effect declared to end ownership
-// and a confirmed receipt. Submission, acceptance, cancellation, and an
-// ambiguous result do not release ownership.
-func (receipt EffectReceipt) ReleasesGraphOwnership(effectEndsGraph bool) bool {
-	return effectEndsGraph && receipt.Status == EffectConfirmed && receipt.TargetOpaqueID != "" && receipt.Validate() == nil
+// ReleasesCallOwnership is true only for a declared call-owner release and a
+// confirmed receipt for the exact intended target. Local graph termination
+// alone does not release call ownership.
+func (receipt EffectReceipt) ReleasesCallOwnership(releaseCallOwnership bool, intendedTargetOpaqueID string) bool {
+	return releaseCallOwnership && intendedTargetOpaqueID != "" && receipt.Status == EffectConfirmed &&
+		receipt.TargetOpaqueID == intendedTargetOpaqueID && receipt.Validate() == nil
 }
 
 type PlaybackReceipt struct {
@@ -645,53 +654,109 @@ const (
 )
 
 type GraphOwnership struct {
-	State            OwnershipState `json:"state"`
-	PendingEffectID  string         `json:"pendingEffectId,omitempty"`
-	ReleaseReceiptID string         `json:"releaseReceiptId,omitempty"`
+	State                     OwnershipState `json:"state"`
+	PendingEffectID           string         `json:"pendingEffectId,omitempty"`
+	PendingTargetBinding      string         `json:"pendingTargetBinding,omitempty"`
+	PendingTargetOpaqueID     string         `json:"pendingTargetOpaqueId,omitempty"`
+	PendingCandidateSetSHA256 string         `json:"pendingCandidateSetSha256,omitempty"`
+	ReleaseReceiptID          string         `json:"releaseReceiptId,omitempty"`
 }
 
-// ValidateOwnershipTransition enforces receipt-confirmed graph ownership
-// release without doing any call-control work.
-func ValidateOwnershipTransition(from, to GraphOwnership, receipt *EffectReceipt, effectEndsGraph bool) error {
+// ValidateOwnershipTransition enforces receipt-confirmed call ownership
+// release without doing any call-control work. TerminalEndGraph only stops the
+// local decision graph; this transition applies solely to call ownership.
+func ValidateOwnershipTransition(from, to GraphOwnership, receipt *EffectReceipt, request *EffectRequest, action *ActStep) error {
 	if from.State != OwnershipOwned && from.State != OwnershipReceiptPending && from.State != OwnershipReleased {
-		return fmt.Errorf("unknown prior graph ownership state %q", from.State)
+		return fmt.Errorf("unknown prior call ownership state %q", from.State)
 	}
 	if to.State != OwnershipOwned && to.State != OwnershipReceiptPending && to.State != OwnershipReleased {
-		return fmt.Errorf("unknown next graph ownership state %q", to.State)
+		return fmt.Errorf("unknown next call ownership state %q", to.State)
+	}
+	if err := validateOwnershipState(from); err != nil {
+		return fmt.Errorf("invalid prior call ownership state: %w", err)
+	}
+	if err := validateOwnershipState(to); err != nil {
+		return fmt.Errorf("invalid next call ownership state: %w", err)
 	}
 	if from.State == OwnershipReleased {
-		if to.State != OwnershipReleased || to.ReleaseReceiptID != from.ReleaseReceiptID {
-			return fmt.Errorf("released graph ownership is immutable")
+		if to != from {
+			return fmt.Errorf("released call ownership state is immutable")
 		}
 		return nil
 	}
 	if to.State != OwnershipReleased {
 		return nil
 	}
-	if receipt == nil || !receipt.ReleasesGraphOwnership(effectEndsGraph) {
-		return fmt.Errorf("graph ownership may be released only by a confirmed effect receipt")
+	if action == nil || request == nil || receipt == nil || !action.ReleasesCallOwnership ||
+		(action.Kind != EffectConnect && action.Kind != EffectHandoff) || !action.ReauthorizeAtExecution {
+		return fmt.Errorf("call ownership release requires its declared reauthorized route action")
+	}
+	if request.Identity.ActionID != action.ID || request.ToolID != action.ToolID || request.Kind != action.Kind || request.TargetBinding != action.TargetBinding {
+		return fmt.Errorf("pending effect does not match the call-owner-releasing route action")
+	}
+	if !receipt.ReleasesCallOwnership(action.ReleasesCallOwnership, from.PendingTargetOpaqueID) {
+		return fmt.Errorf("call ownership may be released only by a confirmed receipt for the intended target")
+	}
+	if err := request.Validate(time.Time{}); err != nil || request.Kind != EffectConnect && request.Kind != EffectHandoff || !request.ReauthorizeAtExecution {
+		return fmt.Errorf("call ownership release requires the validated reauthorized call-control request")
 	}
 	if from.State != OwnershipReceiptPending {
-		return fmt.Errorf("graph ownership release requires a pending receipt state")
+		return fmt.Errorf("call ownership release requires a pending receipt state")
 	}
-	if from.PendingEffectID == "" || from.PendingEffectID != receipt.Identity.ID {
+	if from.PendingEffectID == "" || from.PendingEffectID != receipt.Identity.ID || from.PendingEffectID != request.Identity.ID {
 		return fmt.Errorf("confirmed receipt does not match the pending effect")
 	}
+	if request.TargetOpaqueID == "" || request.TargetOpaqueID != from.PendingTargetOpaqueID || request.TargetOpaqueID != receipt.TargetOpaqueID ||
+		request.TargetBinding == "" || request.TargetBinding != from.PendingTargetBinding ||
+		request.CandidateSetSHA256 != from.PendingCandidateSetSHA256 {
+		return fmt.Errorf("confirmed receipt target does not match the intended effect target")
+	}
 	if to.ReleaseReceiptID == "" || to.ReleaseReceiptID != receipt.ReceiptID {
-		return fmt.Errorf("released ownership must retain the confirming receipt ID")
+		return fmt.Errorf("released call ownership must retain the confirming receipt ID")
+	}
+	return nil
+}
+
+func validateOwnershipState(state GraphOwnership) error {
+	pendingFields := state.PendingEffectID != "" || state.PendingTargetBinding != "" || state.PendingTargetOpaqueID != "" || state.PendingCandidateSetSHA256 != ""
+	switch state.State {
+	case OwnershipOwned:
+		if pendingFields || state.ReleaseReceiptID != "" {
+			return fmt.Errorf("owned state cannot carry a pending effect or release receipt")
+		}
+	case OwnershipReceiptPending:
+		if !isIdentifier(state.PendingEffectID) {
+			return fmt.Errorf("receipt-pending state requires a stable pending effect ID")
+		}
+		anyTargetField := state.PendingTargetBinding != "" || state.PendingTargetOpaqueID != "" || state.PendingCandidateSetSHA256 != ""
+		if anyTargetField && (!isIdentifier(state.PendingTargetBinding) || !isIdentifier(state.PendingTargetOpaqueID) || !isSHA256(state.PendingCandidateSetSHA256)) {
+			return fmt.Errorf("pending call-control target requires binding, opaque ID, and candidate-set digest")
+		}
+		if state.ReleaseReceiptID != "" {
+			return fmt.Errorf("receipt-pending state cannot carry a release receipt")
+		}
+	case OwnershipReleased:
+		if !isIdentifier(state.ReleaseReceiptID) || pendingFields {
+			return fmt.Errorf("released state requires only its confirming receipt ID")
+		}
+	default:
+		return fmt.Errorf("unknown graph ownership state %q", state.State)
 	}
 	return nil
 }
 
 type SessionPin struct {
 	SchemaVersion        string            `json:"schemaVersion"`
+	ReleaseSHA256        string            `json:"releaseSha256"`
 	GraphSHA256          string            `json:"graphSha256"`
 	PromptFamiliesSHA256 string            `json:"promptFamiliesSha256"`
 	BindingsSHA256       string            `json:"bindingsSha256"`
 	NormalizationSHA256  string            `json:"normalizationSha256"`
 	AuthoritySHA256      string            `json:"authoritySha256"`
 	PolicySHA256         string            `json:"policySha256"`
+	LocaleAndVoiceSHA256 string            `json:"localeAndVoiceSha256"`
 	SnapshotSHA256       string            `json:"snapshotSha256"`
+	VoiceSHA256          string            `json:"voiceSha256"`
 	Generation           uint64            `json:"generation"`
 	Locale               string            `json:"locale"`
 	PromptFamily         string            `json:"promptFamily"`

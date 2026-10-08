@@ -21,6 +21,41 @@ func loadReviewDefinition(t *testing.T) Definition {
 	return definition
 }
 
+func refreshDefinitionDigestsForTest(t *testing.T, definition *Definition) {
+	t.Helper()
+	inputs, release, err := definition.CanonicalReleaseDigests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.DigestInputs = inputs
+	definition.ReleaseSHA256 = release
+}
+
+func sessionPinForTest(t *testing.T, definition Definition) SessionPin {
+	t.Helper()
+	voice := VoiceCapabilities{
+		ProfileRef: "qualified-profile", Revision: "profile-revision-1", VoiceID: "voice-1", Locale: "en",
+		SupportedLocales: []string{"en"}, Formats: []AudioFormat{{Codec: "pcm", SampleRateHz: 16000, Channels: 1}},
+		Capabilities: map[VoiceCapabilityName]CapabilityStatus{}, EvidenceRef: "voice-qualification-test-only",
+	}
+	for _, capability := range definition.Graph.RequiredVoiceCapabilities {
+		voice.Capabilities[capability] = CapabilitySupported
+	}
+	voiceDigest, err := CanonicalVoiceCapabilitiesSHA256(voice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SessionPin{
+		SchemaVersion: definition.SchemaVersion, ReleaseSHA256: definition.ReleaseSHA256,
+		GraphSHA256: definition.DigestInputs.Graph, PromptFamiliesSHA256: definition.DigestInputs.Prompts,
+		BindingsSHA256: definition.DigestInputs.Bindings, NormalizationSHA256: definition.DigestInputs.Normalization,
+		AuthoritySHA256: definition.DigestInputs.Authority, PolicySHA256: definition.DigestInputs.Policy,
+		LocaleAndVoiceSHA256: definition.DigestInputs.LocaleAndVoice,
+		SnapshotSHA256:       strings.Repeat("0", 64), VoiceSHA256: voiceDigest,
+		Generation: 1, Locale: "en", PromptFamily: "operator.prompt", PromptVariantLocale: "en", Voice: voice,
+	}
+}
+
 func requireValidationError(t *testing.T, err error, contains string) {
 	t.Helper()
 	if err == nil || !strings.Contains(err.Error(), contains) {
@@ -67,10 +102,66 @@ func TestPolicyGateKindsAreUniqueExceptRetryGroups(t *testing.T) {
 		duplicate := definition.PolicyGates[3]
 		duplicate.ID = "g-retry-another-group"
 		definition.PolicyGates = append(definition.PolicyGates, duplicate)
+		refreshDefinitionDigestsForTest(t, &definition)
 		if err := definition.ValidateForReview(); err != nil {
 			t.Fatalf("independent retry groups may have separate gates of one kind: %v", err)
 		}
 	})
+}
+
+func TestCanonicalReleaseDigestsBindFrozenInputsAndIgnoreSetOrder(t *testing.T) {
+	definition := loadReviewDefinition(t)
+	inputs, release, err := definition.CanonicalReleaseDigests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inputs != definition.DigestInputs || release != definition.ReleaseSHA256 {
+		t.Fatal("review fixture digests must match the canonical frozen definition")
+	}
+	permuted := definition
+	permuted.Graph = canonicalGraph(permuted.Graph)
+	for left, right := 0, len(permuted.Graph.Routes)-1; left < right; left, right = left+1, right-1 {
+		permuted.Graph.Routes[left], permuted.Graph.Routes[right] = permuted.Graph.Routes[right], permuted.Graph.Routes[left]
+	}
+	for index := range permuted.Graph.Routes {
+		route := &permuted.Graph.Routes[index]
+		for left, right := 0, len(route.Next)-1; left < right; left, right = left+1, right-1 {
+			route.Next[left], route.Next[right] = route.Next[right], route.Next[left]
+		}
+	}
+	for left, right := 0, len(permuted.PolicyGates)-1; left < right; left, right = left+1, right-1 {
+		permuted.PolicyGates[left], permuted.PolicyGates[right] = permuted.PolicyGates[right], permuted.PolicyGates[left]
+	}
+	permuted.Graph.Authority.Tools[0], permuted.Graph.Authority.Tools[1] = permuted.Graph.Authority.Tools[1], permuted.Graph.Authority.Tools[0]
+	permuted.Graph.Locale.EnabledLocales = []string{"fr", "en"}
+	definition.Graph.Locale.EnabledLocales = []string{"en", "fr"}
+	inputsAfterPermutation, releaseAfterPermutation, err := permuted.CanonicalReleaseDigests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputsBeforePermutation, releaseBeforePermutation, err := definition.CanonicalReleaseDigests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inputsAfterPermutation != inputsBeforePermutation || releaseAfterPermutation != releaseBeforePermutation {
+		t.Fatal("set-like route, outcome, grant, locale, and gate order must not change release digests")
+	}
+	changed := definition
+	changed.Graph.Messages = append([]MessageFamily(nil), changed.Graph.Messages...)
+	changed.Graph.Messages[0].Variants = map[string]string{"en": "A changed prompt."}
+	changedInputs, changedRelease, err := changed.CanonicalReleaseDigests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedInputs.Prompts == inputs.Prompts || changedRelease == release {
+		t.Fatal("changing frozen prompt content must change component and release digests")
+	}
+}
+
+func TestRejectsDefinitionDigestMismatch(t *testing.T) {
+	definition := loadReviewDefinition(t)
+	definition.Graph.Messages[0].Variants["en"] = "Changed after freeze."
+	requireValidationError(t, definition.ValidateForReview(), "digestInputs.prompts does not match canonical frozen definition content")
 }
 
 func TestRejectsUnknownAndMissingOutcomeMappings(t *testing.T) {
@@ -151,6 +242,11 @@ func TestRejectsWidenedInheritedAuthority(t *testing.T) {
 		}
 		requireValidationError(t, definition.ValidateForReview(), "widens inherited budget")
 	})
+	t.Run("act target binding", func(t *testing.T) {
+		definition := loadReviewDefinition(t)
+		definition.Graph.Routes[0].Act[0].TargetBinding = "ungranted_target"
+		requireValidationError(t, definition.ValidateForReview(), "target binding \"ungranted_target\" is outside its inherited binding grants")
+	})
 }
 
 func TestRejectsMissingLimitsAndUnboundedCycles(t *testing.T) {
@@ -167,6 +263,46 @@ func TestRejectsMissingLimitsAndUnboundedCycles(t *testing.T) {
 			}
 		}
 		requireValidationError(t, definition.ValidateForReview(), "no bounded retry group")
+	})
+	t.Run("cycle path bypasses counter inside an SCC", func(t *testing.T) {
+		definition := loadReviewDefinition(t)
+		var clarify Route
+		for _, route := range definition.Graph.Routes {
+			if route.ID == "/clarify" {
+				clarify = route
+				break
+			}
+		}
+		cloneRoute := func(id RouteID) Route {
+			copy := clarify
+			copy.ID = id
+			copy.RetryGroup = ""
+			copy.Act = append([]ActStep(nil), clarify.Act...)
+			copy.Next = append(OutcomeMap(nil), clarify.Next...)
+			return copy
+		}
+		unboundedA, unboundedB := cloneRoute("/unbounded-a"), cloneRoute("/unbounded-b")
+		setTransition := func(route *Route, source ResultSource, outcome Outcome, target RouteID) {
+			for index := range route.Next {
+				if route.Next[index].Source == source && route.Next[index].Outcome == outcome {
+					route.Next[index].Target = Target{Route: target}
+					return
+				}
+			}
+			t.Fatalf("missing transition %s/%s in %s", source, outcome, route.ID)
+		}
+		setTransition(&unboundedA, SourceInput, OutcomeNoInput, unboundedB.ID)
+		setTransition(&unboundedB, SourceInput, OutcomeNoInput, unboundedA.ID)
+		setTransition(&unboundedA, SourceDecision, OutcomeNoMatch, "/clarify")
+		setTransition(&clarify, SourceDecision, OutcomeNoMatch, unboundedA.ID)
+		for index := range definition.Graph.Routes {
+			if definition.Graph.Routes[index].ID == "/clarify" {
+				definition.Graph.Routes[index] = clarify
+			}
+		}
+		definition.Graph.Routes = append(definition.Graph.Routes, unboundedA, unboundedB)
+		refreshDefinitionDigestsForTest(t, &definition)
+		requireValidationError(t, definition.ValidateForReview(), "cycle path that bypasses every bounded retry counter")
 	})
 	t.Run("retry limit without gate", func(t *testing.T) {
 		definition := loadReviewDefinition(t)
@@ -240,32 +376,94 @@ func TestDecisionCandidateMustBelongToProtectedAuthorizedSnapshot(t *testing.T) 
 	}
 }
 
+func TestEffectRequiresFrozenActionAndAuthorizedTargetSnapshot(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	definition := loadReviewDefinition(t)
+	qualifyDefinitionForTest(t, &definition)
+	action := definition.Graph.Routes[0].Act[0]
+	snapshot := CandidateSetSnapshot{
+		CandidateIDs: []string{"candidate-allowed", "candidate-other"},
+		ProtectedSnapshot: &ProtectedReference{
+			ID: "protected-targets-1", Purpose: "directory-snapshot", TenantID: "tenant-1", SessionID: "session-1",
+			Generation: 1, SHA256: strings.Repeat("a", 64), ExpiresAt: now.Add(time.Minute),
+		},
+	}
+	snapshot.SHA256 = snapshot.CanonicalSHA256()
+	identity := EffectIdentity{
+		TenantID: "tenant-1", SessionID: "session-1", Generation: 1, RouteEntryID: "entry-1",
+		InputID: "input-1", ActionID: action.ID, GraphSHA256: definition.DigestInputs.Graph,
+	}
+	identity.ID = identity.CanonicalID()
+	request := EffectRequest{
+		Identity: identity, ToolID: action.ToolID, Kind: action.Kind, TargetBinding: action.TargetBinding,
+		TargetOpaqueID: "candidate-allowed", CandidateSetSHA256: snapshot.SHA256, ReauthorizeAtExecution: true,
+	}
+	if err := request.ValidateForDispatch(definition, definition.Graph.Routes[0].ID, &snapshot, "tenant-1", "session-1", 1, now); err != nil {
+		t.Fatalf("authorized action target should validate before dispatch: %v", err)
+	}
+	request.TargetOpaqueID = "candidate-ungranted"
+	if err := request.ValidateForDispatch(definition, definition.Graph.Routes[0].ID, &snapshot, "tenant-1", "session-1", 1, now); err == nil || !strings.Contains(err.Error(), "outside the authorized candidate set") {
+		t.Fatalf("target outside the protected candidate snapshot should be rejected: %v", err)
+	}
+	request.TargetOpaqueID = "candidate-allowed"
+	request.TargetBinding = "another_binding"
+	if err := request.ValidateForDispatch(definition, definition.Graph.Routes[0].ID, &snapshot, "tenant-1", "session-1", 1, now); err == nil || !strings.Contains(err.Error(), "does not match the frozen route action") {
+		t.Fatalf("effect target binding must match the frozen action: %v", err)
+	}
+	request.TargetBinding = action.TargetBinding
+	request.Identity.GraphSHA256 = strings.Repeat("c", 64)
+	request.Identity.ID = request.Identity.CanonicalID()
+	if err := request.ValidateForDispatch(definition, definition.Graph.Routes[0].ID, &snapshot, "tenant-1", "session-1", 1, now); err == nil || !strings.Contains(err.Error(), "graph digest does not match the frozen definition") {
+		t.Fatalf("effect must be pinned to the current frozen graph: %v", err)
+	}
+	request.Identity.GraphSHA256 = definition.DigestInputs.Graph
+	request.Identity.SessionID = "another-session"
+	request.Identity.ID = request.Identity.CanonicalID()
+	if err := request.ValidateForDispatch(definition, definition.Graph.Routes[0].ID, &snapshot, "tenant-1", "session-1", 1, now); err == nil || !strings.Contains(err.Error(), "scope does not match") {
+		t.Fatalf("effect scope must match its authorized candidate snapshot: %v", err)
+	}
+}
+
 func TestSessionPinRequiresQualifiedLocaleAndVoiceCapabilities(t *testing.T) {
 	definition := loadReviewDefinition(t)
-	qualifyDefinitionForTest(&definition)
+	qualifyDefinitionForTest(t, &definition)
 	if err := definition.ValidateForActivation(); err != nil {
 		t.Fatalf("test-only qualified definition should be activation-ready: %v", err)
 	}
-	pin := SessionPin{
-		SchemaVersion: SchemaVersion, GraphSHA256: strings.Repeat("a", 64), PromptFamiliesSHA256: strings.Repeat("b", 64),
-		BindingsSHA256: strings.Repeat("c", 64), NormalizationSHA256: strings.Repeat("d", 64), AuthoritySHA256: strings.Repeat("e", 64),
-		PolicySHA256: strings.Repeat("f", 64), SnapshotSHA256: strings.Repeat("0", 64), Generation: 1,
-		Locale: "en", PromptFamily: "operator.prompt", PromptVariantLocale: "en",
-		Voice: VoiceCapabilities{
-			ProfileRef: "qualified-profile", Revision: "profile-revision-1", VoiceID: "voice-1", Locale: "en",
-			SupportedLocales: []string{"en"}, Formats: []AudioFormat{{Codec: "pcm", SampleRateHz: 16000, Channels: 1}},
-			Capabilities: map[VoiceCapabilityName]CapabilityStatus{}, EvidenceRef: "voice-qualification-test-only",
-		},
-	}
-	for _, capability := range definition.Graph.RequiredVoiceCapabilities {
-		pin.Voice.Capabilities[capability] = CapabilitySupported
-	}
+	pin := sessionPinForTest(t, definition)
 	if err := pin.ValidateFor(definition); err != nil {
 		t.Fatalf("qualified session pin should validate: %v", err)
 	}
+	pin.GraphSHA256 = strings.Repeat("a", 64)
+	if err := pin.ValidateFor(definition); err == nil || !strings.Contains(err.Error(), "session pin graph digest does not match the frozen definition") {
+		t.Fatalf("unrelated component digests must not pass as a session pin: %v", err)
+	}
+	pin = sessionPinForTest(t, definition)
+	pin.ReleaseSHA256 = strings.Repeat("a", 64)
+	if err := pin.ValidateFor(definition); err == nil || !strings.Contains(err.Error(), "session pin release digest does not match the frozen definition") {
+		t.Fatalf("session pin release digest must match actual frozen inputs: %v", err)
+	}
+	pin = sessionPinForTest(t, definition)
 	pin.Voice.Capabilities[VoiceDTMFInput] = CapabilityUnknown
+	pin.VoiceSHA256, _ = CanonicalVoiceCapabilitiesSHA256(pin.Voice)
 	if err := pin.ValidateFor(definition); err == nil || !strings.Contains(err.Error(), "not qualified as supported") {
 		t.Fatalf("unknown required voice capability should fail closed, got %v", err)
+	}
+}
+
+func TestSessionPinBindsLocaleAndVoiceRevision(t *testing.T) {
+	definition := loadReviewDefinition(t)
+	qualifyDefinitionForTest(t, &definition)
+	pin := sessionPinForTest(t, definition)
+	pin.Locale = "fr"
+	if err := pin.ValidateFor(definition); err == nil || !strings.Contains(err.Error(), "locale is not enabled") {
+		t.Fatalf("session pin cannot select an unqualified locale: %v", err)
+	}
+	pin = sessionPinForTest(t, definition)
+	pin.Voice.Revision = "profile-revision-2"
+	pin.VoiceSHA256, _ = CanonicalVoiceCapabilitiesSHA256(pin.Voice)
+	if err := pin.ValidateFor(definition); err == nil || !strings.Contains(err.Error(), "does not match the qualified voice profile gate") {
+		t.Fatalf("session pin must use the qualified voice revision: %v", err)
 	}
 }
 
@@ -279,34 +477,52 @@ func TestGraphOwnershipReleasesOnlyOnConfirmedReceipt(t *testing.T) {
 	if err := identity.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	from := GraphOwnership{State: OwnershipReceiptPending, PendingEffectID: identity.ID}
+	request := EffectRequest{
+		Identity: identity, ToolID: "connect", Kind: EffectConnect, TargetBinding: "selected_candidate_id",
+		TargetOpaqueID: "candidate-1", CandidateSetSHA256: strings.Repeat("b", 64), ReauthorizeAtExecution: true,
+	}
+	action := ActStep{ID: identity.ActionID, ToolID: request.ToolID, Kind: request.Kind, TargetBinding: request.TargetBinding, ReauthorizeAtExecution: true, ReleasesCallOwnership: true}
+	from := GraphOwnership{
+		State: OwnershipReceiptPending, PendingEffectID: identity.ID, PendingTargetBinding: request.TargetBinding,
+		PendingTargetOpaqueID: request.TargetOpaqueID, PendingCandidateSetSHA256: request.CandidateSetSHA256,
+	}
 	accepted := EffectReceipt{
-		Identity: identity, Status: EffectAccepted, ReceiptID: "accepted-1", ObservedAt: now,
+		Identity: identity, Status: EffectAccepted, ReceiptID: "accepted-1", TargetOpaqueID: request.TargetOpaqueID, ObservedAt: now,
 	}
-	if accepted.ReleasesGraphOwnership(true) {
-		t.Fatal("accepted effect must not release graph ownership")
+	if accepted.ReleasesCallOwnership(true, request.TargetOpaqueID) {
+		t.Fatal("accepted effect must not release call ownership")
 	}
-	if err := ValidateOwnershipTransition(from, GraphOwnership{State: OwnershipReleased, ReleaseReceiptID: "accepted-1"}, &accepted, true); err == nil {
-		t.Fatal("accepted receipt must not release graph ownership")
+	if err := ValidateOwnershipTransition(from, GraphOwnership{State: OwnershipReleased, ReleaseReceiptID: "accepted-1"}, &accepted, &request, &action); err == nil {
+		t.Fatal("accepted receipt must not release call ownership")
 	}
 	confirmed := EffectReceipt{
 		Identity: identity, Status: EffectConfirmed, ReceiptID: "confirmed-1", ProviderRequestID: "provider-request-1",
-		TargetOpaqueID: "candidate-1", ObservedAt: now,
+		TargetOpaqueID: request.TargetOpaqueID, ObservedAt: now,
 	}
-	if !confirmed.ReleasesGraphOwnership(true) {
-		t.Fatal("confirmed receipt should release graph ownership for an ending effect")
+	if !confirmed.ReleasesCallOwnership(true, request.TargetOpaqueID) {
+		t.Fatal("confirmed receipt should release call ownership for the declared target")
 	}
-	unboundTarget := confirmed
-	unboundTarget.TargetOpaqueID = ""
-	if unboundTarget.ReleasesGraphOwnership(true) {
-		t.Fatal("confirmed receipt without its opaque target must not release ownership")
+	wrongTarget := confirmed
+	wrongTarget.TargetOpaqueID = "candidate-other"
+	if wrongTarget.ReleasesCallOwnership(true, request.TargetOpaqueID) {
+		t.Fatal("receipt for a different target must not release ownership")
 	}
 	to := GraphOwnership{State: OwnershipReleased, ReleaseReceiptID: confirmed.ReceiptID}
-	if err := ValidateOwnershipTransition(from, to, &confirmed, true); err != nil {
-		t.Fatalf("matching confirmed receipt should release ownership: %v", err)
+	if err := ValidateOwnershipTransition(from, to, &confirmed, &request, &action); err != nil {
+		t.Fatalf("matching confirmed receipt should release call ownership: %v", err)
 	}
-	if err := ValidateOwnershipTransition(from, to, &confirmed, false); err == nil {
-		t.Fatal("an effect not declared to end ownership must not release it")
+	noReleaseAction := action
+	noReleaseAction.ReleasesCallOwnership = false
+	if err := ValidateOwnershipTransition(from, to, &confirmed, &request, &noReleaseAction); err == nil {
+		t.Fatal("an effect not declared to release call ownership must not release it")
+	}
+	if err := ValidateOwnershipTransition(from, to, &wrongTarget, &request, &action); err == nil {
+		t.Fatal("receipt target must match the pending intended target")
+	}
+	fromWithoutTarget := from
+	fromWithoutTarget.PendingTargetOpaqueID = ""
+	if err := ValidateOwnershipTransition(fromWithoutTarget, to, &confirmed, &request, &action); err == nil {
+		t.Fatal("release must retain the intended target in pending ownership")
 	}
 }
 
@@ -331,6 +547,7 @@ func TestSyntheticDeterministicJevClarifyFallbackTrace(t *testing.T) {
 			ReceiptID         string         `json:"receiptId"`
 			ProviderRequestID string         `json:"providerRequestId"`
 			TargetOpaqueID    string         `json:"targetOpaqueId"`
+			TerminalAction    string         `json:"terminalAction"`
 			ObservedAt        time.Time      `json:"observedAt"`
 			EffectIdentity    EffectIdentity `json:"effectIdentity"`
 			Ownership         string         `json:"ownership"`
@@ -354,11 +571,11 @@ func TestSyntheticDeterministicJevClarifyFallbackTrace(t *testing.T) {
 	if fourth := trace.Steps[3]; fourth.Event != "retry_exhausted" || fourth.NextRoute != "/help" {
 		t.Fatalf("exhausted clarification should use authored fallback: %#v", fourth)
 	}
-	if fifth := trace.Steps[4]; fifth.EffectStatus != "accepted" || fifth.ReceiptID == "" || fifth.Ownership != "owned" {
-		t.Fatalf("accepted handoff must retain graph ownership: %#v", fifth)
+	if fifth := trace.Steps[4]; fifth.EffectStatus != "accepted" || fifth.ReceiptID == "" || fifth.Ownership != "call_owned" {
+		t.Fatalf("accepted handoff must retain call ownership: %#v", fifth)
 	}
-	if sixth := trace.Steps[5]; sixth.EffectStatus != "confirmed" || sixth.ReceiptID == "" || sixth.Ownership != "released" {
-		t.Fatalf("confirmed handoff receipt should release graph ownership: %#v", sixth)
+	if sixth := trace.Steps[5]; sixth.EffectStatus != "confirmed" || sixth.ReceiptID == "" || sixth.Ownership != "call_released" || sixth.TerminalAction != string(TerminalReleaseCallOwnership) {
+		t.Fatalf("confirmed handoff receipt should release call ownership: %#v", sixth)
 	}
 	acceptedStep, confirmedStep := trace.Steps[4], trace.Steps[5]
 	if err := acceptedStep.EffectIdentity.Validate(); err != nil {
@@ -367,7 +584,19 @@ func TestSyntheticDeterministicJevClarifyFallbackTrace(t *testing.T) {
 	if acceptedStep.EffectIdentity.ID != confirmedStep.EffectIdentity.ID || acceptedStep.TargetOpaqueID != confirmedStep.TargetOpaqueID {
 		t.Fatal("accepted and confirmed receipts must refer to the same effect and opaque target")
 	}
-	from := GraphOwnership{State: OwnershipReceiptPending, PendingEffectID: acceptedStep.EffectIdentity.ID}
+	request := EffectRequest{
+		Identity: acceptedStep.EffectIdentity, ToolID: "connect", Kind: EffectConnect,
+		TargetBinding: "selected_candidate_id", TargetOpaqueID: acceptedStep.TargetOpaqueID,
+		CandidateSetSHA256: strings.Repeat("b", 64), ReauthorizeAtExecution: true,
+	}
+	action := ActStep{
+		ID: request.Identity.ActionID, ToolID: request.ToolID, Kind: request.Kind,
+		TargetBinding: request.TargetBinding, ReauthorizeAtExecution: true, ReleasesCallOwnership: true,
+	}
+	from := GraphOwnership{
+		State: OwnershipReceiptPending, PendingEffectID: acceptedStep.EffectIdentity.ID, PendingTargetBinding: request.TargetBinding,
+		PendingTargetOpaqueID: acceptedStep.TargetOpaqueID, PendingCandidateSetSHA256: request.CandidateSetSHA256,
+	}
 	accepted := EffectReceipt{
 		Identity: acceptedStep.EffectIdentity, Status: EffectAccepted, ReceiptID: acceptedStep.ReceiptID,
 		ProviderRequestID: acceptedStep.ProviderRequestID, TargetOpaqueID: acceptedStep.TargetOpaqueID, ObservedAt: acceptedStep.ObservedAt,
@@ -376,15 +605,55 @@ func TestSyntheticDeterministicJevClarifyFallbackTrace(t *testing.T) {
 		Identity: confirmedStep.EffectIdentity, Status: EffectConfirmed, ReceiptID: confirmedStep.ReceiptID,
 		ProviderRequestID: confirmedStep.ProviderRequestID, TargetOpaqueID: confirmedStep.TargetOpaqueID, ObservedAt: confirmedStep.ObservedAt,
 	}
-	if accepted.ReleasesGraphOwnership(true) {
-		t.Fatal("fixture accepted event must retain graph ownership")
+	if accepted.ReleasesCallOwnership(true, acceptedStep.TargetOpaqueID) {
+		t.Fatal("fixture accepted event must retain call ownership")
 	}
-	if err := ValidateOwnershipTransition(from, GraphOwnership{State: OwnershipReleased, ReleaseReceiptID: accepted.ReceiptID}, &accepted, true); err == nil {
+	if err := ValidateOwnershipTransition(from, GraphOwnership{State: OwnershipReleased, ReleaseReceiptID: accepted.ReceiptID}, &accepted, &request, &action); err == nil {
 		t.Fatal("fixture accepted event must not release ownership")
 	}
-	if err := ValidateOwnershipTransition(from, GraphOwnership{State: OwnershipReleased, ReleaseReceiptID: confirmed.ReceiptID}, &confirmed, true); err != nil {
-		t.Fatalf("fixture confirmed receipt should release ownership: %v", err)
+	if err := ValidateOwnershipTransition(from, GraphOwnership{State: OwnershipReleased, ReleaseReceiptID: confirmed.ReceiptID}, &confirmed, &request, &action); err != nil {
+		t.Fatalf("fixture confirmed receipt should release call ownership: %v", err)
 	}
+}
+
+func TestLocalEndGraphDoesNotReleaseCallOwnership(t *testing.T) {
+	definition := loadReviewDefinition(t)
+	route := &definition.Graph.Routes[0]
+	route.Act[0].ReleasesCallOwnership = false
+	for index := range route.Next {
+		transition := &route.Next[index]
+		if transition.Source == SourceEffect && transition.Outcome == OutcomeConfirmed {
+			transition.Target = Target{Terminal: TerminalEndGraph}
+		}
+	}
+	refreshDefinitionDigestsForTest(t, &definition)
+	if err := definition.ValidateForReview(); err != nil {
+		t.Fatalf("local graph termination should remain valid without releasing call ownership: %v", err)
+	}
+	owned := GraphOwnership{State: OwnershipOwned}
+	if err := ValidateOwnershipTransition(owned, owned, nil, nil, nil); err != nil {
+		t.Fatalf("local end_graph must preserve parent call ownership: %v", err)
+	}
+}
+
+func TestRejectsOwnershipReleaseOutsideConfirmedReceiptTransition(t *testing.T) {
+	t.Run("input outcome cannot release", func(t *testing.T) {
+		definition := loadReviewDefinition(t)
+		route := &definition.Graph.Routes[0]
+		for index := range route.Next {
+			if route.Next[index].Source == SourceInput && route.Next[index].Outcome == OutcomeNoInput {
+				route.Next[index].Target = Target{Terminal: TerminalReleaseCallOwnership}
+			}
+		}
+		refreshDefinitionDigestsForTest(t, &definition)
+		requireValidationError(t, definition.ValidateForReview(), "cannot release call ownership on input/no_input")
+	})
+	t.Run("fallback cannot release", func(t *testing.T) {
+		definition := loadReviewDefinition(t)
+		definition.Graph.Routes[0].Fallback = Target{Terminal: TerminalReleaseCallOwnership}
+		refreshDefinitionDigestsForTest(t, &definition)
+		requireValidationError(t, definition.ValidateForReview(), "fallback cannot release call ownership")
+	})
 }
 
 // The values below exist only to exercise narrowing comparisons in tests. They
@@ -414,7 +683,8 @@ func qualifyBudgetGatesForTest(definition *Definition) {
 	}
 }
 
-func qualifyDefinitionForTest(definition *Definition) {
+func qualifyDefinitionForTest(t *testing.T, definition *Definition) {
+	t.Helper()
 	qualifyBudgetGatesForTest(definition)
 	for index := range definition.PolicyGates {
 		gate := &definition.PolicyGates[index]
@@ -429,8 +699,9 @@ func qualifyDefinitionForTest(definition *Definition) {
 			gate.Value = "en"
 		}
 		if gate.Kind == GateVoiceProfile {
-			gate.Value = "qualified-profile"
+			gate.Value = "qualified-profile@profile-revision-1"
 		}
 	}
 	definition.Graph.Locale.EnabledLocales = []string{"en"}
+	refreshDefinitionDigestsForTest(t, definition)
 }

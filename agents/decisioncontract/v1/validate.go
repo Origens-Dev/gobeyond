@@ -43,7 +43,7 @@ func (definition Definition) ValidateForReview() error {
 	if definition.SchemaVersion != SchemaVersion {
 		c.add("schemaVersion must be %q", SchemaVersion)
 	}
-	validateDigestInputs(c, definition.DigestInputs)
+	validateDigestInputs(c, definition)
 	validateGates(c, definition.PolicyGates)
 	validateGraph(c, definition)
 	return c.err()
@@ -84,17 +84,38 @@ func (pin SessionPin) ValidateFor(definition Definition) error {
 		return fmt.Errorf("session pin requires positive generation and canonical locale fields")
 	}
 	for name, digest := range map[string]string{
-		"graph":           pin.GraphSHA256,
-		"prompt families": pin.PromptFamiliesSHA256,
-		"bindings":        pin.BindingsSHA256,
-		"normalization":   pin.NormalizationSHA256,
-		"authority":       pin.AuthoritySHA256,
-		"policy":          pin.PolicySHA256,
-		"snapshot":        pin.SnapshotSHA256,
+		"release":          pin.ReleaseSHA256,
+		"graph":            pin.GraphSHA256,
+		"prompt families":  pin.PromptFamiliesSHA256,
+		"bindings":         pin.BindingsSHA256,
+		"normalization":    pin.NormalizationSHA256,
+		"authority":        pin.AuthoritySHA256,
+		"policy":           pin.PolicySHA256,
+		"locale and voice": pin.LocaleAndVoiceSHA256,
+		"snapshot":         pin.SnapshotSHA256,
+		"voice":            pin.VoiceSHA256,
 	} {
 		if !isSHA256(digest) {
 			return fmt.Errorf("session pin %s digest is invalid", name)
 		}
+	}
+	for name, pair := range map[string][2]string{
+		"release":          {pin.ReleaseSHA256, definition.ReleaseSHA256},
+		"graph":            {pin.GraphSHA256, definition.DigestInputs.Graph},
+		"prompt families":  {pin.PromptFamiliesSHA256, definition.DigestInputs.Prompts},
+		"bindings":         {pin.BindingsSHA256, definition.DigestInputs.Bindings},
+		"normalization":    {pin.NormalizationSHA256, definition.DigestInputs.Normalization},
+		"authority":        {pin.AuthoritySHA256, definition.DigestInputs.Authority},
+		"policy":           {pin.PolicySHA256, definition.DigestInputs.Policy},
+		"locale and voice": {pin.LocaleAndVoiceSHA256, definition.DigestInputs.LocaleAndVoice},
+	} {
+		if pair[0] != pair[1] {
+			return fmt.Errorf("session pin %s digest does not match the frozen definition", name)
+		}
+	}
+	voiceDigest, err := CanonicalVoiceCapabilitiesSHA256(pin.Voice)
+	if err != nil || pin.VoiceSHA256 != voiceDigest {
+		return fmt.Errorf("session pin voice digest does not match its capability snapshot")
 	}
 	enabled := false
 	for _, locale := range definition.Graph.Locale.EnabledLocales {
@@ -125,7 +146,7 @@ func (pin SessionPin) ValidateFor(definition Definition) error {
 	if pin.PromptVariantLocale != pin.Locale && !containsString(pin.Voice.SupportedLocales, pin.PromptVariantLocale) {
 		return fmt.Errorf("resolved voice profile does not advertise the selected fallback locale")
 	}
-	if gate, exists := uniquePolicyGate(definition.PolicyGates, GateVoiceProfile); !exists || gate.Value != pin.Voice.ProfileRef {
+	if gate, exists := uniquePolicyGate(definition.PolicyGates, GateVoiceProfile); !exists || gate.Value != pin.Voice.QualificationKey() {
 		return fmt.Errorf("session pin voice profile does not match the qualified voice profile gate")
 	}
 	if err := pin.Voice.ValidateFor(definition.Graph.RequiredVoiceCapabilities, pin.Locale); err != nil {
@@ -134,19 +155,37 @@ func (pin SessionPin) ValidateFor(definition Definition) error {
 	return nil
 }
 
-func validateDigestInputs(c *collector, inputs ReleaseDigestInputs) {
-	for name, value := range map[string]string{
-		"graph":          inputs.Graph,
-		"prompts":        inputs.Prompts,
-		"bindings":       inputs.Bindings,
-		"normalization":  inputs.Normalization,
-		"authority":      inputs.Authority,
-		"policy":         inputs.Policy,
-		"localeAndVoice": inputs.LocaleAndVoice,
+func validateDigestInputs(c *collector, definition Definition) {
+	inputs := definition.DigestInputs
+	for _, component := range []struct{ name, value string }{
+		{"graph", inputs.Graph}, {"prompts", inputs.Prompts}, {"bindings", inputs.Bindings},
+		{"normalization", inputs.Normalization}, {"authority", inputs.Authority},
+		{"policy", inputs.Policy}, {"localeAndVoice", inputs.LocaleAndVoice},
 	} {
+		name, value := component.name, component.value
 		if !isSHA256(value) {
 			c.add("digestInputs.%s must be a lowercase SHA-256 digest", name)
 		}
+	}
+	actual, release, err := definition.CanonicalReleaseDigests()
+	if err != nil {
+		c.add("canonical release digest computation failed: %v", err)
+		return
+	}
+	for _, component := range []struct{ name, got, want string }{
+		{"graph", inputs.Graph, actual.Graph}, {"prompts", inputs.Prompts, actual.Prompts},
+		{"bindings", inputs.Bindings, actual.Bindings}, {"normalization", inputs.Normalization, actual.Normalization},
+		{"authority", inputs.Authority, actual.Authority}, {"policy", inputs.Policy, actual.Policy},
+		{"localeAndVoice", inputs.LocaleAndVoice, actual.LocaleAndVoice},
+	} {
+		if component.got != component.want {
+			c.add("digestInputs.%s does not match canonical frozen definition content", component.name)
+		}
+	}
+	if !isSHA256(definition.ReleaseSHA256) {
+		c.add("releaseSha256 must be a lowercase SHA-256 digest")
+	} else if definition.ReleaseSHA256 != release {
+		c.add("releaseSha256 does not match canonical frozen definition content")
 	}
 }
 
@@ -620,7 +659,7 @@ func validateRoute(
 		}
 	}
 	actIDs := map[string]bool{}
-	endsGraph := false
+	releaseCallOwnershipActions := 0
 	for i, action := range route.Act {
 		actionPath := fmt.Sprintf("%s.act[%d]", path, i)
 		if !isIdentifier(action.ID) {
@@ -636,13 +675,28 @@ func validateRoute(
 		if !isKnownEffect(action.Kind) {
 			c.add("%s.kind %q is not recognized", actionPath, action.Kind)
 		}
+		if action.TargetBinding != "" {
+			if !isIdentifier(action.TargetBinding) {
+				c.add("%s.targetBinding must be a stable identifier", actionPath)
+			} else if _, ok := effectiveBindings[action.TargetBinding]; !ok {
+				c.add("%s target binding %q is outside its inherited binding grants", actionPath, action.TargetBinding)
+			}
+		}
+		if (action.Kind == EffectConnect || action.Kind == EffectHandoff) && !isIdentifier(action.TargetBinding) {
+			c.add("%s call-control effect requires an authorized targetBinding", actionPath)
+		}
 		if (action.Kind == EffectConnect || action.Kind == EffectHandoff) && !action.ReauthorizeAtExecution {
 			c.add("%s must reauthorize call-control effects at execution", actionPath)
 		}
-		if action.EndsGraphOwnership && action.Kind != EffectConnect && action.Kind != EffectHandoff {
-			c.add("%s cannot end call graph ownership for this effect kind", actionPath)
+		if action.ReleasesCallOwnership {
+			releaseCallOwnershipActions++
 		}
-		endsGraph = endsGraph || action.EndsGraphOwnership
+		if action.ReleasesCallOwnership && action.Kind != EffectConnect && action.Kind != EffectHandoff {
+			c.add("%s cannot release call ownership for this effect kind", actionPath)
+		}
+	}
+	if releaseCallOwnershipActions > 1 {
+		c.add("%s may declare only one call-ownership-releasing action", path)
 	}
 	if route.Say == nil && route.Listen == nil && route.Match == nil && route.Decide == nil && len(route.Act) == 0 {
 		c.add("%s must declare at least one route-local phase", path)
@@ -658,6 +712,9 @@ func validateRoute(
 	}
 	if route.Fallback.Route == route.ID {
 		c.add("%s fallback cannot target itself", path)
+	}
+	if route.Fallback.Terminal == TerminalReleaseCallOwnership {
+		c.add("%s fallback cannot release call ownership without a matching confirmed effect receipt", path)
 	}
 	transitions := transitionIndex(c, route, routes)
 	requireTransition := func(source ResultSource, outcome Outcome) {
@@ -696,26 +753,23 @@ func validateRoute(
 	for _, outcome := range []Outcome{OutcomeCancelled, OutcomeDisconnected} {
 		requireTransition(SourceControl, outcome)
 	}
-	if endsGraph {
+	for key, target := range transitions {
+		if target.Terminal == TerminalReleaseCallOwnership && !(key.source == SourceEffect && key.outcome == OutcomeConfirmed && releaseCallOwnershipActions == 1) {
+			c.add("%s cannot release call ownership on %s/%s without its declared confirmed effect", path, key.source, key.outcome)
+		}
+	}
+	if releaseCallOwnershipActions > 0 {
 		confirmed, ok := transitions[transitionKey{source: SourceEffect, outcome: OutcomeConfirmed}]
-		if !ok || confirmed.Terminal != TerminalEndGraph {
-			c.add("%s must end graph ownership only on effect/confirmed", path)
-		}
-		if route.Fallback.Terminal == TerminalEndGraph {
-			c.add("%s fallback cannot end graph ownership without a confirmed effect receipt", path)
-		}
-		for key, target := range transitions {
-			if target.Terminal == TerminalEndGraph && !(key.source == SourceEffect && key.outcome == OutcomeConfirmed) {
-				c.add("%s cannot end graph ownership on %s/%s", path, key.source, key.outcome)
-			}
+		if !ok || confirmed.Terminal != TerminalReleaseCallOwnership {
+			c.add("%s must release call ownership only on effect/confirmed", path)
 		}
 		for _, outcome := range []Outcome{OutcomeAccepted, OutcomeFailed, OutcomeUnknown} {
 			target, ok := transitions[transitionKey{source: SourceEffect, outcome: outcome}]
-			if ok && target.Terminal == TerminalEndGraph {
-				c.add("%s cannot release graph ownership on effect/%s", path, outcome)
+			if ok && target.Terminal == TerminalReleaseCallOwnership {
+				c.add("%s cannot release call ownership on effect/%s", path, outcome)
 			}
 			if ok && (outcome == OutcomeAccepted || outcome == OutcomeUnknown) && target != (Target{Terminal: TerminalAwaitReceipt}) {
-				c.add("%s must reconcile effect/%s while retaining graph ownership", path, outcome)
+				c.add("%s must reconcile effect/%s while retaining call ownership", path, outcome)
 			}
 		}
 	}
@@ -926,6 +980,9 @@ func retryIndex(c *collector, groups []RetryGroup, routes map[RouteID]Route, gat
 		if group.Exhausted.Phase != "" {
 			c.add("%s.exhausted cannot target an internal route phase", path)
 		}
+		if group.Exhausted.Terminal == TerminalReleaseCallOwnership {
+			c.add("%s.exhausted cannot release call ownership without a matching confirmed effect receipt", path)
+		}
 	}
 	return byID
 }
@@ -989,7 +1046,7 @@ func validateCycles(c *collector, routes map[RouteID]Route, groups map[string]Re
 		for _, routeID := range component {
 			members[routeID] = true
 		}
-		bounded := false
+		boundedRoutes := make(map[RouteID]bool, len(component))
 		for _, routeID := range component {
 			route := routes[routeID]
 			if route.RetryGroup == "" {
@@ -999,20 +1056,28 @@ func validateCycles(c *collector, routes map[RouteID]Route, groups map[string]Re
 			if !exists {
 				continue
 			}
-			if group.Exhausted.Route != "" && !members[group.Exhausted.Route] {
-				bounded = true
-			}
-			if group.Exhausted.Terminal == TerminalEndSession || group.Exhausted.Terminal == TerminalSafeStop {
-				bounded = true
+			exhaustionOutside := group.Exhausted.Route != "" && !members[group.Exhausted.Route] ||
+				group.Exhausted.Terminal == TerminalEndSession || group.Exhausted.Terminal == TerminalSafeStop
+			if exhaustionOutside {
+				boundedRoutes[routeID] = true
 			}
 		}
-		if !bounded {
+		if len(boundedRoutes) == 0 {
 			parts := make([]string, 0, len(component))
 			for _, routeID := range component {
 				parts = append(parts, string(routeID))
 			}
 			sort.Strings(parts)
 			c.add("route cycle [%s] has no bounded retry group with an exhaustion path outside the cycle", strings.Join(parts, ", "))
+			return
+		}
+		if hasCycleWithoutRetryCounter(component, members, boundedRoutes, routes) {
+			parts := make([]string, 0, len(component))
+			for _, routeID := range component {
+				parts = append(parts, string(routeID))
+			}
+			sort.Strings(parts)
+			c.add("route cycle [%s] contains a cycle path that bypasses every bounded retry counter", strings.Join(parts, ", "))
 		}
 	}
 	for _, id := range ids {
@@ -1020,6 +1085,36 @@ func validateCycles(c *collector, routes map[RouteID]Route, groups map[string]Re
 			visit(id)
 		}
 	}
+}
+
+func hasCycleWithoutRetryCounter(component []RouteID, members, boundedRoutes map[RouteID]bool, routes map[RouteID]Route) bool {
+	colors := make(map[RouteID]uint8, len(component))
+	var visit func(RouteID) bool
+	visit = func(id RouteID) bool {
+		if boundedRoutes[id] {
+			return false
+		}
+		if colors[id] == 1 {
+			return true
+		}
+		if colors[id] == 2 {
+			return false
+		}
+		colors[id] = 1
+		for _, next := range routeEdges(routes[id]) {
+			if members[next] && !boundedRoutes[next] && visit(next) {
+				return true
+			}
+		}
+		colors[id] = 2
+		return false
+	}
+	for _, id := range component {
+		if !boundedRoutes[id] && colors[id] == 0 && visit(id) {
+			return true
+		}
+	}
+	return false
 }
 
 func routeEdges(route Route) []RouteID {
@@ -1182,7 +1277,7 @@ func isOutcomeAllowed(source ResultSource, outcome Outcome) bool {
 
 func isKnownTerminal(terminal TerminalAction) bool {
 	switch terminal {
-	case TerminalEndSession, TerminalEndGraph, TerminalAwaitReceipt, TerminalSafeStop:
+	case TerminalEndSession, TerminalEndGraph, TerminalReleaseCallOwnership, TerminalAwaitReceipt, TerminalSafeStop:
 		return true
 	default:
 		return false
@@ -1766,11 +1861,20 @@ func (request EffectRequest) Validate(now time.Time) error {
 	if !isIdentifier(request.ToolID) || !isKnownEffect(request.Kind) {
 		return fmt.Errorf("effect request requires an inherited tool ID and known effect kind")
 	}
+	if request.TargetBinding != "" && !isIdentifier(request.TargetBinding) {
+		return fmt.Errorf("effect request target binding must be a stable identifier")
+	}
 	if (request.Kind == EffectConnect || request.Kind == EffectHandoff) && !request.ReauthorizeAtExecution {
 		return fmt.Errorf("call-control effects require current authorization at execution")
 	}
 	if (request.Kind == EffectConnect || request.Kind == EffectHandoff) && !isIdentifier(request.TargetOpaqueID) {
 		return fmt.Errorf("call-control effects require an opaque authorized target ID")
+	}
+	if (request.Kind == EffectConnect || request.Kind == EffectHandoff) && (!isIdentifier(request.TargetBinding) || !isSHA256(request.CandidateSetSHA256)) {
+		return fmt.Errorf("call-control effects require an authorized target binding and candidate-set digest")
+	}
+	if request.CandidateSetSHA256 != "" && !isSHA256(request.CandidateSetSHA256) {
+		return fmt.Errorf("effect request candidate-set digest must be a lowercase SHA-256 digest")
 	}
 	if request.Payload != nil {
 		if err := request.Payload.ValidateFor(request.Identity.TenantID, request.Identity.SessionID, request.Identity.Generation, now); err != nil {
@@ -1778,6 +1882,71 @@ func (request EffectRequest) Validate(now time.Time) error {
 		}
 	}
 	return nil
+}
+
+// ValidateAgainst is the mandatory pre-dispatch check for an effect. It binds
+// the request to the exact route ActStep, inherited target binding, and scoped
+// protected candidate snapshot before a call-control side effect can start.
+func (request EffectRequest) ValidateAgainst(action ActStep, snapshot *CandidateSetSnapshot, tenantID, sessionID string, generation uint64, now time.Time) error {
+	if err := request.Validate(now); err != nil {
+		return err
+	}
+	if request.Identity.TenantID != tenantID || request.Identity.SessionID != sessionID || request.Identity.Generation != generation {
+		return fmt.Errorf("effect request scope does not match the authorized candidate snapshot")
+	}
+	if request.Identity.ActionID != action.ID || request.ToolID != action.ToolID || request.Kind != action.Kind || request.TargetBinding != action.TargetBinding {
+		return fmt.Errorf("effect request does not match the frozen route action and target binding")
+	}
+	if action.ReleasesCallOwnership && (!action.ReauthorizeAtExecution || request.Kind != EffectConnect && request.Kind != EffectHandoff) {
+		return fmt.Errorf("call ownership release requires a reauthorized call-control action")
+	}
+	if request.Kind != EffectConnect && request.Kind != EffectHandoff {
+		return nil
+	}
+	if snapshot == nil {
+		return fmt.Errorf("call-control effect requires the authorized candidate snapshot before dispatch")
+	}
+	if err := snapshot.ValidateFor(tenantID, sessionID, generation, now); err != nil {
+		return err
+	}
+	if request.CandidateSetSHA256 != snapshot.SHA256 {
+		return fmt.Errorf("effect request candidate-set digest does not match the authorized snapshot")
+	}
+	if !containsString(snapshot.CandidateIDs, request.TargetOpaqueID) {
+		return fmt.Errorf("effect target is outside the authorized candidate set")
+	}
+	return nil
+}
+
+// ValidateForDispatch resolves the exact action from an activation-ready
+// frozen definition and checks the target against its scoped protected
+// snapshot. Effect executors must pass this before creating a call-control
+// operation; Validate alone is structural and is not dispatch authority.
+func (request EffectRequest) ValidateForDispatch(definition Definition, routeID RouteID, snapshot *CandidateSetSnapshot, tenantID, sessionID string, generation uint64, now time.Time) error {
+	if err := definition.ValidateForActivation(); err != nil {
+		return fmt.Errorf("effect dispatch requires an activation-ready definition: %w", err)
+	}
+	if request.Identity.GraphSHA256 != definition.DigestInputs.Graph {
+		return fmt.Errorf("effect request graph digest does not match the frozen definition")
+	}
+	var action *ActStep
+	for _, route := range definition.Graph.Routes {
+		if route.ID != routeID {
+			continue
+		}
+		for index := range route.Act {
+			if route.Act[index].ID == request.Identity.ActionID {
+				candidate := route.Act[index]
+				action = &candidate
+				break
+			}
+		}
+		break
+	}
+	if action == nil {
+		return fmt.Errorf("effect action does not exist in the frozen route")
+	}
+	return request.ValidateAgainst(*action, snapshot, tenantID, sessionID, generation, now)
 }
 
 func (usage UsageRecord) Validate() error {

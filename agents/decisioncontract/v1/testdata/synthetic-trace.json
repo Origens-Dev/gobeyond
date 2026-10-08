@@ -41,7 +41,7 @@
       "event": "effect_receipt",
       "effectStatus": "accepted",
       "receiptId": "accepted-receipt-test-only",
-      "ownership": "owned",
+      "ownership": "call_owned",
       "effectIdentity": {
         "tenantId": "tenant-1",
         "sessionId": "session-1",
@@ -62,7 +62,7 @@
       "event": "effect_receipt",
       "effectStatus": "confirmed",
       "receiptId": "confirmed-receipt-test-only",
-      "ownership": "released",
+      "ownership": "call_released",
       "targetOpaqueId": "candidate-opaque-test-only",
       "effectIdentity": {
         "tenantId": "tenant-1",
@@ -75,7 +75,8 @@
         "id": "fcbef29d528cfcd7e3b74d9c5a7ded6487d002fbfd26af9b3e3f00d401b9cba7"
       },
       "providerRequestId": "provider-request-test-only",
-      "observedAt": "2026-10-08T12:00:01Z"
+      "observedAt": "2026-10-08T12:00:01Z",
+      "terminalAction": "release_call_ownership"
     }
   ]
 }

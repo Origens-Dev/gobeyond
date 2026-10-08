@@ -1,13 +1,13 @@
 {
   "schemaVersion": "decision.graph/v1",
   "digestInputs": {
-    "graphSha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "promptsSha256": "1111111111111111111111111111111111111111111111111111111111111111",
-    "bindingsSha256": "2222222222222222222222222222222222222222222222222222222222222222",
-    "normalizationSha256": "3333333333333333333333333333333333333333333333333333333333333333",
-    "authoritySha256": "4444444444444444444444444444444444444444444444444444444444444444",
-    "policySha256": "5555555555555555555555555555555555555555555555555555555555555555",
-    "localeAndVoiceSha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    "graphSha256": "6b2c5a1686b688b14754fbafbd9872c0b823ffd72176fc611d06478d7a48e12e",
+    "promptsSha256": "12dac900ff9dc79f3f39dc3570d942b80fc8b99bcda7fb2ca51aacfafc539e44",
+    "bindingsSha256": "987ed98b1faaaf09f5705c8fa7e509c761645fa3736160c45349bbc921764989",
+    "normalizationSha256": "99aa5ddb19c7926c2f6411af97260252e5f45f4e3f470a20e95b47f72a1b3338",
+    "authoritySha256": "3634de2b0e12538906dc39e131577d75623c948a272377216b0b492301414acf",
+    "policySha256": "cdc261229b5bafc36432390c722fabfe9848b21a7f98b2c274dde6cac84ce9c9",
+    "localeAndVoiceSha256": "f50ab7cdb73d4f3b0eb190f663b0bbe3f679e36a7dbae37716ea6a7f04d5e66e"
   },
   "policyGates": [
     {
@@ -185,6 +185,7 @@
       "unresolvedReason": "Integration contract and owner decision are pending."
     }
   ],
+  "releaseSha256": "4124de3adf17fef5930149cdd7d9d1a7c25dd807eb4010dd0b2c70a463383559",
   "graph": {
     "id": "synthetic-operator",
     "entry": "/start",
@@ -235,7 +236,7 @@
             "kind": "connect",
             "targetBinding": "selected_candidate_id",
             "reauthorizeAtExecution": true,
-            "endsGraphOwnership": true
+            "releasesCallOwnership": true
           }
         ],
         "next": [
@@ -355,7 +356,7 @@
             "source": "effect",
             "outcome": "confirmed",
             "target": {
-              "terminal": "end_graph"
+              "terminal": "release_call_ownership"
             }
           },
           {
@@ -436,7 +437,7 @@
             "kind": "connect",
             "targetBinding": "selected_candidate_id",
             "reauthorizeAtExecution": true,
-            "endsGraphOwnership": true
+            "releasesCallOwnership": true
           }
         ],
         "next": [
@@ -556,7 +557,7 @@
             "source": "effect",
             "outcome": "confirmed",
             "target": {
-              "terminal": "end_graph"
+              "terminal": "release_call_ownership"
             }
           },
           {
@@ -647,6 +648,7 @@
       }
     ],
     "authority": {
+      "parentManifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "tools": [
         {
           "id": "operator_context",
@@ -669,41 +671,24 @@
         {
           "id": "recipient_matcher",
           "contractSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        {
+          "id": "selected_candidate_id",
+          "contractSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
         }
       ],
       "budgets": {
-        "session_duration_ms": {
-          "gateId": "g-session-duration"
-        },
-        "route_visits": {
-          "gateId": "g-route-visits"
-        },
-        "decision_calls": {
-          "gateId": "g-decision-calls"
-        },
-        "reprompts": {
-          "gateId": "g-reprompts"
-        },
-        "no_input_reprompts": {
-          "gateId": "g-no-input-reprompts"
-        },
-        "input_duration_ms": {
-          "gateId": "g-input-duration"
-        },
-        "tts_characters": {
-          "gateId": "g-tts-characters"
-        },
-        "queued_audio_bytes": {
-          "gateId": "g-queued-audio"
+        "ambiguous_reprompts": {
+          "gateId": "g-ambiguous-reprompts"
         },
         "artifact_bytes": {
           "gateId": "g-artifact-bytes"
         },
+        "decision_calls": {
+          "gateId": "g-decision-calls"
+        },
         "effect_attempts": {
           "gateId": "g-effect-attempts"
-        },
-        "session_spend_microunits": {
-          "gateId": "g-session-spend"
         },
         "first_audio_latency_ms": {
           "gateId": "g-first-audio-latency"
@@ -711,17 +696,37 @@
         "first_response_latency_ms": {
           "gateId": "g-first-response-latency"
         },
-        "protected_payload_ttl_seconds": {
-          "gateId": "g-payload-ttl"
+        "input_duration_ms": {
+          "gateId": "g-input-duration"
+        },
+        "no_input_reprompts": {
+          "gateId": "g-no-input-reprompts"
         },
         "no_match_reprompts": {
           "gateId": "g-no-match-reprompts"
         },
-        "ambiguous_reprompts": {
-          "gateId": "g-ambiguous-reprompts"
+        "protected_payload_ttl_seconds": {
+          "gateId": "g-payload-ttl"
+        },
+        "queued_audio_bytes": {
+          "gateId": "g-queued-audio"
+        },
+        "reprompts": {
+          "gateId": "g-reprompts"
+        },
+        "route_visits": {
+          "gateId": "g-route-visits"
+        },
+        "session_duration_ms": {
+          "gateId": "g-session-duration"
+        },
+        "session_spend_microunits": {
+          "gateId": "g-session-spend"
+        },
+        "tts_characters": {
+          "gateId": "g-tts-characters"
         }
-      },
-      "parentManifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
     },
     "retryGroups": [
       {
@@ -735,14 +740,14 @@
         "maxNoInputReprompts": {
           "gateId": "g-no-input-reprompts"
         },
-        "exhausted": {
-          "route": "/help"
-        },
         "maxNoMatchReprompts": {
           "gateId": "g-no-match-reprompts"
         },
         "maxAmbiguousReprompts": {
           "gateId": "g-ambiguous-reprompts"
+        },
+        "exhausted": {
+          "route": "/help"
         }
       }
     ],
