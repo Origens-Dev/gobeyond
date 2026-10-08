@@ -380,24 +380,32 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 	}
 }
 
-func liveToolBatchAllRemoteReads(handle *geminiLiveHandle, call *genai.LiveServerToolCall) bool {
+// liveToolBatchShortReadBudget reports whether every tool in the batch opts
+// into an explicit VoiceReadPolicy.LiveBudget (>0). Mailbox playback and other
+// VoiceRemoteRead tools that leave LiveBudget zero keep the ordinary budget.
+func liveToolBatchShortReadBudget(handle *geminiLiveHandle, call *genai.LiveServerToolCall) (time.Duration, bool) {
 	if handle == nil || call == nil || len(call.FunctionCalls) == 0 {
-		return false
+		return 0, false
 	}
+	var budget time.Duration
 	for _, functionCall := range call.FunctionCalls {
 		if functionCall == nil {
-			return false
+			return 0, false
 		}
 		name := strings.TrimSpace(functionCall.Name)
 		tool, ok := handle.lookupTool(name)
 		if !ok {
-			return false
+			return 0, false
 		}
-		if _, read := agents.VoiceRemoteReadPolicy(tool); !read {
-			return false
+		policy, read := agents.VoiceRemoteReadPolicy(tool)
+		if !read || policy.LiveBudget <= 0 {
+			return 0, false
+		}
+		if budget == 0 || policy.LiveBudget < budget {
+			budget = policy.LiveBudget
 		}
 	}
-	return true
+	return budget, budget > 0
 }
 
 func liveFunctionArgFields(call *genai.LiveServerToolCall) []string {
@@ -476,12 +484,13 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 	handle.toolWG.Add(1)
 	go func() {
 		defer handle.toolWG.Done()
-		// Remote-read Maglev→API is already capped at 10s; keep Live slightly above
-		// that so Maglev's tool error reaches Gemini. Ordinary tools keep 30s.
-		remoteReads := liveToolBatchAllRemoteReads(handle, call)
+		// Directory-style short reads opt into VoiceReadPolicy.LiveBudget (e.g. 12s,
+		// above Maglev's 10s controlPost). Playback and unmarked remote reads keep
+		// the ordinary 30s Live budget.
+		shortBudget, shortReads := liveToolBatchShortReadBudget(handle, call)
 		budget := liveOrdinaryToolBudget
-		if remoteReads {
-			budget = liveRemoteReadToolBudget
+		if shortReads {
+			budget = shortBudget
 		}
 		callCtx, cancel := context.WithTimeout(ctx, budget)
 		defer cancel()
@@ -508,7 +517,7 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 				response := map[string]any{"result": result}
 				if err != nil {
 					log.Printf("gemini live tool execute name=%s err=%v", name, err)
-					response = map[string]any{"error": liveToolErrorMessage(err, remoteReads)}
+					response = map[string]any{"error": liveToolErrorMessage(err, shortReads)}
 				}
 				responses[i] = &genai.FunctionResponse{ID: functionCall.ID, Name: name, Response: response}
 			}(i, functionCall)
@@ -519,12 +528,15 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 			return
 		}
 		// Deadline/cancel must still SendToolResponse. Dropping the FunctionResponse
-		// leaves Gemini waiting forever (softphone one-way after search_operator_directory).
+		// leaves Gemini waiting forever when a tool ctx expires mid-call.
+		// This hardens a real response-drop path; it is not proven to be the Oct 8
+		// softphone smoke root cause (recorded silence was ~12s vs the prior 30s
+		// ordinary Live budget).
 		timedOut := callCtx.Err() != nil
-		// Remote-read tools (directory search) are not announcement barriers.
+		// Short-budget directory reads are not announcement barriers.
 		// Waiting on PCM flush ack before SendToolResponse can drop the result
 		// when the model has not spoken yet (softphone playout ack can stall).
-		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !remoteReads {
+		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !shortReads {
 			barrierID := handle.barrierSeq.Add(1)
 			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
 				handle.reportAsyncError(err)
@@ -539,16 +551,18 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 }
 
 const (
-	liveOrdinaryToolBudget   = 30 * time.Second
-	liveRemoteReadToolBudget = 12 * time.Second // Maglev read controlPost is 10s
+	liveOrdinaryToolBudget = 30 * time.Second
+	// liveDirectorySearchToolBudget is the recommended VoiceReadPolicy.LiveBudget
+	// for Maglev directory search (controlPost is 10s).
+	liveDirectorySearchToolBudget = 12 * time.Second
 )
 
-func liveToolErrorMessage(err error, remoteRead bool) string {
+func liveToolErrorMessage(err error, shortRead bool) string {
 	if err == nil {
 		return "tool could not be completed"
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		if remoteRead {
+		if shortRead {
 			return "directory search timed out"
 		}
 		return "tool timed out"

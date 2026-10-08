@@ -4,13 +4,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 )
 
 // VoiceToolPolicy is compile-owned policy, never a model/client schema. The
 // manifest always takes its input schema directly from the authored tool.
-type VoiceReadPolicy struct{ MaxResultBytes int }
+//
+// LiveBudget is an optional per-tool Live session execution bound for remote
+// reads. Zero keeps the ordinary Live tool budget (30s). Short-read tools such
+// as directory search set LiveBudget explicitly (for example 12s, above Maglev's
+// 10s controlPost). Mailbox playback VoiceRemoteRead must leave LiveBudget zero
+// so clip fetch keeps the longer ordinary budget.
+type VoiceReadPolicy struct {
+	MaxResultBytes int
+	LiveBudget     time.Duration
+}
 
 func VoiceRemoteReadPolicy(tool AITool) (VoiceReadPolicy, bool) {
 	ns, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)

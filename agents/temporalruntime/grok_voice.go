@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -363,7 +362,27 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 		}
 		// Remote-read tools fall through to ordinary Execute handlers.
 	}
-	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	budget := liveOrdinaryToolBudget
+	shortReads := true
+	for _, call := range calls {
+		tool, ok := h.lookupTool(call.Name)
+		if !ok {
+			shortReads = false
+			break
+		}
+		policy, read := agents.VoiceRemoteReadPolicy(tool)
+		if !read || policy.LiveBudget <= 0 {
+			shortReads = false
+			break
+		}
+		if policy.LiveBudget < budget {
+			budget = policy.LiveBudget
+		}
+	}
+	if !shortReads {
+		budget = liveOrdinaryToolBudget
+	}
+	toolCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	outputs := make([]map[string]any, len(calls))
 	var wg sync.WaitGroup
@@ -381,7 +400,7 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 			})
 			output := map[string]any{"result": result}
 			if err != nil {
-				output = map[string]any{"error": err.Error()}
+				output = map[string]any{"error": liveToolErrorMessage(err, shortReads)}
 			}
 			outputs[i] = map[string]any{"call_id": call.CallID, "output": output}
 		}(i, call)
