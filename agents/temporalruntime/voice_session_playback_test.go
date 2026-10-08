@@ -63,7 +63,7 @@ func TestPlaybackWorkflowReplayBudgetAndVersion(t *testing.T) {
 				return VoiceSessionExecuteToolResult{Result: []byte(`{"source":"exact"}`)}, nil
 			}, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
 			env.ExecuteWorkflow(func(ctx workflow.Context) error {
-				b := &voiceToolBudget{policy: voicecontract.BudgetPolicyOperatorMailboxPlaybackV1}
+				b := &voiceToolBudget{policy: voicecontract.BudgetPolicyOperatorMailboxPlaybackV1, mailboxPlayback: voicecontract.MailboxPlaybackOn}
 				s := configureVoicePlayback(ctx, b)
 				in := VoiceSessionInput{Context: &r.Context, AgentID: r.Context.AgentID, CallID: r.Context.CallID, SessionID: r.Context.SessionID, ExecutionID: r.Context.ExecutionID}
 				req := VoiceSessionExecuteToolInput{SourcePlayback: &r, Grant: "opaque"}

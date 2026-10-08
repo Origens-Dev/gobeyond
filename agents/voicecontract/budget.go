@@ -11,6 +11,45 @@ const OperatorMailboxAssistantTurns = 32
 // the inventory below as generic_v1 defaults.
 const BudgetPolicyGenericV1 = "generic_v1"
 
+// Durable mint-time mailbox playback producer claims bound into GrantClaims.
+// "off" admits the grant while Gate 0 holds playback disabled; "on" requires
+// fleet readiness at mint. Child hops inherit "off" and cannot widen it.
+const (
+	MailboxPlaybackOff = "off"
+	MailboxPlaybackOn  = "on"
+)
+
+// AllowsNewMailboxPlayback reports whether the signed grant authorizes starting
+// new source playback. Empty/legacy claims fail closed; completion paths must
+// not consult this helper.
+func (g GrantClaims) AllowsNewMailboxPlayback() bool {
+	return g.MailboxPlayback == MailboxPlaybackOn
+}
+
+// ValidMailboxPlaybackClaim reports whether a mint-time claim value is recognized.
+func ValidMailboxPlaybackClaim(v string) bool {
+	return v == "" || v == MailboxPlaybackOff || v == MailboxPlaybackOn
+}
+
+// InheritMailboxPlaybackClaim returns the child claim. A parent minted "off"
+// cannot widen to "on"; live evaluation may narrow "on" to "off".
+func InheritMailboxPlaybackClaim(parent, live string) string {
+	switch parent {
+	case MailboxPlaybackOff:
+		return MailboxPlaybackOff
+	case MailboxPlaybackOn:
+		if live == MailboxPlaybackOn {
+			return MailboxPlaybackOn
+		}
+		return MailboxPlaybackOff
+	default:
+		if live == MailboxPlaybackOn {
+			return MailboxPlaybackOn
+		}
+		return MailboxPlaybackOff
+	}
+}
+
 // Inventoried host/admission/workflow voice limits (current code, not generic_v1 defaults):
 //
 //	Envelope/schema: MaxManifestBytes 32768, MaxEnvelopeBytes 16384, MaxSchemaBytes 4096,

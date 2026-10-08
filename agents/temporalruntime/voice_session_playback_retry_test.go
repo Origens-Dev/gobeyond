@@ -27,7 +27,7 @@ func TestPlaybackWorkflowFailedSourceRetriesBoundedAndCannotComplete(t *testing.
 		return VoiceSessionExecuteToolResult{}, errors.New("source unavailable")
 	}, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
-		b := &voiceToolBudget{policy: voicecontract.BudgetPolicyOperatorMailboxPlaybackV1}
+		b := &voiceToolBudget{policy: voicecontract.BudgetPolicyOperatorMailboxPlaybackV1, mailboxPlayback: voicecontract.MailboxPlaybackOn}
 		s := newVoicePlaybackWorkflowState(b, true)
 		in := VoiceSessionInput{Context: &r.Context, AgentID: r.Context.AgentID, CallID: r.Context.CallID, SessionID: r.Context.SessionID, ExecutionID: r.Context.ExecutionID}
 		req := VoiceSessionExecuteToolInput{SourcePlayback: &r, Grant: "opaque"}
@@ -93,7 +93,7 @@ func TestPlaybackWorkflowRetriesTransientCompletionWithFreshReceipt(t *testing.T
 		return VoiceSessionExecuteToolActivity(ctx, in)
 	}, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
-		b := &voiceToolBudget{policy: voicecontract.BudgetPolicyOperatorMailboxPlaybackV1}
+		b := &voiceToolBudget{policy: voicecontract.BudgetPolicyOperatorMailboxPlaybackV1, mailboxPlayback: voicecontract.MailboxPlaybackOn}
 		s := newVoicePlaybackWorkflowState(b, true)
 		c := receipt.Context
 		in := VoiceSessionInput{Context: &c, AgentID: c.AgentID, CallID: c.CallID, SessionID: c.SessionID, ExecutionID: c.ExecutionID}

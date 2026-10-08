@@ -50,6 +50,10 @@ type Context struct {
 
 type GrantClaims struct {
 	BudgetPolicy       string   `json:"budget_policy,omitempty"`
+	// MailboxPlayback is the mint-time producer admission claim bound into the
+	// signed grant ("on" or "off"). Empty means unspecified (legacy / no
+	// playback tools). New source playback requires "on"; completion does not.
+	MailboxPlayback    string   `json:"mailbox_playback,omitempty"`
 	Version            string   `json:"version"`
 	GrantVersion       int      `json:"grant_version"`
 	Capabilities       []string `json:"capabilities"`

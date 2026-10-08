@@ -109,6 +109,62 @@ func TestReservePlaybackPairRejectsMailboxPlaybackWhenCompletionBucketFull(t *te
 	}
 }
 
+func TestPlaybackWorkflowRejectsOffMintedGrantButCompletesDelivered(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	r := sourceRequestFixture(t)
+	id, _ := WorkflowID(r.Context.SessionID, r.Context.ExecutionID)
+	env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: id})
+	sourceCalls := 0
+	completionCalls := 0
+	env.RegisterActivityWithOptions(func(_ context.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+		if req.SourcePlayback != nil {
+			sourceCalls++
+			return VoiceSessionExecuteToolResult{Result: []byte(`{"source":"exact"}`)}, nil
+		}
+		completionCalls++
+		return VoiceSessionExecuteToolResult{Result: []byte(`{"complete":true}`)}, nil
+	}, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		off := &voiceToolBudget{policy: voicecontract.BudgetPolicyGenericV1, mailboxPlayback: voicecontract.MailboxPlaybackOff}
+		s := newVoicePlaybackWorkflowState(off, true)
+		in := VoiceSessionInput{Context: &r.Context, AgentID: r.Context.AgentID, CallID: r.Context.CallID, SessionID: r.Context.SessionID, ExecutionID: r.Context.ExecutionID, MailboxPlayback: voicecontract.MailboxPlaybackOff}
+		if _, e := s.execute(ctx, in, VoiceSessionExecuteToolInput{SourcePlayback: &r, Grant: "opaque"}); e == nil {
+			return errors.New("off-minted grant admitted new source playback")
+		}
+		// Simulate already-delivered playback: claim reservation present, then completion.
+		on := &voiceToolBudget{policy: voicecontract.BudgetPolicyGenericV1, mailboxPlayback: voicecontract.MailboxPlaybackOn}
+		if e := on.reservePlaybackPair("play-text-message", r.ToolCallID, "digest", r.CompletionToolID, voicecontract.PlaybackCompletionCallID(r.Context, r.ToolCallID)); e != nil {
+			return e
+		}
+		delivered := newVoicePlaybackWorkflowState(on, true)
+		delivered.sources[r.ToolCallID] = true
+		h := voicecontract.HiddenCompletionRequest{
+			Version: r.Version, Context: r.Context, ToolID: r.CompletionToolID,
+			ToolCallID:       voicecontract.PlaybackCompletionCallID(r.Context, r.ToolCallID),
+			SourceToolCallID: r.ToolCallID, ClipID: voicecontract.PlaybackClipID(r.Context, r.ToolCallID),
+		}
+		// Completion must work even when the live claim on a sibling budget is off.
+		offCompletion := &voiceToolBudget{policy: voicecontract.BudgetPolicyGenericV1, mailboxPlayback: voicecontract.MailboxPlaybackOff, reservedCompletions: on.reservedCompletions, calls: on.calls, count: on.count}
+		done := newVoicePlaybackWorkflowState(offCompletion, true)
+		done.sources[r.ToolCallID] = true
+		if _, e := done.execute(ctx, in, VoiceSessionExecuteToolInput{HiddenCompletion: &h}); e != nil {
+			return e
+		}
+		_ = delivered
+		return nil
+	})
+	if e := env.GetWorkflowError(); e != nil {
+		t.Fatal(e)
+	}
+	if sourceCalls != 0 {
+		t.Fatalf("sourceCalls=%d want 0", sourceCalls)
+	}
+	if completionCalls != 1 {
+		t.Fatalf("completionCalls=%d want 1", completionCalls)
+	}
+}
+
 func TestPlaybackWorkflowReservesCompletionBeforeSourceAudio(t *testing.T) {
 	for _, policy := range []string{voicecontract.BudgetPolicyGenericV1, voicecontract.BudgetPolicyOperatorMailboxPlaybackV1} {
 		t.Run(policy, func(t *testing.T) {
@@ -126,7 +182,7 @@ func TestPlaybackWorkflowReservesCompletionBeforeSourceAudio(t *testing.T) {
 				return VoiceSessionExecuteToolResult{Result: []byte(`{"complete":true}`)}, nil
 			}, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
 			env.ExecuteWorkflow(func(ctx workflow.Context) error {
-				b := &voiceToolBudget{policy: policy}
+				b := &voiceToolBudget{policy: policy, mailboxPlayback: voicecontract.MailboxPlaybackOn}
 				if policy == voicecontract.BudgetPolicyGenericV1 {
 					for i := 0; i < genericVoiceSessionToolCap-1; i++ {
 						if err := b.consume("list-text-messages", fmt.Sprintf("fill-%d", i), "d", 0); err != nil {
@@ -137,7 +193,7 @@ func TestPlaybackWorkflowReservesCompletionBeforeSourceAudio(t *testing.T) {
 					b.buckets = map[string]int{"completion": 12}
 				}
 				s := newVoicePlaybackWorkflowState(b, true)
-				in := VoiceSessionInput{Context: &r.Context, AgentID: r.Context.AgentID, CallID: r.Context.CallID, SessionID: r.Context.SessionID, ExecutionID: r.Context.ExecutionID}
+				in := VoiceSessionInput{Context: &r.Context, AgentID: r.Context.AgentID, CallID: r.Context.CallID, SessionID: r.Context.SessionID, ExecutionID: r.Context.ExecutionID, MailboxPlayback: voicecontract.MailboxPlaybackOn}
 				if _, e := s.execute(ctx, in, VoiceSessionExecuteToolInput{SourcePlayback: &r, Grant: "opaque"}); e == nil {
 					return errors.New("source admitted without completion capacity")
 				}
