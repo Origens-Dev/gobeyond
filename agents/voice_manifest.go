@@ -10,7 +10,14 @@ import (
 
 // VoiceToolPolicy is compile-owned policy, never a model/client schema. The
 // manifest always takes its input schema directly from the authored tool.
-type VoiceReadPolicy struct{ MaxResultBytes int }
+//
+// Remote-read LocalActivity StartToClose is the platform constant
+// voiceRemoteReadActivityTimeout (8s) in temporalruntime — not an authored
+// field. Live keeps a longer backstop so Temporal and Maglev host HTTP own the
+// tool timeout.
+type VoiceReadPolicy struct {
+	MaxResultBytes int
+}
 
 func VoiceRemoteReadPolicy(tool AITool) (VoiceReadPolicy, bool) {
 	ns, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)

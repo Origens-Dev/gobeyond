@@ -380,6 +380,10 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 	}
 }
 
+// liveToolBatchAllRemoteReads reports whether every tool in the batch is a
+// Maglev VoiceRemoteRead (directory search / platform read). Used only to skip
+// playout barriers and classify timeout errors — not to set a Live budget.
+// Native Live tools (e.g. Google search) are not VoiceRemoteRead.
 func liveToolBatchAllRemoteReads(handle *geminiLiveHandle, call *genai.LiveServerToolCall) bool {
 	if handle == nil || call == nil || len(call.FunctionCalls) == 0 {
 		return false
@@ -476,7 +480,11 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 	handle.toolWG.Add(1)
 	go func() {
 		defer handle.toolWG.Done()
-		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		// Live outer timeout is only a backstop. Temporal LocalActivity owns the
+		// directory-read budget; Maglev host HTTP is next. This must stay longer
+		// than Temporal + host so it never fires first in normal operation.
+		remoteReads := liveToolBatchAllRemoteReads(handle, call)
+		callCtx, cancel := context.WithTimeout(ctx, liveToolBackstopBudget)
 		defer cancel()
 		responses := make([]*genai.FunctionResponse, len(call.FunctionCalls))
 		var wg sync.WaitGroup
@@ -501,20 +509,22 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 				response := map[string]any{"result": result}
 				if err != nil {
 					log.Printf("gemini live tool execute name=%s err=%v", name, err)
-					response = map[string]any{"error": err.Error()}
+					response = map[string]any{"error": liveToolErrorMessage(err, remoteReads)}
 				}
 				responses[i] = &genai.FunctionResponse{ID: functionCall.ID, Name: name, Response: response}
 			}(i, functionCall)
 		}
 		wg.Wait()
 		responses = compactFunctionResponses(responses)
-		if len(responses) == 0 || callCtx.Err() != nil {
+		if len(responses) == 0 {
 			return
 		}
+		// Deliver FunctionResponse even when callCtx expired. Silent return on
+		// expiry leaves Gemini waiting forever. Hardens a real response-drop
+		// path; not proven as the Oct 8 softphone smoke root cause.
+		timedOut := callCtx.Err() != nil
 		// Remote-read tools (directory search) are not announcement barriers.
-		// Waiting on PCM flush ack before SendToolResponse can drop the result
-		// when the model has not spoken yet (softphone playout ack can stall).
-		if handle.cfg.OnPlayoutBarrier != nil && !liveToolBatchAllRemoteReads(handle, call) {
+		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !remoteReads {
 			barrierID := handle.barrierSeq.Add(1)
 			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
 				handle.reportAsyncError(err)
@@ -526,6 +536,37 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		}
 	}()
 	return nil
+}
+
+// Timeout layer ordering for Maglev directory reads (see TestVoiceRemoteReadTimeoutLayerOrdering):
+//
+//	voiceRemoteReadActivityTimeout (Temporal LocalActivity)
+//	  < hostVoiceReadControlPostTimeout (Maglev controlPost, ~10s)
+//	  < liveToolBackstopBudget (Live adapter only; must not fire first)
+//
+// Mailbox playback keeps its own longer LocalActivity StartToClose (30s).
+const (
+	voiceRemoteReadActivityTimeout  = 8 * time.Second
+	voicePlaybackActivityTimeout    = 30 * time.Second
+	hostVoiceReadControlPostTimeout = 10 * time.Second // Maglev host_voice_control read path
+	liveToolBackstopBudget          = 45 * time.Second
+)
+
+func liveToolErrorMessage(err error, remoteRead bool) string {
+	if err == nil {
+		return "tool could not be completed"
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if remoteRead {
+			return "directory search timed out"
+		}
+		return "tool timed out"
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "tool could not be completed"
+	}
+	return msg
 }
 
 func compactFunctionResponses(in []*genai.FunctionResponse) []*genai.FunctionResponse {

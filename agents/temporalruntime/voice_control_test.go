@@ -479,6 +479,272 @@ func TestLiveToolBatchAllRemoteReads(t *testing.T) {
 	}
 }
 
+// Temporal owns the directory-read budget; Maglev host HTTP is next; Live is
+// only a backstop and must never be the first timeout in normal operation.
+func TestVoiceRemoteReadTimeoutLayerOrdering(t *testing.T) {
+	if voiceRemoteReadActivityTimeout >= hostVoiceReadControlPostTimeout {
+		t.Fatalf("Temporal read LocalActivity %v must be < host HTTP %v", voiceRemoteReadActivityTimeout, hostVoiceReadControlPostTimeout)
+	}
+	if hostVoiceReadControlPostTimeout >= liveToolBackstopBudget {
+		t.Fatalf("host HTTP %v must be < Live backstop %v", hostVoiceReadControlPostTimeout, liveToolBackstopBudget)
+	}
+	if voiceRemoteReadActivityTimeout >= voicePlaybackActivityTimeout {
+		t.Fatalf("directory read LocalActivity %v must stay below playback %v", voiceRemoteReadActivityTimeout, voicePlaybackActivityTimeout)
+	}
+}
+
+func remoteReadDispatchHandle(t *testing.T, execute func(context.Context, agents.Actor, ai.ToolCall, map[string]any) (any, error), barrier *int) (*geminiLiveHandle, *fakeLiveSession) {
+	t.Helper()
+	session := newFakeLiveSession()
+	read := agents.DefineToolWithCall(agents.ToolConfig{
+		Name: "search_operator_directory", Description: "lookup",
+		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}},
+		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024},
+	}, execute)
+	return &geminiLiveHandle{
+		session: session,
+		tools:   map[string]ai.Tool{"search_operator_directory": read},
+		cfg: voice.StartConfig{
+			Actor:     agents.Actor{ID: "user-1", Kind: "user"},
+			SessionID: "sess-1",
+			OnPlayoutBarrier: func(context.Context, uint64) error {
+				if barrier != nil {
+					*barrier++
+				}
+				return nil
+			},
+			CallControl: &voice.CallControlConfig{
+				ToolNames: []string{"dial_contact"},
+				Execute: func(context.Context, ai.ToolCall) (any, error) {
+					t.Fatal("search must not use CallControl")
+					return nil, nil
+				},
+			},
+		},
+	}, session
+}
+
+func assertOneRemoteReadError(t *testing.T, session *fakeLiveSession, callID, wantErr string) {
+	t.Helper()
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.responses) != 1 || len(session.responses[0].FunctionResponses) != 1 {
+		t.Fatalf("want one SendToolResponse with one FunctionResponse, got %+v", session.responses)
+	}
+	got := session.responses[0].FunctionResponses[0]
+	if got.ID != callID || got.Name != "search_operator_directory" {
+		t.Fatalf("response identity %+v", got)
+	}
+	errMsg, _ := got.Response["error"].(string)
+	if errMsg != wantErr {
+		t.Fatalf("error=%q want %q", errMsg, wantErr)
+	}
+	if _, ok := got.Response["result"]; ok {
+		t.Fatal("error response must not include result")
+	}
+}
+
+// Parent cancel: one FunctionResponse per call ID (no silent drop).
+func TestGeminiRemoteReadTimeoutStillSendsToolResponse(t *testing.T) {
+	entered := make(chan struct{})
+	barrierCalls := 0
+	h, session := remoteReadDispatchHandle(t, func(ctx context.Context, _ agents.Actor, _ ai.ToolCall, _ map[string]any) (any, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, &barrierCalls)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := h.dispatchToolCall(ctx, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+		ID: "search-1", Name: "search_operator_directory", Args: map[string]any{"query": "Andrew"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("remote-read execute did not start")
+	}
+	cancel()
+	h.toolWG.Wait()
+	assertOneRemoteReadError(t, session, "search-1", "directory search timed out")
+	if barrierCalls != 0 {
+		t.Fatal("remote-read must skip playout barrier on cancel")
+	}
+}
+
+// Parent deadline (standing in for the Live backstop bound): one FunctionResponse;
+// the wait ends when the deadline fires, not by silent drop.
+func TestGeminiRemoteReadBackstopDeadlineSendsOneToolResponse(t *testing.T) {
+	const bound = 40 * time.Millisecond
+	started := make(chan struct{})
+	h, session := remoteReadDispatchHandle(t, func(ctx context.Context, _ agents.Actor, _ ai.ToolCall, _ map[string]any) (any, error) {
+		close(started)
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Error("tool ctx missing deadline")
+		} else if rem := time.Until(dl); rem > liveToolBackstopBudget {
+			t.Errorf("tool deadline remaining %v exceeds Live backstop %v", rem, liveToolBackstopBudget)
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	begin := time.Now()
+	if err := h.dispatchToolCall(ctx, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+		ID: "search-deadline", Name: "search_operator_directory", Args: map[string]any{"query": "A"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.toolWG.Wait()
+	elapsed := time.Since(begin)
+	if elapsed < bound || elapsed > 2*time.Second {
+		t.Fatalf("deadline wait elapsed=%v want around %v", elapsed, bound)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("tool never started")
+	}
+	assertOneRemoteReadError(t, session, "search-deadline", "directory search timed out")
+}
+
+// Late child return after cancel still yields one FunctionResponse (parent waits for children).
+func TestGeminiRemoteReadLateChildStillOneResponse(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	h, session := remoteReadDispatchHandle(t, func(ctx context.Context, _ agents.Actor, _ ai.ToolCall, _ map[string]any) (any, error) {
+		close(entered)
+		<-ctx.Done()
+		<-release // late after cancel
+		time.Sleep(20 * time.Millisecond)
+		return nil, ctx.Err()
+	}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := h.dispatchToolCall(ctx, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+		ID: "search-late", Name: "search_operator_directory", Args: map[string]any{"query": "B"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	cancel()
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	h.toolWG.Wait()
+	assertOneRemoteReadError(t, session, "search-late", "directory search timed out")
+}
+
+// Concurrent batches each deliver one FunctionResponse for their call ID.
+func TestGeminiRemoteReadConcurrentBatchesOneResponseEach(t *testing.T) {
+	var started sync.WaitGroup
+	started.Add(2)
+	release := make(chan struct{})
+	h, session := remoteReadDispatchHandle(t, func(ctx context.Context, _ agents.Actor, call ai.ToolCall, _ map[string]any) (any, error) {
+		started.Done()
+		<-release
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	for _, id := range []string{"batch-a", "batch-b"} {
+		if err := h.dispatchToolCall(ctx, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+			ID: id, Name: "search_operator_directory", Args: map[string]any{"query": id},
+		}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started.Wait()
+	cancel()
+	close(release)
+	h.toolWG.Wait()
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.responses) != 2 {
+		t.Fatalf("want two SendToolResponse (one per batch), got %d", len(session.responses))
+	}
+	seen := map[string]int{}
+	for _, resp := range session.responses {
+		if len(resp.FunctionResponses) != 1 {
+			t.Fatalf("batch response %+v", resp)
+		}
+		fr := resp.FunctionResponses[0]
+		seen[fr.ID]++
+		errMsg, _ := fr.Response["error"].(string)
+		if errMsg != "directory search timed out" {
+			t.Fatalf("error=%q", errMsg)
+		}
+	}
+	if seen["batch-a"] != 1 || seen["batch-b"] != 1 {
+		t.Fatalf("call IDs %+v", seen)
+	}
+}
+
+// Live backstop must exceed host HTTP so Maglev's preserved timeout reaches Gemini.
+func TestGeminiLiveBackstopExceedsHostHTTP(t *testing.T) {
+	started := make(chan time.Time, 1)
+	deadline := make(chan time.Time, 1)
+	read := agents.DefineToolWithCall(agents.ToolConfig{
+		Name: "search_operator_directory", Description: "lookup",
+		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}},
+		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024},
+	}, func(ctx context.Context, _ agents.Actor, _ ai.ToolCall, _ map[string]any) (any, error) {
+		started <- time.Now()
+		d, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("missing deadline")
+		}
+		deadline <- d
+		return map[string]any{"ok": true}, nil
+	})
+	session := newFakeLiveSession()
+	h := &geminiLiveHandle{
+		session: session,
+		tools:   map[string]ai.Tool{"search_operator_directory": read},
+		cfg: voice.StartConfig{
+			Actor:     agents.Actor{ID: "user-1", Kind: "user"},
+			SessionID: "sess-1",
+		},
+	}
+	if err := h.dispatchToolCall(context.Background(), &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+		ID: "search-1", Name: "search_operator_directory", Args: map[string]any{"query": "Andrew"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	var begin, due time.Time
+	select {
+	case begin = <-started:
+	case <-time.After(time.Second):
+		t.Fatal("execute did not start")
+	}
+	select {
+	case due = <-deadline:
+	case <-time.After(time.Second):
+		t.Fatal("deadline not observed")
+	}
+	h.toolWG.Wait()
+	got := due.Sub(begin)
+	if got < hostVoiceReadControlPostTimeout || got > liveToolBackstopBudget+time.Second {
+		t.Fatalf("Live backstop=%v want ~%v (> host %v)", got, liveToolBackstopBudget, hostVoiceReadControlPostTimeout)
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.responses) != 1 {
+		t.Fatalf("expected one tool response, got %d", len(session.responses))
+	}
+}
+
+func TestLiveToolErrorMessageTimeout(t *testing.T) {
+	if got := liveToolErrorMessage(context.DeadlineExceeded, true); got != "directory search timed out" {
+		t.Fatalf("remote read: %q", got)
+	}
+	if got := liveToolErrorMessage(context.Canceled, false); got != "tool timed out" {
+		t.Fatalf("ordinary: %q", got)
+	}
+	if got := liveToolErrorMessage(errors.New("boom"), false); got != "boom" {
+		t.Fatalf("passthrough: %q", got)
+	}
+}
+
 func TestMailboxTurnLimitRequiresTrustedPolicy(t *testing.T) {
 	cfg := terminalConfig(t)
 	cfg.CallControl.ToolNames = []string{voicecontract.ToolIDHangUp}

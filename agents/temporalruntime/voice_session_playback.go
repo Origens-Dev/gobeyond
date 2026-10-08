@@ -7,7 +7,6 @@ import (
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
-	"time"
 )
 
 const playbackExecutionVersionChange = "operator-mailbox-playback-execution-v1"
@@ -140,7 +139,7 @@ func executeVoiceSourcePlaybackActivity(ctx context.Context, req VoiceSessionExe
 // unbounded local-activity retry loop. Successful source/completion stays cached.
 func executeVoicePlaybackToolLocal(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 	var out VoiceSessionExecuteToolResult
-	ctx = workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: 30 * time.Second, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}})
+	ctx = workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{StartToCloseTimeout: voicePlaybackActivityTimeout, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 1}})
 	err := workflow.ExecuteLocalActivity(ctx, voiceSessionExecuteToolActivityName, req).Get(ctx, &out)
 	return out, err
 }

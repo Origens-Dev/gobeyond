@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -363,7 +362,21 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 		}
 		// Remote-read tools fall through to ordinary Execute handlers.
 	}
-	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Live outer timeout is only a backstop (same Gemini rule). Temporal owns
+	// remote-read LocalActivity budgets; Maglev host HTTP sits between them.
+	remoteReads := true
+	for _, call := range calls {
+		tool, ok := h.lookupTool(call.Name)
+		if !ok {
+			remoteReads = false
+			break
+		}
+		if _, read := agents.VoiceRemoteReadPolicy(tool); !read {
+			remoteReads = false
+			break
+		}
+	}
+	toolCtx, cancel := context.WithTimeout(ctx, liveToolBackstopBudget)
 	defer cancel()
 	outputs := make([]map[string]any, len(calls))
 	var wg sync.WaitGroup
@@ -381,16 +394,16 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 			})
 			output := map[string]any{"result": result}
 			if err != nil {
-				output = map[string]any{"error": err.Error()}
+				output = map[string]any{"error": liveToolErrorMessage(err, remoteReads)}
 			}
 			outputs[i] = map[string]any{"call_id": call.CallID, "output": output}
 		}(i, call)
 	}
 	wg.Wait()
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if h.cfg.OnPlayoutBarrier != nil {
+	// Deadline/cancel must still deliver function_call_output. Returning early
+	// leaves the model waiting forever (same Gemini Live hang class).
+	timedOut := toolCtx.Err() != nil || ctx.Err() != nil
+	if !timedOut && h.cfg.OnPlayoutBarrier != nil {
 		if err := h.cfg.OnPlayoutBarrier(ctx, h.barrier.Add(1)); err != nil {
 			return err
 		}
