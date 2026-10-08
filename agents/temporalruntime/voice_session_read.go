@@ -213,7 +213,7 @@ func (s *voiceReadWorkflowState) execute(ctx workflow.Context, in VoiceSessionIn
 	}
 	s.digests[key] = digest
 	s.pending[key] = true
-	result, err := executeVoiceSessionToolLocal(ctx, req)
+	result, err := executeVoiceRemoteReadToolLocal(ctx, req, voiceRemoteReadActivityTimeout)
 	s.pending[key] = false
 	if err != nil {
 		result = VoiceSessionExecuteToolResult{Error: "directory unavailable"}

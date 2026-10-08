@@ -362,27 +362,21 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 		}
 		// Remote-read tools fall through to ordinary Execute handlers.
 	}
-	budget := liveOrdinaryToolBudget
-	shortReads := true
+	// Live outer timeout is only a backstop (same Gemini rule). Temporal owns
+	// remote-read LocalActivity budgets; Maglev host HTTP sits between them.
+	remoteReads := true
 	for _, call := range calls {
 		tool, ok := h.lookupTool(call.Name)
 		if !ok {
-			shortReads = false
+			remoteReads = false
 			break
 		}
-		policy, read := agents.VoiceRemoteReadPolicy(tool)
-		if !read || policy.LiveBudget <= 0 {
-			shortReads = false
+		if _, read := agents.VoiceRemoteReadPolicy(tool); !read {
+			remoteReads = false
 			break
 		}
-		if policy.LiveBudget < budget {
-			budget = policy.LiveBudget
-		}
 	}
-	if !shortReads {
-		budget = liveOrdinaryToolBudget
-	}
-	toolCtx, cancel := context.WithTimeout(ctx, budget)
+	toolCtx, cancel := context.WithTimeout(ctx, liveToolBackstopBudget)
 	defer cancel()
 	outputs := make([]map[string]any, len(calls))
 	var wg sync.WaitGroup
@@ -400,7 +394,7 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 			})
 			output := map[string]any{"result": result}
 			if err != nil {
-				output = map[string]any{"error": liveToolErrorMessage(err, shortReads)}
+				output = map[string]any{"error": liveToolErrorMessage(err, remoteReads)}
 			}
 			outputs[i] = map[string]any{"call_id": call.CallID, "output": output}
 		}(i, call)

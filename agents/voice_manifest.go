@@ -12,14 +12,13 @@ import (
 // VoiceToolPolicy is compile-owned policy, never a model/client schema. The
 // manifest always takes its input schema directly from the authored tool.
 //
-// LiveBudget is an optional per-tool Live session execution bound for remote
-// reads. Zero keeps the ordinary Live tool budget (30s). Short-read tools such
-// as directory search set LiveBudget explicitly (for example 12s, above Maglev's
-// 10s controlPost). Mailbox playback VoiceRemoteRead must leave LiveBudget zero
-// so clip fetch keeps the longer ordinary budget.
+// StartToCloseTimeout is the Temporal LocalActivity bound for this remote read
+// (directory search and similar platform reads). Zero uses the platform default
+// (8s). This is not a Gemini/Grok Live session budget — Live only keeps a longer
+// backstop so Temporal and Maglev host HTTP own the tool timeout.
 type VoiceReadPolicy struct {
-	MaxResultBytes int
-	LiveBudget     time.Duration
+	MaxResultBytes      int
+	StartToCloseTimeout time.Duration
 }
 
 func VoiceRemoteReadPolicy(tool AITool) (VoiceReadPolicy, bool) {

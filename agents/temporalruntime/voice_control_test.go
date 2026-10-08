@@ -452,20 +452,13 @@ func TestLiveFunctionArgFieldsReportsEmpty(t *testing.T) {
 	}
 }
 
-func TestLiveToolBatchShortReadBudget(t *testing.T) {
+func TestLiveToolBatchAllRemoteReads(t *testing.T) {
 	read := agents.DefineToolWithCall(agents.ToolConfig{
 		Name: "search_operator_directory", Description: "lookup",
 		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}},
-		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024, LiveBudget: liveDirectorySearchToolBudget},
+		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024},
 	}, func(context.Context, agents.Actor, ai.ToolCall, map[string]any) (any, error) {
 		return map[string]any{"entries": []any{}}, nil
-	})
-	playback := agents.DefineToolWithCall(agents.ToolConfig{
-		Name: "play_text_message", Description: "play",
-		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{}},
-		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024}, // LiveBudget zero → ordinary 30s
-	}, func(context.Context, agents.Actor, ai.ToolCall, map[string]any) (any, error) {
-		return map[string]any{}, nil
 	})
 	dial := agents.DefineTool(agents.ToolConfig{
 		Name: "dial_contact", Description: "dial",
@@ -476,18 +469,33 @@ func TestLiveToolBatchShortReadBudget(t *testing.T) {
 	})
 	handle := &geminiLiveHandle{tools: map[string]ai.Tool{
 		"search_operator_directory": read,
-		"play_text_message":         playback,
 		"dial_contact":              dial,
 	}}
-	budget, ok := liveToolBatchShortReadBudget(handle, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{Name: "search_operator_directory"}}})
-	if !ok || budget != liveDirectorySearchToolBudget {
-		t.Fatalf("search short budget=%v ok=%v want %v", budget, ok, liveDirectorySearchToolBudget)
+	if !liveToolBatchAllRemoteReads(handle, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{Name: "search_operator_directory"}}}) {
+		t.Fatal("search batch must count as remote-read")
 	}
-	if _, ok := liveToolBatchShortReadBudget(handle, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{Name: "play_text_message"}}}); ok {
-		t.Fatal("playback VoiceRemoteRead without LiveBudget must keep ordinary budget")
+	if liveToolBatchAllRemoteReads(handle, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{Name: "dial_contact"}}}) {
+		t.Fatal("dial must not count as remote-read")
 	}
-	if _, ok := liveToolBatchShortReadBudget(handle, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{Name: "dial_contact"}}}); ok {
-		t.Fatal("dial must not count as short-read")
+}
+
+// Temporal owns the directory-read budget; Maglev host HTTP is next; Live is
+// only a backstop and must never be the first timeout in normal operation.
+func TestVoiceRemoteReadTimeoutLayerOrdering(t *testing.T) {
+	if voiceRemoteReadActivityTimeout >= hostVoiceReadControlPostTimeout {
+		t.Fatalf("Temporal read LocalActivity %v must be < host HTTP %v", voiceRemoteReadActivityTimeout, hostVoiceReadControlPostTimeout)
+	}
+	if hostVoiceReadControlPostTimeout >= liveToolBackstopBudget {
+		t.Fatalf("host HTTP %v must be < Live backstop %v", hostVoiceReadControlPostTimeout, liveToolBackstopBudget)
+	}
+	if voiceRemoteReadActivityTimeout >= voicePlaybackActivityTimeout {
+		t.Fatalf("directory read LocalActivity %v must stay below playback %v", voiceRemoteReadActivityTimeout, voicePlaybackActivityTimeout)
+	}
+	if got := remoteReadLocalActivityTimeout(agents.VoiceReadPolicy{}); got != voiceRemoteReadActivityTimeout {
+		t.Fatalf("default policy timeout=%v", got)
+	}
+	if got := remoteReadLocalActivityTimeout(agents.VoiceReadPolicy{StartToCloseTimeout: 5 * time.Second}); got != 5*time.Second {
+		t.Fatalf("policy override timeout=%v", got)
 	}
 }
 
@@ -499,7 +507,7 @@ func TestGeminiRemoteReadTimeoutStillSendsToolResponse(t *testing.T) {
 	read := agents.DefineToolWithCall(agents.ToolConfig{
 		Name: "search_operator_directory", Description: "lookup",
 		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}},
-		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024, LiveBudget: liveDirectorySearchToolBudget},
+		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024},
 	}, func(ctx context.Context, _ agents.Actor, _ ai.ToolCall, _ map[string]any) (any, error) {
 		close(entered)
 		<-ctx.Done()
@@ -519,7 +527,10 @@ func TestGeminiRemoteReadTimeoutStillSendsToolResponse(t *testing.T) {
 			},
 			CallControl: &voice.CallControlConfig{
 				ToolNames: []string{"dial_contact"},
-				Execute:   func(context.Context, ai.ToolCall) (any, error) { t.Fatal("search must not use CallControl"); return nil, nil },
+				Execute: func(context.Context, ai.ToolCall) (any, error) {
+					t.Fatal("search must not use CallControl")
+					return nil, nil
+				},
 			},
 		},
 	}
@@ -553,24 +564,23 @@ func TestGeminiRemoteReadTimeoutStillSendsToolResponse(t *testing.T) {
 		t.Fatal("timeout response must not include result")
 	}
 	if barrierCalls != 0 {
-		t.Fatal("short-read must skip playout barrier on timeout")
+		t.Fatal("remote-read must skip playout barrier on timeout")
 	}
 }
 
-// Playback VoiceRemoteRead leaves LiveBudget zero and must keep the ordinary
-// 30s Live budget (not the directory 12s short-read bound).
-func TestGeminiPlaybackRemoteReadKeepsOrdinaryBudget(t *testing.T) {
+// Live backstop must exceed host HTTP so Maglev's preserved timeout reaches Gemini.
+func TestGeminiLiveBackstopExceedsHostHTTP(t *testing.T) {
 	started := make(chan time.Time, 1)
 	deadline := make(chan time.Time, 1)
-	playback := agents.DefineToolWithCall(agents.ToolConfig{
-		Name: "play_text_message", Description: "play",
-		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{}},
+	read := agents.DefineToolWithCall(agents.ToolConfig{
+		Name: "search_operator_directory", Description: "lookup",
+		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}},
 		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024},
 	}, func(ctx context.Context, _ agents.Actor, _ ai.ToolCall, _ map[string]any) (any, error) {
 		started <- time.Now()
 		d, ok := ctx.Deadline()
 		if !ok {
-			t.Fatal("playback tool ctx missing deadline")
+			t.Fatal("missing deadline")
 		}
 		deadline <- d
 		return map[string]any{"ok": true}, nil
@@ -578,14 +588,14 @@ func TestGeminiPlaybackRemoteReadKeepsOrdinaryBudget(t *testing.T) {
 	session := newFakeLiveSession()
 	h := &geminiLiveHandle{
 		session: session,
-		tools:   map[string]ai.Tool{"play_text_message": playback},
+		tools:   map[string]ai.Tool{"search_operator_directory": read},
 		cfg: voice.StartConfig{
 			Actor:     agents.Actor{ID: "user-1", Kind: "user"},
 			SessionID: "sess-1",
 		},
 	}
 	if err := h.dispatchToolCall(context.Background(), &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
-		ID: "play-1", Name: "play_text_message",
+		ID: "search-1", Name: "search_operator_directory", Args: map[string]any{"query": "Andrew"},
 	}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -593,17 +603,17 @@ func TestGeminiPlaybackRemoteReadKeepsOrdinaryBudget(t *testing.T) {
 	select {
 	case begin = <-started:
 	case <-time.After(time.Second):
-		t.Fatal("playback execute did not start")
+		t.Fatal("execute did not start")
 	}
 	select {
 	case due = <-deadline:
 	case <-time.After(time.Second):
-		t.Fatal("playback deadline not observed")
+		t.Fatal("deadline not observed")
 	}
 	h.toolWG.Wait()
 	got := due.Sub(begin)
-	if got < 25*time.Second || got > liveOrdinaryToolBudget+time.Second {
-		t.Fatalf("playback Live budget=%v want ~%v (not directory %v)", got, liveOrdinaryToolBudget, liveDirectorySearchToolBudget)
+	if got < hostVoiceReadControlPostTimeout || got > liveToolBackstopBudget+time.Second {
+		t.Fatalf("Live backstop=%v want ~%v (> host %v)", got, liveToolBackstopBudget, hostVoiceReadControlPostTimeout)
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()

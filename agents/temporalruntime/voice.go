@@ -380,32 +380,28 @@ func (handle *geminiLiveHandle) receiveLoop(ctx context.Context) error {
 	}
 }
 
-// liveToolBatchShortReadBudget reports whether every tool in the batch opts
-// into an explicit VoiceReadPolicy.LiveBudget (>0). Mailbox playback and other
-// VoiceRemoteRead tools that leave LiveBudget zero keep the ordinary budget.
-func liveToolBatchShortReadBudget(handle *geminiLiveHandle, call *genai.LiveServerToolCall) (time.Duration, bool) {
+// liveToolBatchAllRemoteReads reports whether every tool in the batch is a
+// Maglev VoiceRemoteRead (directory search / platform read). Used only to skip
+// playout barriers and classify timeout errors — not to set a Live budget.
+// Native Live tools (e.g. Google search) are not VoiceRemoteRead.
+func liveToolBatchAllRemoteReads(handle *geminiLiveHandle, call *genai.LiveServerToolCall) bool {
 	if handle == nil || call == nil || len(call.FunctionCalls) == 0 {
-		return 0, false
+		return false
 	}
-	var budget time.Duration
 	for _, functionCall := range call.FunctionCalls {
 		if functionCall == nil {
-			return 0, false
+			return false
 		}
 		name := strings.TrimSpace(functionCall.Name)
 		tool, ok := handle.lookupTool(name)
 		if !ok {
-			return 0, false
+			return false
 		}
-		policy, read := agents.VoiceRemoteReadPolicy(tool)
-		if !read || policy.LiveBudget <= 0 {
-			return 0, false
-		}
-		if budget == 0 || policy.LiveBudget < budget {
-			budget = policy.LiveBudget
+		if _, read := agents.VoiceRemoteReadPolicy(tool); !read {
+			return false
 		}
 	}
-	return budget, budget > 0
+	return true
 }
 
 func liveFunctionArgFields(call *genai.LiveServerToolCall) []string {
@@ -484,15 +480,11 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 	handle.toolWG.Add(1)
 	go func() {
 		defer handle.toolWG.Done()
-		// Directory-style short reads opt into VoiceReadPolicy.LiveBudget (e.g. 12s,
-		// above Maglev's 10s controlPost). Playback and unmarked remote reads keep
-		// the ordinary 30s Live budget.
-		shortBudget, shortReads := liveToolBatchShortReadBudget(handle, call)
-		budget := liveOrdinaryToolBudget
-		if shortReads {
-			budget = shortBudget
-		}
-		callCtx, cancel := context.WithTimeout(ctx, budget)
+		// Live outer timeout is only a backstop. Temporal LocalActivity owns the
+		// directory-read budget; Maglev host HTTP is next. This must stay longer
+		// than Temporal + host so it never fires first in normal operation.
+		remoteReads := liveToolBatchAllRemoteReads(handle, call)
+		callCtx, cancel := context.WithTimeout(ctx, liveToolBackstopBudget)
 		defer cancel()
 		responses := make([]*genai.FunctionResponse, len(call.FunctionCalls))
 		var wg sync.WaitGroup
@@ -517,7 +509,7 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 				response := map[string]any{"result": result}
 				if err != nil {
 					log.Printf("gemini live tool execute name=%s err=%v", name, err)
-					response = map[string]any{"error": liveToolErrorMessage(err, shortReads)}
+					response = map[string]any{"error": liveToolErrorMessage(err, remoteReads)}
 				}
 				responses[i] = &genai.FunctionResponse{ID: functionCall.ID, Name: name, Response: response}
 			}(i, functionCall)
@@ -527,16 +519,13 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		if len(responses) == 0 {
 			return
 		}
-		// Deadline/cancel must still SendToolResponse. Dropping the FunctionResponse
-		// leaves Gemini waiting forever when a tool ctx expires mid-call.
-		// This hardens a real response-drop path; it is not proven to be the Oct 8
-		// softphone smoke root cause (recorded silence was ~12s vs the prior 30s
-		// ordinary Live budget).
+		// Always SendToolResponse exactly once with the typed cause from the
+		// layer that failed. Silent return on callCtx expiry leaves Gemini
+		// waiting forever. Hardens a real response-drop path; not proven as the
+		// Oct 8 softphone smoke root cause (~12s silence vs prior 30s Live bound).
 		timedOut := callCtx.Err() != nil
-		// Short-budget directory reads are not announcement barriers.
-		// Waiting on PCM flush ack before SendToolResponse can drop the result
-		// when the model has not spoken yet (softphone playout ack can stall).
-		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !shortReads {
+		// Remote-read tools (directory search) are not announcement barriers.
+		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !remoteReads {
 			barrierID := handle.barrierSeq.Add(1)
 			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
 				handle.reportAsyncError(err)
@@ -550,19 +539,26 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 	return nil
 }
 
+// Timeout layer ordering for Maglev directory reads (see TestVoiceRemoteReadTimeoutLayerOrdering):
+//
+//	voiceRemoteReadActivityTimeout (Temporal LocalActivity)
+//	  < hostVoiceReadControlPostTimeout (Maglev controlPost, ~10s)
+//	  < liveToolBackstopBudget (Live adapter only; must not fire first)
+//
+// Mailbox playback keeps its own longer LocalActivity StartToClose (30s).
 const (
-	liveOrdinaryToolBudget = 30 * time.Second
-	// liveDirectorySearchToolBudget is the recommended VoiceReadPolicy.LiveBudget
-	// for Maglev directory search (controlPost is 10s).
-	liveDirectorySearchToolBudget = 12 * time.Second
+	voiceRemoteReadActivityTimeout  = 8 * time.Second
+	voicePlaybackActivityTimeout    = 30 * time.Second
+	hostVoiceReadControlPostTimeout = 10 * time.Second // Maglev host_voice_control read path
+	liveToolBackstopBudget          = 45 * time.Second
 )
 
-func liveToolErrorMessage(err error, shortRead bool) string {
+func liveToolErrorMessage(err error, remoteRead bool) string {
 	if err == nil {
 		return "tool could not be completed"
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		if shortRead {
+		if remoteRead {
 			return "directory search timed out"
 		}
 		return "tool timed out"
@@ -572,6 +568,15 @@ func liveToolErrorMessage(err error, shortRead bool) string {
 		return "tool could not be completed"
 	}
 	return msg
+}
+
+// remoteReadLocalActivityTimeout returns the Temporal StartToClose for a remote
+// read from VoiceReadPolicy, defaulting to voiceRemoteReadActivityTimeout.
+func remoteReadLocalActivityTimeout(policy agents.VoiceReadPolicy) time.Duration {
+	if policy.StartToCloseTimeout > 0 {
+		return policy.StartToCloseTimeout
+	}
+	return voiceRemoteReadActivityTimeout
 }
 
 func compactFunctionResponses(in []*genai.FunctionResponse) []*genai.FunctionResponse {

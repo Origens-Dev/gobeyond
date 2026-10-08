@@ -14,6 +14,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
@@ -316,6 +317,26 @@ func executeVoiceSessionToolLocal(ctx workflow.Context, req VoiceSessionExecuteT
 	var out VoiceSessionExecuteToolResult
 	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
+	})
+	err := workflow.ExecuteLocalActivity(laCtx, voiceSessionExecuteToolActivityName, req).Get(ctx, &out)
+	if err != nil {
+		return VoiceSessionExecuteToolResult{Error: err.Error()}, nil
+	}
+	return out, nil
+}
+
+// executeVoiceRemoteReadToolLocal runs directory/platform reads as a Temporal
+// LocalActivity. StartToClose comes from VoiceReadPolicy (default 8s), below
+// Maglev's ~10s host HTTP and the Live backstop. Playback keeps its own 30s
+// executeVoicePlaybackToolLocal path.
+func executeVoiceRemoteReadToolLocal(ctx workflow.Context, req VoiceSessionExecuteToolInput, timeout time.Duration) (VoiceSessionExecuteToolResult, error) {
+	if timeout <= 0 {
+		timeout = voiceRemoteReadActivityTimeout
+	}
+	var out VoiceSessionExecuteToolResult
+	laCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+		StartToCloseTimeout: timeout,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 	err := workflow.ExecuteLocalActivity(laCtx, voiceSessionExecuteToolActivityName, req).Get(ctx, &out)
 	if err != nil {
