@@ -326,7 +326,7 @@ func executeVoiceSessionToolLocal(ctx workflow.Context, req VoiceSessionExecuteT
 }
 
 // executeVoiceRemoteReadToolLocal runs directory/platform reads as a Temporal
-// LocalActivity. StartToClose comes from VoiceReadPolicy (default 8s), below
+// LocalActivity. StartToClose is voiceRemoteReadActivityTimeout (8s), below
 // Maglev's ~10s host HTTP and the Live backstop. Playback keeps its own 30s
 // executeVoicePlaybackToolLocal path.
 func executeVoiceRemoteReadToolLocal(ctx workflow.Context, req VoiceSessionExecuteToolInput, timeout time.Duration) (VoiceSessionExecuteToolResult, error) {

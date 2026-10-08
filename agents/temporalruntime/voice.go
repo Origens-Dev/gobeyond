@@ -519,10 +519,9 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		if len(responses) == 0 {
 			return
 		}
-		// Always SendToolResponse exactly once with the typed cause from the
-		// layer that failed. Silent return on callCtx expiry leaves Gemini
-		// waiting forever. Hardens a real response-drop path; not proven as the
-		// Oct 8 softphone smoke root cause (~12s silence vs prior 30s Live bound).
+		// Deliver FunctionResponse even when callCtx expired. Silent return on
+		// expiry leaves Gemini waiting forever. Hardens a real response-drop
+		// path; not proven as the Oct 8 softphone smoke root cause.
 		timedOut := callCtx.Err() != nil
 		// Remote-read tools (directory search) are not announcement barriers.
 		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !remoteReads {
@@ -568,15 +567,6 @@ func liveToolErrorMessage(err error, remoteRead bool) string {
 		return "tool could not be completed"
 	}
 	return msg
-}
-
-// remoteReadLocalActivityTimeout returns the Temporal StartToClose for a remote
-// read from VoiceReadPolicy, defaulting to voiceRemoteReadActivityTimeout.
-func remoteReadLocalActivityTimeout(policy agents.VoiceReadPolicy) time.Duration {
-	if policy.StartToCloseTimeout > 0 {
-		return policy.StartToCloseTimeout
-	}
-	return voiceRemoteReadActivityTimeout
 }
 
 func compactFunctionResponses(in []*genai.FunctionResponse) []*genai.FunctionResponse {

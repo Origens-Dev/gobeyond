@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 )
@@ -12,13 +11,12 @@ import (
 // VoiceToolPolicy is compile-owned policy, never a model/client schema. The
 // manifest always takes its input schema directly from the authored tool.
 //
-// StartToCloseTimeout is the Temporal LocalActivity bound for this remote read
-// (directory search and similar platform reads). Zero uses the platform default
-// (8s). This is not a Gemini/Grok Live session budget — Live only keeps a longer
-// backstop so Temporal and Maglev host HTTP own the tool timeout.
+// Remote-read LocalActivity StartToClose is the platform constant
+// voiceRemoteReadActivityTimeout (8s) in temporalruntime — not an authored
+// field. Live keeps a longer backstop so Temporal and Maglev host HTTP own the
+// tool timeout.
 type VoiceReadPolicy struct {
-	MaxResultBytes      int
-	StartToCloseTimeout time.Duration
+	MaxResultBytes int
 }
 
 func VoiceRemoteReadPolicy(tool AITool) (VoiceReadPolicy, bool) {
