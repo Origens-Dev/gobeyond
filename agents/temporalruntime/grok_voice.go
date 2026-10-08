@@ -387,10 +387,10 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 		}(i, call)
 	}
 	wg.Wait()
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if h.cfg.OnPlayoutBarrier != nil {
+	// Deadline/cancel must still deliver function_call_output. Returning early
+	// leaves the model waiting forever (same Gemini Live hang class).
+	timedOut := toolCtx.Err() != nil || ctx.Err() != nil
+	if !timedOut && h.cfg.OnPlayoutBarrier != nil {
 		if err := h.cfg.OnPlayoutBarrier(ctx, h.barrier.Add(1)); err != nil {
 			return err
 		}

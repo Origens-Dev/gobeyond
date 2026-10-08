@@ -479,6 +479,83 @@ func TestLiveToolBatchAllRemoteReads(t *testing.T) {
 	}
 }
 
+// Softphone search hang: when Maglev/API blocks until Live tool ctx cancels,
+// Gemini must still receive a FunctionResponse error — not a silent drop.
+func TestGeminiRemoteReadTimeoutStillSendsToolResponse(t *testing.T) {
+	entered := make(chan struct{})
+	read := agents.DefineToolWithCall(agents.ToolConfig{
+		Name: "search_operator_directory", Description: "lookup",
+		InputSchema:     map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}},
+		VoiceRemoteRead: &agents.VoiceReadPolicy{MaxResultBytes: 1024},
+	}, func(ctx context.Context, _ agents.Actor, _ ai.ToolCall, _ map[string]any) (any, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	session := newFakeLiveSession()
+	barrierCalls := 0
+	h := &geminiLiveHandle{
+		session: session,
+		tools:   map[string]ai.Tool{"search_operator_directory": read},
+		cfg: voice.StartConfig{
+			Actor:     agents.Actor{ID: "user-1", Kind: "user"},
+			SessionID: "sess-1",
+			OnPlayoutBarrier: func(context.Context, uint64) error {
+				barrierCalls++
+				return nil
+			},
+			CallControl: &voice.CallControlConfig{
+				ToolNames: []string{"dial_contact"},
+				Execute:   func(context.Context, ai.ToolCall) (any, error) { t.Fatal("search must not use CallControl"); return nil, nil },
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := h.dispatchToolCall(ctx, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+		ID: "search-1", Name: "search_operator_directory", Args: map[string]any{"query": "Andrew"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("remote-read execute did not start")
+	}
+	cancel()
+	h.toolWG.Wait()
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.responses) != 1 || len(session.responses[0].FunctionResponses) != 1 {
+		t.Fatalf("expected SendToolResponse after cancel, got %+v", session.responses)
+	}
+	got := session.responses[0].FunctionResponses[0]
+	if got.ID != "search-1" || got.Name != "search_operator_directory" {
+		t.Fatalf("response identity %+v", got)
+	}
+	errMsg, _ := got.Response["error"].(string)
+	if errMsg != "directory search timed out" {
+		t.Fatalf("error=%q want directory search timed out", errMsg)
+	}
+	if _, ok := got.Response["result"]; ok {
+		t.Fatal("timeout response must not include result")
+	}
+	if barrierCalls != 0 {
+		t.Fatal("remote-read must skip playout barrier on timeout")
+	}
+}
+
+func TestLiveToolErrorMessageTimeout(t *testing.T) {
+	if got := liveToolErrorMessage(context.DeadlineExceeded, true); got != "directory search timed out" {
+		t.Fatalf("remote read: %q", got)
+	}
+	if got := liveToolErrorMessage(context.Canceled, false); got != "tool timed out" {
+		t.Fatalf("ordinary: %q", got)
+	}
+	if got := liveToolErrorMessage(errors.New("boom"), false); got != "boom" {
+		t.Fatalf("passthrough: %q", got)
+	}
+}
+
 func TestMailboxTurnLimitRequiresTrustedPolicy(t *testing.T) {
 	cfg := terminalConfig(t)
 	cfg.CallControl.ToolNames = []string{voicecontract.ToolIDHangUp}

@@ -476,7 +476,14 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 	handle.toolWG.Add(1)
 	go func() {
 		defer handle.toolWG.Done()
-		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		// Remote-read Maglev→API is already capped at 10s; keep Live slightly above
+		// that so Maglev's tool error reaches Gemini. Ordinary tools keep 30s.
+		remoteReads := liveToolBatchAllRemoteReads(handle, call)
+		budget := liveOrdinaryToolBudget
+		if remoteReads {
+			budget = liveRemoteReadToolBudget
+		}
+		callCtx, cancel := context.WithTimeout(ctx, budget)
 		defer cancel()
 		responses := make([]*genai.FunctionResponse, len(call.FunctionCalls))
 		var wg sync.WaitGroup
@@ -501,20 +508,23 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 				response := map[string]any{"result": result}
 				if err != nil {
 					log.Printf("gemini live tool execute name=%s err=%v", name, err)
-					response = map[string]any{"error": err.Error()}
+					response = map[string]any{"error": liveToolErrorMessage(err, remoteReads)}
 				}
 				responses[i] = &genai.FunctionResponse{ID: functionCall.ID, Name: name, Response: response}
 			}(i, functionCall)
 		}
 		wg.Wait()
 		responses = compactFunctionResponses(responses)
-		if len(responses) == 0 || callCtx.Err() != nil {
+		if len(responses) == 0 {
 			return
 		}
+		// Deadline/cancel must still SendToolResponse. Dropping the FunctionResponse
+		// leaves Gemini waiting forever (softphone one-way after search_operator_directory).
+		timedOut := callCtx.Err() != nil
 		// Remote-read tools (directory search) are not announcement barriers.
 		// Waiting on PCM flush ack before SendToolResponse can drop the result
 		// when the model has not spoken yet (softphone playout ack can stall).
-		if handle.cfg.OnPlayoutBarrier != nil && !liveToolBatchAllRemoteReads(handle, call) {
+		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !remoteReads {
 			barrierID := handle.barrierSeq.Add(1)
 			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
 				handle.reportAsyncError(err)
@@ -526,6 +536,28 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		}
 	}()
 	return nil
+}
+
+const (
+	liveOrdinaryToolBudget   = 30 * time.Second
+	liveRemoteReadToolBudget = 12 * time.Second // Maglev read controlPost is 10s
+)
+
+func liveToolErrorMessage(err error, remoteRead bool) string {
+	if err == nil {
+		return "tool could not be completed"
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if remoteRead {
+			return "directory search timed out"
+		}
+		return "tool timed out"
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "tool could not be completed"
+	}
+	return msg
 }
 
 func compactFunctionResponses(in []*genai.FunctionResponse) []*genai.FunctionResponse {
