@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "decision.graph/v1",
+  "title": "Synthetic deterministic to Jev to clarify/fallback trace",
+  "activation": "blocked_by_unresolved_qualification_gates",
+  "steps": [
+    {
+      "sequence": 1,
+      "route": "/start",
+      "event": "input_final",
+      "matchOutcome": "no_match",
+      "nextPhase": "decide",
+      "jevInvocations": 0
+    },
+    {
+      "sequence": 2,
+      "route": "/start",
+      "event": "decision_completed",
+      "decisionOutcome": "ambiguous",
+      "jevInvocations": 1,
+      "nextRoute": "/clarify"
+    },
+    {
+      "sequence": 3,
+      "route": "/clarify",
+      "event": "initial_silence",
+      "decisionOutcome": "none",
+      "jevInvocations": 0,
+      "nextRoute": "/clarify"
+    },
+    {
+      "sequence": 4,
+      "route": "/clarify",
+      "event": "retry_exhausted",
+      "decisionOutcome": "none",
+      "jevInvocations": 0,
+      "nextRoute": "/help"
+    },
+    {
+      "sequence": 5,
+      "route": "/start",
+      "event": "effect_receipt",
+      "effectStatus": "accepted",
+      "receiptId": "accepted-receipt-test-only",
+      "ownership": "owned",
+      "effectIdentity": {
+        "tenantId": "tenant-1",
+        "sessionId": "session-1",
+        "generation": 2,
+        "routeEntryId": "entry-4",
+        "inputId": "input-3",
+        "actionId": "connect-recipient",
+        "graphSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "id": "fcbef29d528cfcd7e3b74d9c5a7ded6487d002fbfd26af9b3e3f00d401b9cba7"
+      },
+      "targetOpaqueId": "candidate-opaque-test-only",
+      "providerRequestId": "provider-request-test-only",
+      "observedAt": "2026-10-08T12:00:00Z"
+    },
+    {
+      "sequence": 6,
+      "route": "/start",
+      "event": "effect_receipt",
+      "effectStatus": "confirmed",
+      "receiptId": "confirmed-receipt-test-only",
+      "ownership": "released",
+      "targetOpaqueId": "candidate-opaque-test-only",
+      "effectIdentity": {
+        "tenantId": "tenant-1",
+        "sessionId": "session-1",
+        "generation": 2,
+        "routeEntryId": "entry-4",
+        "inputId": "input-3",
+        "actionId": "connect-recipient",
+        "graphSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "id": "fcbef29d528cfcd7e3b74d9c5a7ded6487d002fbfd26af9b3e3f00d401b9cba7"
+      },
+      "providerRequestId": "provider-request-test-only",
+      "observedAt": "2026-10-08T12:00:01Z"
+    }
+  ]
+}
