@@ -1,0 +1,14 @@
+start
+  enter_route route=/start entry=entry-barge-in
+  listen route=/start entry=entry-barge-in window=window-e441a5c2b92be841ae2b80e1
+  say route=/start entry=entry-barge-in playback=playback-1317bac30c9221fd1b9b4a34 messages=operator.prompt,operator.choice_count
+snapshot_refresh id=snapshot-barge-in accepted
+  no effects
+input_final id=input-barge-first accepted
+  run_matcher route=/start entry=entry-barge-in binding=recipient_matcher input=input-barge-first reason=2d30917f08a992033b4a8618c521fbfe3f7ccb0dbd00fad534cc62cbfa064625
+playback_completed operation=playback-unrelated rejected: playback receipt does not match the active say
+playback_completed operation=playback-1317bac30c9221fd1b9b4a34 late-and-accepted
+  no effects
+input_final id=input-barge-second rejected: input event does not match the open route-entry window
+match_completed input=input-barge-first accepted
+  dispatch_intent route=/start entry=entry-barge-in input=input-barge-first action=connect-recipient target=opaque-a

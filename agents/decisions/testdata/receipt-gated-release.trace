@@ -1,0 +1,8 @@
+enter_route route=/start entry=entry-receipt
+listen route=/start entry=entry-receipt window=window-f5181b12ac28eb048f58597d
+say route=/start entry=entry-receipt playback=playback-f9108fa6da24edc54fbe5c64 messages=operator.prompt,operator.choice_count
+run_matcher route=/start entry=entry-receipt binding=recipient_matcher input=input-receipt reason=2d30917f08a992033b4a8618c521fbfe3f7ccb0dbd00fad534cc62cbfa064625
+dispatch_intent route=/start entry=entry-receipt input=input-receipt action=connect-recipient target=opaque-a
+await_receipt route=/start entry=entry-receipt input=input-receipt action=connect-recipient target=opaque-a
+await_receipt route=/start entry=entry-receipt input=input-receipt action=connect-recipient target=opaque-a
+release_call_ownership route=/start entry=entry-receipt input=input-receipt action=connect-recipient reason=adapter must apply the existing owner compare-and-swap
