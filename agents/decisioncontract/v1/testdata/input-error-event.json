@@ -1,0 +1,12 @@
+{
+  "id": "evt-input-error-1",
+  "kind": "input_error",
+  "tenantId": "tenant-demo",
+  "sessionId": "session-demo",
+  "generation": 1,
+  "routeId": "/collect-recipient",
+  "routeEntryId": "route-entry-1",
+  "inputWindowId": "input-window-1",
+  "channel": "voice",
+  "receivedAt": "2026-10-09T12:00:00Z"
+}

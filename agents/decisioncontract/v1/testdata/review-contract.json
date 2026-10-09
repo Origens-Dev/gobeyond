@@ -1,0 +1,810 @@
+{
+  "schemaVersion": "decision.graph/v1",
+  "digestInputs": {
+    "graphSha256": "6b2c5a1686b688b14754fbafbd9872c0b823ffd72176fc611d06478d7a48e12e",
+    "promptsSha256": "12dac900ff9dc79f3f39dc3570d942b80fc8b99bcda7fb2ca51aacfafc539e44",
+    "bindingsSha256": "987ed98b1faaaf09f5705c8fa7e509c761645fa3736160c45349bbc921764989",
+    "normalizationSha256": "99aa5ddb19c7926c2f6411af97260252e5f45f4e3f470a20e95b47f72a1b3338",
+    "authoritySha256": "3634de2b0e12538906dc39e131577d75623c948a272377216b0b492301414acf",
+    "policySha256": "cdc261229b5bafc36432390c722fabfe9848b21a7f98b2c274dde6cac84ce9c9",
+    "localeAndVoiceSha256": "f50ab7cdb73d4f3b0eb190f663b0bbe3f679e36a7dbae37716ea6a7f04d5e66e"
+  },
+  "policyGates": [
+    {
+      "id": "g-session-duration",
+      "kind": "session_duration_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-route-visits",
+      "kind": "route_visit_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-decision-calls",
+      "kind": "decision_call_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-reprompts",
+      "kind": "retry_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-no-input-reprompts",
+      "kind": "no_input_retry_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-input-duration",
+      "kind": "input_duration_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-tts-characters",
+      "kind": "tts_character_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-queued-audio",
+      "kind": "queued_audio_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-artifact-bytes",
+      "kind": "artifact_byte_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-effect-attempts",
+      "kind": "effect_attempt_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-session-spend",
+      "kind": "session_spend_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-first-audio-latency",
+      "kind": "first_audio_latency_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-first-response-latency",
+      "kind": "first_response_latency_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-payload-ttl",
+      "kind": "protected_payload_ttl",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-wrong-recipient",
+      "kind": "wrong_recipient_rate",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-clarification-rate",
+      "kind": "clarification_rate",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-locale-profile",
+      "kind": "qualified_locale_profile",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-voice-profile",
+      "kind": "qualified_voice_profile",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-voice-fallback",
+      "kind": "voice_capability_fallback",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-jev-path",
+      "kind": "jev_service_path_and_usage",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-caller-authority",
+      "kind": "caller_and_relationship_authority",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-dtmf",
+      "kind": "dtmf_negotiation",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-prompt-retention",
+      "kind": "prompt_retention_and_revocation",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-prompt-preparation",
+      "kind": "prompt_preparation_policy",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-no-match-reprompts",
+      "kind": "no_match_retry_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-ambiguous-reprompts",
+      "kind": "ambiguity_retry_ceiling",
+      "status": "unresolved",
+      "unresolvedReason": "Qualification evidence and owner decision are pending."
+    },
+    {
+      "id": "g-route-authoring",
+      "kind": "route_authoring_and_graph_discovery",
+      "status": "unresolved",
+      "unresolvedReason": "Integration contract and owner decision are pending."
+    },
+    {
+      "id": "g-session-adapter",
+      "kind": "stateful_session_adapter_contract",
+      "status": "unresolved",
+      "unresolvedReason": "Integration contract and owner decision are pending."
+    },
+    {
+      "id": "g-prompt-runtime-parity",
+      "kind": "prompt_loader_and_icu_runtime_parity",
+      "status": "unresolved",
+      "unresolvedReason": "Integration contract and owner decision are pending."
+    }
+  ],
+  "releaseSha256": "4124de3adf17fef5930149cdd7d9d1a7c25dd807eb4010dd0b2c70a463383559",
+  "graph": {
+    "id": "synthetic-operator",
+    "entry": "/start",
+    "fallback": "/help",
+    "routes": [
+      {
+        "id": "/start",
+        "useTools": null,
+        "useServices": null,
+        "useBindings": null,
+        "say": {
+          "families": [
+            "operator.prompt",
+            "operator.choice_count"
+          ],
+          "localeSource": "session",
+          "argumentBindings": [
+            {
+              "name": "name",
+              "source": "context.greeting_name"
+            },
+            {
+              "name": "count",
+              "source": "context.candidate_count"
+            }
+          ]
+        },
+        "listen": {
+          "accept": [
+            "speech_final",
+            "dtmf_complete",
+            "text"
+          ],
+          "bargeIn": true
+        },
+        "match": {
+          "bindingId": "recipient_matcher",
+          "onNoMatch": "decide"
+        },
+        "decide": {
+          "serviceId": "jev",
+          "resultPolicy": "recipient_selection"
+        },
+        "act": [
+          {
+            "id": "connect-recipient",
+            "toolId": "connect",
+            "kind": "connect",
+            "targetBinding": "selected_candidate_id",
+            "reauthorizeAtExecution": true,
+            "releasesCallOwnership": true
+          }
+        ],
+        "next": [
+          {
+            "source": "playback",
+            "outcome": "completed",
+            "target": {
+              "phase": "listen"
+            }
+          },
+          {
+            "source": "playback",
+            "outcome": "cleared",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "playback",
+            "outcome": "failed",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "input",
+            "outcome": "no_input",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "input",
+            "outcome": "utterance_limit",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "input",
+            "outcome": "error",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "match",
+            "outcome": "candidate",
+            "target": {
+              "phase": "act"
+            }
+          },
+          {
+            "source": "match",
+            "outcome": "ambiguous",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "match",
+            "outcome": "error",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "candidate",
+            "target": {
+              "phase": "act"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "no_match",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "ambiguous",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "refusal",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "error",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "unavailable",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "effect",
+            "outcome": "accepted",
+            "target": {
+              "terminal": "await_receipt"
+            }
+          },
+          {
+            "source": "effect",
+            "outcome": "confirmed",
+            "target": {
+              "terminal": "release_call_ownership"
+            }
+          },
+          {
+            "source": "effect",
+            "outcome": "failed",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "effect",
+            "outcome": "unknown",
+            "target": {
+              "terminal": "await_receipt"
+            }
+          },
+          {
+            "source": "control",
+            "outcome": "cancelled",
+            "target": {
+              "terminal": "end_session"
+            }
+          },
+          {
+            "source": "control",
+            "outcome": "disconnected",
+            "target": {
+              "terminal": "end_session"
+            }
+          }
+        ],
+        "fallback": {
+          "route": "/help"
+        }
+      },
+      {
+        "id": "/clarify",
+        "useTools": null,
+        "useServices": null,
+        "useBindings": null,
+        "say": {
+          "families": [
+            "operator.prompt",
+            "operator.choice_count"
+          ],
+          "localeSource": "session",
+          "argumentBindings": [
+            {
+              "name": "name",
+              "source": "context.greeting_name"
+            },
+            {
+              "name": "count",
+              "source": "context.candidate_count"
+            }
+          ]
+        },
+        "listen": {
+          "accept": [
+            "speech_final",
+            "dtmf_complete",
+            "text"
+          ],
+          "bargeIn": true
+        },
+        "match": {
+          "bindingId": "recipient_matcher",
+          "onNoMatch": "decide"
+        },
+        "decide": {
+          "serviceId": "jev",
+          "resultPolicy": "recipient_selection"
+        },
+        "act": [
+          {
+            "id": "connect-recipient",
+            "toolId": "connect",
+            "kind": "connect",
+            "targetBinding": "selected_candidate_id",
+            "reauthorizeAtExecution": true,
+            "releasesCallOwnership": true
+          }
+        ],
+        "next": [
+          {
+            "source": "playback",
+            "outcome": "completed",
+            "target": {
+              "phase": "listen"
+            }
+          },
+          {
+            "source": "playback",
+            "outcome": "cleared",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "playback",
+            "outcome": "failed",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "input",
+            "outcome": "no_input",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "input",
+            "outcome": "utterance_limit",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "input",
+            "outcome": "error",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "match",
+            "outcome": "candidate",
+            "target": {
+              "phase": "act"
+            }
+          },
+          {
+            "source": "match",
+            "outcome": "ambiguous",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "match",
+            "outcome": "error",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "candidate",
+            "target": {
+              "phase": "act"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "no_match",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "ambiguous",
+            "target": {
+              "route": "/clarify"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "refusal",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "error",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "decision",
+            "outcome": "unavailable",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "effect",
+            "outcome": "accepted",
+            "target": {
+              "terminal": "await_receipt"
+            }
+          },
+          {
+            "source": "effect",
+            "outcome": "confirmed",
+            "target": {
+              "terminal": "release_call_ownership"
+            }
+          },
+          {
+            "source": "effect",
+            "outcome": "failed",
+            "target": {
+              "route": "/help"
+            }
+          },
+          {
+            "source": "effect",
+            "outcome": "unknown",
+            "target": {
+              "terminal": "await_receipt"
+            }
+          },
+          {
+            "source": "control",
+            "outcome": "cancelled",
+            "target": {
+              "terminal": "end_session"
+            }
+          },
+          {
+            "source": "control",
+            "outcome": "disconnected",
+            "target": {
+              "terminal": "end_session"
+            }
+          }
+        ],
+        "fallback": {
+          "route": "/help"
+        },
+        "retryGroup": "recipient_selection"
+      },
+      {
+        "id": "/help",
+        "useTools": [],
+        "useServices": [],
+        "useBindings": [],
+        "say": {
+          "families": [
+            "operator.help"
+          ],
+          "localeSource": "session"
+        },
+        "next": [
+          {
+            "source": "playback",
+            "outcome": "completed",
+            "target": {
+              "terminal": "end_session"
+            }
+          },
+          {
+            "source": "playback",
+            "outcome": "cleared",
+            "target": {
+              "terminal": "end_session"
+            }
+          },
+          {
+            "source": "playback",
+            "outcome": "failed",
+            "target": {
+              "terminal": "end_session"
+            }
+          },
+          {
+            "source": "control",
+            "outcome": "cancelled",
+            "target": {
+              "terminal": "end_session"
+            }
+          },
+          {
+            "source": "control",
+            "outcome": "disconnected",
+            "target": {
+              "terminal": "end_session"
+            }
+          }
+        ],
+        "fallback": {
+          "terminal": "safe_stop"
+        }
+      }
+    ],
+    "authority": {
+      "parentManifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "tools": [
+        {
+          "id": "operator_context",
+          "schemaSha256": "7777777777777777777777777777777777777777777777777777777777777777"
+        },
+        {
+          "id": "connect",
+          "schemaSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "approvalSha256": "9999999999999999999999999999999999999999999999999999999999999999"
+        }
+      ],
+      "services": [
+        {
+          "id": "jev",
+          "contractSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "usageSchemaSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "bindings": [
+        {
+          "id": "recipient_matcher",
+          "contractSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        {
+          "id": "selected_candidate_id",
+          "contractSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ],
+      "budgets": {
+        "ambiguous_reprompts": {
+          "gateId": "g-ambiguous-reprompts"
+        },
+        "artifact_bytes": {
+          "gateId": "g-artifact-bytes"
+        },
+        "decision_calls": {
+          "gateId": "g-decision-calls"
+        },
+        "effect_attempts": {
+          "gateId": "g-effect-attempts"
+        },
+        "first_audio_latency_ms": {
+          "gateId": "g-first-audio-latency"
+        },
+        "first_response_latency_ms": {
+          "gateId": "g-first-response-latency"
+        },
+        "input_duration_ms": {
+          "gateId": "g-input-duration"
+        },
+        "no_input_reprompts": {
+          "gateId": "g-no-input-reprompts"
+        },
+        "no_match_reprompts": {
+          "gateId": "g-no-match-reprompts"
+        },
+        "protected_payload_ttl_seconds": {
+          "gateId": "g-payload-ttl"
+        },
+        "queued_audio_bytes": {
+          "gateId": "g-queued-audio"
+        },
+        "reprompts": {
+          "gateId": "g-reprompts"
+        },
+        "route_visits": {
+          "gateId": "g-route-visits"
+        },
+        "session_duration_ms": {
+          "gateId": "g-session-duration"
+        },
+        "session_spend_microunits": {
+          "gateId": "g-session-spend"
+        },
+        "tts_characters": {
+          "gateId": "g-tts-characters"
+        }
+      }
+    },
+    "retryGroups": [
+      {
+        "id": "recipient_selection",
+        "counterScope": "logical_task",
+        "countOn": "retry_turn_admitted",
+        "deduplicateByEventId": true,
+        "maxReprompts": {
+          "gateId": "g-reprompts"
+        },
+        "maxNoInputReprompts": {
+          "gateId": "g-no-input-reprompts"
+        },
+        "maxNoMatchReprompts": {
+          "gateId": "g-no-match-reprompts"
+        },
+        "maxAmbiguousReprompts": {
+          "gateId": "g-ambiguous-reprompts"
+        },
+        "exhausted": {
+          "route": "/help"
+        }
+      }
+    ],
+    "messages": [
+      {
+        "id": "operator.prompt",
+        "baseLocale": "en",
+        "fallbackLocale": "en",
+        "arguments": [
+          {
+            "name": "name",
+            "type": "string"
+          }
+        ],
+        "variants": {
+          "en": "Hi {name}, who do you want to call?"
+        }
+      },
+      {
+        "id": "operator.choice_count",
+        "baseLocale": "en",
+        "fallbackLocale": "en",
+        "arguments": [
+          {
+            "name": "count",
+            "type": "number"
+          }
+        ],
+        "variants": {
+          "en": "{count, plural, one {one authorized choice} other {# authorized choices}}"
+        }
+      },
+      {
+        "id": "operator.help",
+        "baseLocale": "en",
+        "fallbackLocale": "en",
+        "variants": {
+          "en": "I could not complete that request."
+        }
+      }
+    ],
+    "locale": {
+      "baseLocale": "en",
+      "fallbackLocale": "en",
+      "wholeMessageFallback": true,
+      "enabledLocales": [],
+      "qualificationGateId": "g-locale-profile"
+    },
+    "requiredVoiceCapabilities": [
+      "exact_text_synthesis",
+      "final_speech_text",
+      "dtmf_input",
+      "text_input",
+      "barge_in",
+      "streaming",
+      "cancellation"
+    ],
+    "normalizationRulesDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  }
+}
