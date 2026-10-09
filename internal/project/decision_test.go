@@ -377,15 +377,40 @@ func TestDecisionCompilerRejectsUnsafeFixtures(t *testing.T) {
 }
 
 func TestDecisionAgentGeneratedCodeStaysRuntimeInert(t *testing.T) {
-	definition := AgentDefinition{ID: "operator", Key: "agent0", Kind: AgentKindDecision, Mode: AgentModeDurable, Durable: true, TaskQueue: "decision", PackageName: "operator"}
+	root := writeDecisionCompilerFixture(t, nil)
+	definitions, err := DiscoverAgentDefinitions(root)
+	if err != nil || len(definitions) != 1 {
+		t.Fatalf("DiscoverAgentDefinitions = %#v, %v", definitions, err)
+	}
+	definition := definitions[0]
+	if definition.Decision == nil {
+		t.Fatal("compiled decision definition is missing")
+	}
 	registration, err := generatedAgentRegistration(definition)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(registration), "GobeyondRegister") || strings.Contains(string(registration), "AIDefinition") || strings.Contains(string(registration), "Invoke") {
-		t.Fatalf("decision registration contains runtime wiring: %s", registration)
+	for _, registrationEntry := range []string{
+		"func GobeyondRegisterDecision(registry httpruntime.Registerer, factory httpruntime.DecisionAdapterFactory) error",
+		"httpruntime.RegisterDecision(registry, \"operator\", definition, factory)",
+		definition.Decision.ReleaseSHA256,
+	} {
+		if !strings.Contains(string(registration), registrationEntry) {
+			t.Fatalf("decision registration is missing %q: %s", registrationEntry, registration)
+		}
 	}
-	registry, err := renderRegistry("example.com/site", nil, nil, nil, []AgentDefinition{definition}, false)
+	for _, activeRegistration := range []string{
+		"func GobeyondRegister(registry",
+		"GobeyondRegisterSIP",
+		"GobeyondRegisterTemporal",
+		"AIDefinition",
+		"Invoke",
+	} {
+		if strings.Contains(string(registration), activeRegistration) {
+			t.Fatalf("decision registration contains active runtime wiring %q: %s", activeRegistration, registration)
+		}
+	}
+	registry, err := renderRegistry("example.com/site", nil, nil, nil, definitions, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +426,7 @@ func TestDecisionAgentGeneratedCodeStaysRuntimeInert(t *testing.T) {
 	if strings.Contains(string(siteMain), "AgentDispatcher") || strings.Contains(string(siteMain), "temporalruntime") {
 		t.Fatalf("decision-only site entrypoint contains runtime wiring: %s", siteMain)
 	}
-	if queues := GroupWorkerQueues(nil, []AgentDefinition{definition}); len(queues) != 0 {
+	if queues := GroupWorkerQueues(nil, definitions); len(queues) != 0 {
 		t.Fatalf("decision agent created worker queues: %#v", queues)
 	}
 }
