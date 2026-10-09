@@ -21,6 +21,7 @@ import (
 	"github.com/Origens-Dev/go-temporal-ai-sdk/updates"
 	gb "github.com/Origens-Dev/gobeyond"
 	"github.com/Origens-Dev/gobeyond/agents"
+	"github.com/Origens-Dev/gobeyond/agents/decisions"
 	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 	"go.temporal.io/sdk/activity"
@@ -562,6 +563,9 @@ func (dispatcher *Dispatcher) Start(ctx context.Context, adapter httpruntime.Ada
 	if agentID == "" || call.Session.AgentID != agentID {
 		return errors.New("agent Temporal dispatcher agent IDs do not match")
 	}
+	if _, ok := adapter.(httpruntime.DecisionAdapter); ok {
+		return dispatcher.startDecisionSession(ctx, adapter, call, emit)
+	}
 	if aiAdapter, ok := adapter.(interface{ AIDefinition() agents.AIDefinition }); ok {
 		return dispatcher.startAI(ctx, aiAdapter.AIDefinition(), call, emit)
 	}
@@ -623,6 +627,55 @@ func (dispatcher *Dispatcher) Start(ctx context.Context, adapter httpruntime.Ada
 		return errors.New("durable agent workflow returned invalid JSON output")
 	}
 	return emit.Emit(ctx, "agent.output", cloneRaw(output.Output))
+}
+
+func (dispatcher *Dispatcher) startDecisionSession(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.StartCall, emit httpruntime.EventEmitter) error {
+	if dispatcher.hosted != nil {
+		return errors.New("hosted decision sessions are not registered by this dormant dispatcher seam")
+	}
+	durable, input, err := prepareDecisionSession(adapter, call)
+	if err != nil {
+		return err
+	}
+	workflowID, err := decisionSessionWorkflowID(call)
+	if err != nil {
+		return err
+	}
+	physicalQueue, err := gb.TaskQueueName(durable.Config().TaskQueue, dispatcher.environment)
+	if err != nil {
+		return fmt.Errorf("decision session Temporal task queue: %w", err)
+	}
+	state, initialEffects, err := decisions.Start(input.Definition, input.Admission, input.Policy)
+	if err != nil {
+		return fmt.Errorf("start decision session reducer: %w", err)
+	}
+	run, err := dispatcher.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: workflowID, TaskQueue: physicalQueue,
+	}, DecisionSessionWorkflowName, input)
+	if err != nil {
+		return fmt.Errorf("start durable decision session workflow: %w", err)
+	}
+	if run == nil {
+		return errors.New("start durable decision session workflow: Temporal returned a nil run")
+	}
+	if len(initialEffects) > 0 {
+		transition := DecisionSessionAdvanceResult{
+			Accepted: true,
+			Snapshot: DecisionSessionSnapshot{
+				Identity: decisionSessionIdentity(input.Pin), View: state.View(), Status: DecisionSessionRunning,
+			},
+			Effects: initialEffects,
+		}
+		if err := emit.Emit(ctx, "agent.decision.transition", transition); err != nil {
+			_ = dispatcher.client.CancelWorkflow(ctx, workflowID, "")
+			return fmt.Errorf("emit initial decision session transition: %w", err)
+		}
+	}
+	var result DecisionSessionResult
+	if err := run.Get(ctx, &result); err != nil {
+		return fmt.Errorf("wait for durable decision session workflow: %w", err)
+	}
+	return emit.Emit(ctx, "agent.decision.completed", result.Snapshot)
 }
 
 func (dispatcher *Dispatcher) startAI(ctx context.Context, definition agents.AIDefinition, call httpruntime.StartCall, emit httpruntime.EventEmitter) error {
@@ -854,9 +907,12 @@ func definitionID(call httpruntime.StartCall) string { return call.Run.AgentID }
 
 // Respond signals a pending durable AI tool approval. Typed handler agents keep
 // their legacy unsupported response behavior.
-func (dispatcher *Dispatcher) Respond(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.RespondCall, _ httpruntime.EventEmitter) error {
+func (dispatcher *Dispatcher) Respond(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.RespondCall, emit httpruntime.EventEmitter) error {
 	if err := dispatcher.ready(); err != nil {
 		return err
+	}
+	if _, ok := adapter.(httpruntime.DecisionAdapter); ok {
+		return dispatcher.respondDecisionSession(ctx, adapter, call, emit)
 	}
 	if _, ok := adapter.(interface{ AIDefinition() agents.AIDefinition }); !ok {
 		return httpruntime.ErrRespondUnsupported
@@ -927,10 +983,62 @@ func (dispatcher *Dispatcher) Respond(ctx context.Context, adapter httpruntime.A
 	return nil
 }
 
+func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.RespondCall, emit httpruntime.EventEmitter) error {
+	if dispatcher.hosted != nil {
+		return errors.New("hosted decision sessions are not registered by this dormant dispatcher seam")
+	}
+	durable, ok := adapter.(DecisionSessionAdapter)
+	if !ok {
+		return ErrDecisionSessionAdapterRequired
+	}
+	update, err := durable.PrepareDecisionResponse(call)
+	if err != nil {
+		return fmt.Errorf("prepare decision response: %w", err)
+	}
+	if err := validateDecisionSessionEventPrivacy(update.Event); err != nil {
+		return fmt.Errorf("decision response contains non-semantic provider score data: %w", err)
+	}
+	updateID, err := decisionUpdateID(update.Event)
+	if err != nil {
+		return err
+	}
+	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
+	if err != nil {
+		return err
+	}
+	var result DecisionSessionAdvanceResult
+	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionAdvanceUpdate, updateID, update, &result); err != nil {
+		return fmt.Errorf("advance durable decision session: %w", err)
+	}
+	if result.Stopped {
+		if emit != nil {
+			if err := emit.Emit(ctx, "agent.decision.stopped", result.Snapshot); err != nil {
+				return fmt.Errorf("emit stopped decision session: %w", err)
+			}
+		}
+		return nil
+	}
+	if !result.Accepted {
+		return errors.New("durable decision session did not accept the response")
+	}
+	if len(result.Effects) > 0 {
+		if emit == nil {
+			return errors.New("durable decision session effect emitter is required")
+		}
+		if err := emit.Emit(ctx, "agent.decision.transition", result); err != nil {
+			return fmt.Errorf("emit decision session transition: %w", err)
+		}
+	}
+	return nil
+}
+
 // Cancel requests cancellation of the stable workflow execution for the run.
-func (dispatcher *Dispatcher) Cancel(ctx context.Context, _ httpruntime.Adapter, call httpruntime.CancelCall, _ httpruntime.EventEmitter) error {
+func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, _ httpruntime.EventEmitter) error {
 	if err := dispatcher.ready(); err != nil {
 		return err
+	}
+	if _, ok := adapter.(httpruntime.DecisionAdapter); ok {
+		return dispatcher.cancelDecisionSession(ctx, adapter, call)
 	}
 	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
 	if err != nil {
@@ -944,6 +1052,33 @@ func (dispatcher *Dispatcher) Cancel(ctx context.Context, _ httpruntime.Adapter,
 	}
 	if err := dispatcher.client.CancelWorkflow(ctx, workflowID, ""); err != nil {
 		return fmt.Errorf("cancel durable agent workflow: %w", err)
+	}
+	return nil
+}
+
+func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall) error {
+	if dispatcher.hosted != nil {
+		return errors.New("hosted decision sessions are not registered by this dormant dispatcher seam")
+	}
+	durable, ok := adapter.(DecisionSessionAdapter)
+	if !ok {
+		return ErrDecisionSessionAdapterRequired
+	}
+	cancel, err := durable.PrepareDecisionCancellation(call)
+	if err != nil {
+		return fmt.Errorf("prepare decision session cancellation: %w", err)
+	}
+	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
+	if err != nil {
+		return err
+	}
+	updateID := "cancel-" + strings.TrimSpace(call.Run.ID)
+	if updateID == "cancel-" {
+		return errors.New("decision session cancellation run ID is required")
+	}
+	var result DecisionSessionSnapshot
+	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionCancelUpdate, updateID, cancel, &result); err != nil {
+		return fmt.Errorf("cancel durable decision session: %w", err)
 	}
 	return nil
 }

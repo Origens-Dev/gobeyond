@@ -1,0 +1,764 @@
+package temporalruntime
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Origens-Dev/gobeyond/agents"
+	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
+	"github.com/Origens-Dev/gobeyond/agents/decisions"
+	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
+	"go.temporal.io/api/common/v1"
+	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
+)
+
+var decisionSessionTestStart = time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+
+func TestDecisionSessionDispatcherStartRespondCancelAndHistoryBoundary(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_1", 7)
+	identity := decisionSessionIdentity(input.Pin)
+	adapter := &decisionSessionAdapterFake{
+		config:     agents.Config{Durable: true, TaskQueue: "decision"},
+		definition: input.Definition,
+		input:      input,
+		response: DecisionSessionUpdate{
+			Identity: identity, ExpectedRouteEntryID: input.Admission.RouteEntryID,
+			Event: decisions.Event{Normalized: &decisionv1.NormalizedEvent{
+				ID: "speech_1", Kind: decisionv1.EventSpeechStarted, TenantID: input.Admission.TenantID,
+				SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+				RouteID: input.Definition.Graph.Entry, RouteEntryID: input.Admission.RouteEntryID,
+				InputWindowID: "window_1", Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+			}},
+		},
+		cancellation: DecisionSessionCancel{Identity: identity},
+	}
+	fake := &fakeClient{run: &fakeRun{output: DecisionSessionResult{Snapshot: DecisionSessionSnapshot{Status: DecisionSessionCancelled}}}}
+	dispatcher, err := New(context.Background(), Options{Client: fake, Environment: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dispatcher.Close)
+	call := httpruntime.StartCall{
+		Session: agents.Session{ID: "ses_1", AgentID: "operator"},
+		Run:     agents.Run{ID: "run_1", SessionID: "ses_1", AgentID: "operator", Mode: agents.DurableMode},
+		Input:   json.RawMessage(`{"audio":"RAW_AUDIO_SENTINEL","transcript":"RAW_TRANSCRIPT_SENTINEL","rendered":"RENDERED_PERSONAL_SENTINEL"}`),
+	}
+	emitter := &recordingDecisionEmitter{}
+	if err := dispatcher.Start(context.Background(), adapter, call, emitter); err != nil {
+		t.Fatalf("dispatcher Start: %v", err)
+	}
+	fake.mu.Lock()
+	workflowName, workflowOptions, args := fake.workflow, fake.options, append([]interface{}(nil), fake.args...)
+	fake.mu.Unlock()
+	if workflowName != DecisionSessionWorkflowName {
+		t.Fatalf("workflow = %v, want %q", workflowName, DecisionSessionWorkflowName)
+	}
+	if workflowOptions.ID != "gobeyond-agent-run/ses_1/run_1" || workflowOptions.TaskQueue != "decision__test" {
+		t.Fatalf("workflow start options = %#v", workflowOptions)
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"RAW_AUDIO_SENTINEL", "RAW_TRANSCRIPT_SENTINEL", "RENDERED_PERSONAL_SENTINEL"} {
+		if strings.Contains(string(encoded), raw) {
+			t.Fatalf("workflow input retained %q: %s", raw, encoded)
+		}
+	}
+	if !strings.Contains(string(encoded), input.Pin.PromptFamiliesSHA256) || !strings.Contains(string(encoded), input.Pin.SnapshotSHA256) {
+		t.Fatalf("workflow input lost frozen prompt or snapshot identity: %s", encoded)
+	}
+	if len(emitter.events) < 2 || emitter.events[0].Type != "agent.decision.transition" || emitter.events[len(emitter.events)-1].Type != "agent.decision.completed" {
+		t.Fatalf("start events = %#v", emitter.events)
+	}
+
+	fake.updateOutput = DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{Identity: identity}}
+	if err := dispatcher.Respond(context.Background(), adapter, httpruntime.RespondCall{
+		Session: call.Session, Run: call.Run, Response: json.RawMessage(`{"text":"RAW_TRANSCRIPT_SENTINEL"}`),
+	}, emitter); err != nil {
+		t.Fatalf("dispatcher Respond: %v", err)
+	}
+	fake.mu.Lock()
+	respondOptions := fake.updateOptions
+	fake.mu.Unlock()
+	if respondOptions.UpdateName != DecisionSessionAdvanceUpdate || respondOptions.UpdateID != "speech_1" || len(respondOptions.Args) != 1 {
+		t.Fatalf("respond update options = %#v", respondOptions)
+	}
+	updateJSON, err := json.Marshal(respondOptions.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(updateJSON), "RAW_TRANSCRIPT_SENTINEL") {
+		t.Fatalf("respond update retained raw transcript: %s", updateJSON)
+	}
+
+	fake.updateOutput = DecisionSessionSnapshot{Identity: identity, Status: DecisionSessionCancelled}
+	if err := dispatcher.Cancel(context.Background(), adapter, httpruntime.CancelCall{Session: call.Session, Run: call.Run}, emitter); err != nil {
+		t.Fatalf("dispatcher Cancel: %v", err)
+	}
+	fake.mu.Lock()
+	cancelOptions := fake.updateOptions
+	fake.mu.Unlock()
+	if cancelOptions.UpdateName != DecisionSessionCancelUpdate || cancelOptions.UpdateID != "cancel-run_1" {
+		t.Fatalf("cancel update options = %#v", cancelOptions)
+	}
+}
+
+func TestDecisionSessionWorkflowUsesRecordedResultsAndOpaqueReferences(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_2", 11)
+	env, payloads := decisionSessionTestEnvironment(input)
+	var accepted, stale decisionSessionUpdateOutcome
+	var cancelSnapshot DecisionSessionSnapshot
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		event := decisionv1.NormalizedEvent{
+			ID: "input_1", Kind: decisionv1.EventInputFinal, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			InputWindowID: snapshot.View.InputWindowID, Channel: decisionv1.ChannelVoice,
+			Modality: decisionv1.ModalitySpeechFinal, Locale: input.Pin.Locale,
+			ProtectedInput: decisionRef("transcript_ref_1", "final-transcript", "b", input, decisionSessionTestStart.Add(time.Hour)),
+			SourceEventIDs: []string{"speech_source_1"}, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+		}
+		sendDecisionSessionUpdate(env, "input_1", sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event}), func(result decisionSessionUpdateOutcome) { accepted = result })
+	}, time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		event := decisionv1.NormalizedEvent{
+			ID: "input_stale", Kind: decisionv1.EventInputFinal, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: input.Admission.RouteEntryID,
+			InputWindowID: "stale_input_window", Channel: decisionv1.ChannelVoice,
+			Modality: decisionv1.ModalitySpeechFinal, Locale: input.Pin.Locale,
+			ProtectedInput: decisionRef("transcript_stale", "final-transcript", "b", input, decisionSessionTestStart.Add(time.Hour)),
+			SourceEventIDs: []string{"speech_stale"}, ReceivedAt: decisionSessionTestStart.Add(2 * time.Second),
+		}
+		sendDecisionSessionUpdate(env, "input_stale", sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event}), func(result decisionSessionUpdateOutcome) { stale = result })
+	}, 2*time.Second)
+	env.RegisterDelayedCallback(func() {
+		cancelDecisionSessionTest(env, input, "cancel_run_2", &cancelSnapshot, t)
+	}, 3*time.Second)
+	env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("decision workflow: %v", err)
+	}
+	if !accepted.advance.Accepted || len(accepted.advance.Effects) != 1 || accepted.advance.Effects[0].Kind != decisions.EffectRefreshCandidates {
+		t.Fatalf("accepted protected input = %#v", accepted)
+	}
+	if stale.advance.Accepted || stale.err == nil || len(stale.advance.Effects) != 0 {
+		t.Fatalf("stale callback result = %#v", stale)
+	}
+	if cancelSnapshot.Status != DecisionSessionCancelled {
+		t.Fatalf("cancel snapshot = %#v", cancelSnapshot)
+	}
+	serialized := strings.Join(payloads.snapshot(), "\n")
+	for _, raw := range []string{"RAW_AUDIO_SENTINEL", "RAW_TRANSCRIPT_SENTINEL", "RENDERED_PERSONAL_SENTINEL"} {
+		if strings.Contains(serialized, raw) {
+			t.Fatalf("Temporal serialized personal sentinel %q", raw)
+		}
+	}
+	if !strings.Contains(serialized, "transcript_ref_1") {
+		t.Fatal("Temporal serialization omitted the opaque protected reference")
+	}
+}
+
+func TestDecisionSessionConcurrentResponsesAcceptOnlyPinnedCurrentGeneration(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_3", 19)
+	env, _ := decisionSessionTestEnvironment(input)
+	var first, second, replaced decisionSessionUpdateOutcome
+	var cancelSnapshot DecisionSessionSnapshot
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		makeInput := func(id string) DecisionSessionUpdate {
+			event := decisionv1.NormalizedEvent{
+				ID: id, Kind: decisionv1.EventInputFinal, TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+				Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+				InputWindowID: snapshot.View.InputWindowID, Channel: decisionv1.ChannelVoice,
+				Modality: decisionv1.ModalitySpeechFinal, Locale: input.Pin.Locale,
+				ProtectedInput: decisionRef("input_ref_"+id, "final-transcript", "b", input, decisionSessionTestStart.Add(time.Hour)),
+				SourceEventIDs: []string{"source_" + id}, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+			}
+			return sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event})
+		}
+		stale := makeInput("input_replaced")
+		stale.Identity.Generation++
+		stale.Event.Normalized.Generation++
+		remaining := 3
+		done := func(target *decisionSessionUpdateOutcome) func(decisionSessionUpdateOutcome) {
+			return func(result decisionSessionUpdateOutcome) {
+				*target = result
+				remaining--
+				if remaining == 0 {
+					cancelDecisionSessionTest(env, input, "cancel_run_3", &cancelSnapshot, t)
+				}
+			}
+		}
+		sendDecisionSessionUpdate(env, "input_first", makeInput("input_first"), done(&first))
+		sendDecisionSessionUpdate(env, "input_second", makeInput("input_second"), done(&second))
+		sendDecisionSessionUpdate(env, "input_replaced", stale, done(&replaced))
+	}, time.Second)
+	env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	accepted := 0
+	if first.advance.Accepted {
+		accepted++
+	}
+	if second.advance.Accepted {
+		accepted++
+	}
+	if accepted != 1 {
+		t.Fatalf("same-generation concurrent inputs accepted %d times: first=%#v second=%#v", accepted, first, second)
+	}
+	if replaced.advance.Accepted || replaced.err == nil || len(replaced.advance.Effects) != 0 {
+		t.Fatalf("replaced-generation callback = %#v", replaced)
+	}
+	if cancelSnapshot.Status != DecisionSessionCancelled {
+		t.Fatalf("cancel snapshot = %#v", cancelSnapshot)
+	}
+}
+
+func TestDecisionSessionExpiredProtectedReferenceStopsWithoutEffects(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_4", 23)
+	env, _ := decisionSessionTestEnvironment(input)
+	var resultUpdate decisionSessionUpdateOutcome
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		event := decisionv1.NormalizedEvent{
+			ID: "expired_input", Kind: decisionv1.EventInputFinal, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			InputWindowID: snapshot.View.InputWindowID, Channel: decisionv1.ChannelVoice,
+			Modality: decisionv1.ModalitySpeechFinal, Locale: input.Pin.Locale,
+			ProtectedInput: decisionRef("expired_transcript", "final-transcript", "b", input, decisionSessionTestStart),
+			SourceEventIDs: []string{"expired_source"}, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+		}
+		sendDecisionSessionUpdate(env, "expired_input", sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event}), func(result decisionSessionUpdateOutcome) { resultUpdate = result })
+	}, time.Second)
+	env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result DecisionSessionResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if resultUpdate.err != nil || resultUpdate.advance.Accepted || !resultUpdate.advance.Stopped || len(resultUpdate.advance.Effects) != 0 {
+		t.Fatalf("expired reference update = %#v", resultUpdate)
+	}
+	if result.Snapshot.Status != DecisionSessionStopped {
+		t.Fatalf("workflow status = %q, want stopped", result.Snapshot.Status)
+	}
+}
+
+func TestDecisionSessionRejectsPinnedIdentityDrift(t *testing.T) {
+	changes := []struct {
+		name   string
+		change func(*DecisionSessionIdentity)
+	}{
+		{"schema", func(i *DecisionSessionIdentity) { i.SchemaVersion = "decision.graph/v2" }},
+		{"release", func(i *DecisionSessionIdentity) { i.ReleaseSHA256 = strings.Repeat("0", 64) }},
+		{"graph", func(i *DecisionSessionIdentity) { i.GraphSHA256 = strings.Repeat("0", 64) }},
+		{"prompt hash", func(i *DecisionSessionIdentity) { i.PromptFamiliesSHA256 = strings.Repeat("0", 64) }},
+		{"snapshot", func(i *DecisionSessionIdentity) { i.SnapshotSHA256 = strings.Repeat("0", 64) }},
+		{"generation", func(i *DecisionSessionIdentity) { i.Generation++ }},
+		{"locale", func(i *DecisionSessionIdentity) { i.Locale = "fr" }},
+		{"prompt family", func(i *DecisionSessionIdentity) { i.PromptFamily = "other.prompt" }},
+		{"prompt locale", func(i *DecisionSessionIdentity) { i.PromptVariantLocale = "fr" }},
+	}
+	for _, change := range changes {
+		t.Run(change.name, func(t *testing.T) {
+			input := decisionSessionInputFixture(t, "ses_5", 29)
+			env, _ := decisionSessionTestEnvironment(input)
+			var outcome decisionSessionUpdateOutcome
+			var cancelSnapshot DecisionSessionSnapshot
+			env.RegisterDelayedCallback(func() {
+				snapshot := queryDecisionSession(t, env)
+				event := decisionv1.NormalizedEvent{
+					ID: "identity_event", Kind: decisionv1.EventSpeechStarted,
+					TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+					Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry,
+					RouteEntryID: snapshot.View.RouteEntryID, InputWindowID: snapshot.View.InputWindowID,
+					Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+				}
+				update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event})
+				change.change(&update.Identity)
+				sendDecisionSessionUpdate(env, "identity_event", update, func(result decisionSessionUpdateOutcome) { outcome = result })
+			}, time.Second)
+			env.RegisterDelayedCallback(func() { cancelDecisionSessionTest(env, input, "cancel_identity", &cancelSnapshot, t) }, 2*time.Second)
+			env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatal(err)
+			}
+			if outcome.advance.Accepted || outcome.err == nil || len(outcome.advance.Effects) != 0 {
+				t.Fatalf("identity drift result = %#v", outcome)
+			}
+			if cancelSnapshot.Status != DecisionSessionCancelled {
+				t.Fatalf("cancel snapshot = %#v", cancelSnapshot)
+			}
+		})
+	}
+}
+
+type decisionSessionUpdateOutcome struct {
+	advance  DecisionSessionAdvanceResult
+	accepted bool
+	err      error
+}
+
+func sendDecisionSessionUpdate(env *testsuite.TestWorkflowEnvironment, updateID string, update DecisionSessionUpdate, done func(decisionSessionUpdateOutcome)) {
+	var outcome decisionSessionUpdateOutcome
+	env.UpdateWorkflow(DecisionSessionAdvanceUpdate, updateID, &testsuite.TestUpdateCallback{
+		OnReject: func(err error) { outcome.err = err; done(outcome) },
+		OnComplete: func(value interface{}, err error) {
+			if err != nil {
+				outcome.err = err
+			} else {
+				outcome.advance, _ = value.(DecisionSessionAdvanceResult)
+				outcome.accepted = outcome.advance.Accepted
+			}
+			done(outcome)
+		},
+	}, update)
+}
+
+func cancelDecisionSessionTest(env *testsuite.TestWorkflowEnvironment, input DecisionSessionInput, updateID string, snapshot *DecisionSessionSnapshot, t *testing.T) {
+	t.Helper()
+	env.UpdateWorkflow(DecisionSessionCancelUpdate, updateID, &testsuite.TestUpdateCallback{
+		OnReject: func(err error) { t.Errorf("cancel update rejected: %v", err) },
+		OnComplete: func(value interface{}, err error) {
+			if err != nil {
+				t.Errorf("cancel update failed: %v", err)
+				return
+			}
+			*snapshot, _ = value.(DecisionSessionSnapshot)
+		},
+	}, DecisionSessionCancel{Identity: decisionSessionIdentity(input.Pin)})
+}
+
+func TestDecisionSessionUpdateFailureDoesNotEmitEffects(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_9", 43)
+	identity := decisionSessionIdentity(input.Pin)
+	adapter := &decisionSessionAdapterFake{
+		config: agents.Config{Durable: true, TaskQueue: "decision"}, definition: input.Definition,
+		response: DecisionSessionUpdate{Identity: identity, ExpectedRouteEntryID: "stale_entry", Event: decisions.Event{}},
+	}
+	fake := &fakeClient{updateErr: errors.New("update rejected")}
+	dispatcher, err := New(context.Background(), Options{Client: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dispatcher.Close)
+	emitter := &recordingDecisionEmitter{}
+	err = dispatcher.Respond(context.Background(), adapter, httpruntime.RespondCall{
+		Session: agents.Session{ID: "ses_9"}, Run: agents.Run{ID: "run_9"}, Response: json.RawMessage(`{"text":"private"}`),
+	}, emitter)
+	if err == nil {
+		t.Fatal("stale update unexpectedly succeeded")
+	}
+	if len(emitter.events) != 0 {
+		t.Fatalf("stale update emitted effects: %#v", emitter.events)
+	}
+}
+
+func TestDecisionSessionDispatcherRejectsRawProviderScoreTextBeforeUpdate(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_12", 59)
+	identity := decisionSessionIdentity(input.Pin)
+	adapter := &decisionSessionAdapterFake{
+		config: agents.Config{Durable: true, TaskQueue: "decision"}, definition: input.Definition,
+		response: DecisionSessionUpdate{
+			Identity: identity, ExpectedRouteEntryID: input.Admission.RouteEntryID,
+			Event: decisions.Event{Normalized: &decisionv1.NormalizedEvent{
+				ID: "raw_score_event", Kind: decisionv1.EventDecisionCompleted,
+				Decision: &decisionv1.DecisionResult{ProviderScoreFields: map[string]json.RawMessage{
+					"transcript": json.RawMessage(`"RAW_TRANSCRIPT_SENTINEL"`),
+				}},
+			}},
+		},
+	}
+	fake := &fakeClient{}
+	dispatcher, err := New(context.Background(), Options{Client: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dispatcher.Close)
+	emitter := &recordingDecisionEmitter{}
+	err = dispatcher.Respond(context.Background(), adapter, httpruntime.RespondCall{
+		Session: agents.Session{ID: input.Admission.SessionID}, Run: agents.Run{ID: "run_12"},
+		Response: json.RawMessage(`{"text":"RAW_TRANSCRIPT_SENTINEL"}`),
+	}, emitter)
+	if err == nil || !strings.Contains(err.Error(), "must be numeric semantic data") {
+		t.Fatalf("raw score response error = %v", err)
+	}
+	fake.mu.Lock()
+	updateSent := fake.updateOptions.UpdateName != ""
+	fake.mu.Unlock()
+	if updateSent || len(emitter.events) != 0 {
+		t.Fatalf("raw provider score reached workflow or emitter: update=%v events=%#v", updateSent, emitter.events)
+	}
+}
+
+func TestDecisionSessionCandidatePinMismatchRejected(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_10", 47)
+	badRef := decisionRef("snapshot_bad", "directory-snapshot", "b", input, decisionSessionTestStart.Add(time.Hour))
+	update := DecisionSessionUpdate{
+		Identity: decisionSessionIdentity(input.Pin), ExpectedRouteEntryID: input.Admission.RouteEntryID,
+		AuthorizedReferences: []decisionv1.ProtectedReference{*badRef},
+		Event: decisions.Event{Snapshot: &decisions.SnapshotRefresh{
+			ID: "snapshot_bad", TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+			Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry, RouteEntryID: input.Admission.RouteEntryID,
+			ReceivedAt: decisionSessionTestStart.Add(time.Second),
+			Bound: decisions.BoundCandidateSnapshot{BindingID: decisionRouteByID(t, input.Definition, input.Definition.Graph.Entry).Match.BindingID,
+				RouteID: input.Definition.Graph.Entry, RouteEntryID: input.Admission.RouteEntryID,
+				Snapshot: decisionv1.CandidateSetSnapshot{CandidateIDs: []string{"candidate_opaque_1"}, ProtectedSnapshot: badRef}},
+		}},
+	}
+	if err := validateDecisionSessionReferences(update, decisionSessionIdentity(input.Pin), decisionSessionTestStart); err == nil || !strings.Contains(err.Error(), "pinned snapshot") {
+		t.Fatalf("candidate pin mismatch error = %v", err)
+	}
+}
+
+func TestDecisionSessionReplayUsesRecordedDecisionsAndOpaqueReferences(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_8", 41)
+	env, payloads := decisionSessionTestEnvironment(input)
+	outcomes := map[string]decisionSessionUpdateOutcome{}
+	var cancelSnapshot DecisionSessionSnapshot
+	candidateRef := decisionRef("snapshot_ref_replay", "directory-snapshot", "a", input, decisionSessionTestStart.Add(time.Hour))
+	candidateSet := decisionv1.CandidateSetSnapshot{CandidateIDs: []string{"candidate_opaque_1"}, ProtectedSnapshot: candidateRef}
+	candidateSet.SHA256 = candidateSet.CanonicalSHA256()
+
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		event := decisionv1.NormalizedEvent{
+			ID: "input_replay", Kind: decisionv1.EventInputFinal, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			InputWindowID: snapshot.View.InputWindowID, Channel: decisionv1.ChannelVoice,
+			Modality: decisionv1.ModalitySpeechFinal, Locale: input.Pin.Locale,
+			ProtectedInput: decisionRef("transcript_replay", "final-transcript", "b", input, decisionSessionTestStart.Add(time.Hour)),
+			SourceEventIDs: []string{"source_replay"}, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+		}
+		sendDecisionSessionUpdate(env, "input_replay", sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event}), func(result decisionSessionUpdateOutcome) { outcomes["input"] = result })
+	}, time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		refresh := decisions.SnapshotRefresh{
+			ID: "snapshot_replay", TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+			Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			ReceivedAt: decisionSessionTestStart.Add(2 * time.Second),
+			Bound: decisions.BoundCandidateSnapshot{
+				BindingID: decisionRouteByID(t, input.Definition, input.Definition.Graph.Entry).Match.BindingID,
+				RouteID:   input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+				Snapshot: candidateSet,
+			},
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Snapshot: &refresh})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "snapshot_replay", update, func(result decisionSessionUpdateOutcome) { outcomes["snapshot"] = result })
+	}, 2*time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		match := decisionv1.NormalizedEvent{
+			ID: "match_replay", Kind: decisionv1.EventMatchCompleted, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(3 * time.Second),
+			Match: &decisionv1.MatchResult{
+				Outcome: decisionv1.OutcomeNoMatch, SnapshotSHA256: candidateSet.SHA256,
+				BindingID: decisionRouteByID(t, input.Definition, input.Definition.Graph.Entry).Match.BindingID,
+			},
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &match, InputID: "input_replay"})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "match_replay", update, func(result decisionSessionUpdateOutcome) { outcomes["match"] = result })
+	}, 3*time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		recorded := &decisionv1.DecisionResult{
+			Outcome: decisionv1.OutcomeNoMatch, ProviderRef: "recorded-provider", ModelRef: "recorded-model",
+			Revision: "recorded-revision", ResultSchemaSHA256: strings.Repeat("d", 64),
+			CandidateSetSHA256: candidateSet.SHA256, Usage: decisionv1.UsageRecord{Status: decisionv1.UsageMissing},
+		}
+		decision := decisionv1.NormalizedEvent{
+			ID: "decision_replay", Kind: decisionv1.EventDecisionCompleted, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(4 * time.Second), Decision: recorded,
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &decision, InputID: "input_replay"})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "decision_replay", update, func(result decisionSessionUpdateOutcome) { outcomes["decision"] = result })
+	}, 4*time.Second)
+	env.RegisterDelayedCallback(func() {
+		cancelDecisionSessionTest(env, input, "cancel_replay", &cancelSnapshot, t)
+	}, 5*time.Second)
+
+	env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("decision replay: %v", err)
+	}
+	var result DecisionSessionResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"input", "snapshot", "match", "decision"} {
+		if !outcomes[name].advance.Accepted {
+			t.Fatalf("%s replay update rejected: %#v", name, outcomes[name])
+		}
+	}
+	if outcomes["decision"].advance.Snapshot.View.DecisionCalls != 1 || outcomes["decision"].advance.Snapshot.View.RouteID != "/clarify" {
+		t.Fatalf("recorded decision was not applied by replay: %#v", outcomes["decision"])
+	}
+	if result.Snapshot.Status != DecisionSessionCancelled || cancelSnapshot.Status != DecisionSessionCancelled {
+		t.Fatalf("replay cancellation result = %#v / %#v", cancelSnapshot, result.Snapshot)
+	}
+	serialized := strings.Join(payloads.snapshot(), "\n")
+	for _, raw := range []string{"RAW_AUDIO_SENTINEL", "RAW_TRANSCRIPT_SENTINEL", "RENDERED_PERSONAL_SENTINEL"} {
+		if strings.Contains(serialized, raw) {
+			t.Fatalf("Temporal replay serialized personal sentinel %q", raw)
+		}
+	}
+	if !strings.Contains(serialized, "snapshot_ref_replay") || !strings.Contains(serialized, "recorded-revision") {
+		t.Fatal("Temporal replay history omitted recorded decision data or the authorized opaque reference")
+	}
+	// No activities are registered in this environment, so any provider or directory requery would fail the workflow.
+}
+
+func decisionSessionInputFixture(t *testing.T, sessionID string, generation uint64) DecisionSessionInput {
+	t.Helper()
+	data, err := os.ReadFile("../decisioncontract/v1/testdata/review-contract.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var definition decisionv1.Definition
+	if err := json.Unmarshal(data, &definition); err != nil {
+		t.Fatal(err)
+	}
+	qualifyDecisionSessionDefinition(&definition)
+	frozen, _, _, err := agents.FreezeDecisionManifest(definition)
+	if err != nil {
+		t.Fatalf("freeze synthetic decision definition: %v", err)
+	}
+	voice := decisionv1.VoiceCapabilities{
+		ProfileRef: "qualified-profile", Revision: "profile-revision-1", VoiceID: "voice-1", Locale: "en",
+		SupportedLocales: []string{"en"}, Formats: []decisionv1.AudioFormat{{Codec: "pcm", SampleRateHz: 16000, Channels: 1}},
+		Capabilities: map[decisionv1.VoiceCapabilityName]decisionv1.CapabilityStatus{}, EvidenceRef: "synthetic-test-only",
+	}
+	for _, capability := range frozen.Graph.RequiredVoiceCapabilities {
+		voice.Capabilities[capability] = decisionv1.CapabilitySupported
+	}
+	voiceDigest, err := decisionv1.CanonicalVoiceCapabilitiesSHA256(voice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := decisionv1.SessionPin{
+		SchemaVersion: frozen.SchemaVersion, ReleaseSHA256: frozen.ReleaseSHA256,
+		GraphSHA256: frozen.DigestInputs.Graph, PromptFamiliesSHA256: frozen.DigestInputs.Prompts,
+		BindingsSHA256: frozen.DigestInputs.Bindings, NormalizationSHA256: frozen.DigestInputs.Normalization,
+		AuthoritySHA256: frozen.DigestInputs.Authority, PolicySHA256: frozen.DigestInputs.Policy,
+		LocaleAndVoiceSHA256: frozen.DigestInputs.LocaleAndVoice, SnapshotSHA256: strings.Repeat("a", 64),
+		VoiceSHA256: voiceDigest, Generation: generation, Locale: "en", PromptFamily: "operator.prompt",
+		PromptVariantLocale: "en", Voice: voice,
+	}
+	input := DecisionSessionInput{Definition: frozen, Pin: pin, Admission: decisionv1.NormalizedEvent{
+		ID: "admission_1", Kind: decisionv1.EventSessionAdmitted, TenantID: "tenant_1", SessionID: sessionID,
+		Generation: generation, RouteID: frozen.Graph.Entry, RouteEntryID: "entry_1",
+		Channel: decisionv1.ChannelVoice, Locale: "en", ReceivedAt: decisionSessionTestStart,
+	}}
+	if err := ValidateDecisionSessionInput(input); err != nil {
+		t.Fatalf("synthetic decision session input invalid: %v", err)
+	}
+	return input
+}
+
+func qualifyDecisionSessionDefinition(definition *decisionv1.Definition) {
+	const ceiling = uint64(100)
+	budgetGates := map[string]bool{}
+	for dimension, bound := range definition.Graph.Authority.Budgets {
+		bound.Value = new(uint64)
+		*bound.Value = ceiling
+		budgetGates[bound.GateID] = true
+		definition.Graph.Authority.Budgets[dimension] = bound
+	}
+	for index := range definition.Graph.RetryGroups {
+		group := &definition.Graph.RetryGroups[index]
+		for _, bound := range []*decisionv1.Bound{&group.MaxReprompts, &group.MaxNoInputReprompts, &group.MaxNoMatchReprompts, &group.MaxAmbiguousReprompts} {
+			bound.Value = new(uint64)
+			*bound.Value = ceiling
+			budgetGates[bound.GateID] = true
+		}
+	}
+	for index := range definition.PolicyGates {
+		gate := &definition.PolicyGates[index]
+		gate.Status = decisionv1.GateQualified
+		gate.EvidenceRef = "synthetic-test-only"
+		gate.UnresolvedReason = ""
+		switch {
+		case budgetGates[gate.ID]:
+			gate.Value = strconv.FormatUint(ceiling, 10)
+		case gate.Kind == decisionv1.GateLocaleProfile:
+			gate.Value = "en"
+		case gate.Kind == decisionv1.GateVoiceProfile:
+			gate.Value = "qualified-profile@profile-revision-1"
+		default:
+			gate.Value = "synthetic-test-only"
+		}
+	}
+	definition.Graph.Locale.EnabledLocales = []string{"en"}
+}
+
+func decisionRef(id, purpose, digestChar string, input DecisionSessionInput, expiry time.Time) *decisionv1.ProtectedReference {
+	return &decisionv1.ProtectedReference{ID: id, Purpose: purpose, TenantID: input.Admission.TenantID,
+		SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+		SHA256: strings.Repeat(digestChar, 64), ExpiresAt: expiry}
+}
+
+func sessionUpdate(input DecisionSessionInput, routeEntry string, event decisions.Event) DecisionSessionUpdate {
+	return DecisionSessionUpdate{Identity: decisionSessionIdentity(input.Pin), ExpectedRouteEntryID: routeEntry, Event: event}
+}
+
+func decisionRouteByID(t *testing.T, definition decisionv1.Definition, id decisionv1.RouteID) decisionv1.Route {
+	t.Helper()
+	for _, route := range definition.Graph.Routes {
+		if route.ID == id {
+			return route
+		}
+	}
+	t.Fatalf("route %q missing", id)
+	return decisionv1.Route{}
+}
+
+type decisionSessionAdapterFake struct {
+	config       agents.Config
+	definition   decisionv1.Definition
+	input        DecisionSessionInput
+	response     DecisionSessionUpdate
+	cancellation DecisionSessionCancel
+}
+
+func (adapter *decisionSessionAdapterFake) Config() agents.Config { return adapter.config }
+func (adapter *decisionSessionAdapterFake) DecisionDefinition() decisionv1.Definition {
+	return adapter.definition
+}
+func (*decisionSessionAdapterFake) Start(context.Context, httpruntime.StartCall, httpruntime.EventEmitter) error {
+	return nil
+}
+func (*decisionSessionAdapterFake) Respond(context.Context, httpruntime.RespondCall, httpruntime.EventEmitter) error {
+	return nil
+}
+func (*decisionSessionAdapterFake) Cancel(context.Context, httpruntime.CancelCall, httpruntime.EventEmitter) error {
+	return nil
+}
+func (adapter *decisionSessionAdapterFake) PrepareDecisionSession(httpruntime.StartCall) (DecisionSessionInput, error) {
+	return adapter.input, nil
+}
+func (adapter *decisionSessionAdapterFake) PrepareDecisionResponse(httpruntime.RespondCall) (DecisionSessionUpdate, error) {
+	return adapter.response, nil
+}
+func (adapter *decisionSessionAdapterFake) PrepareDecisionCancellation(httpruntime.CancelCall) (DecisionSessionCancel, error) {
+	return adapter.cancellation, nil
+}
+
+var _ httpruntime.DecisionAdapter = (*decisionSessionAdapterFake)(nil)
+var _ DecisionSessionAdapter = (*decisionSessionAdapterFake)(nil)
+
+type recordingDecisionEmitter struct {
+	mu     sync.Mutex
+	events []struct {
+		Type string
+		Data interface{}
+	}
+}
+
+func (emitter *recordingDecisionEmitter) Emit(_ context.Context, eventType string, data interface{}) error {
+	emitter.mu.Lock()
+	defer emitter.mu.Unlock()
+	emitter.events = append(emitter.events, struct {
+		Type string
+		Data interface{}
+	}{Type: eventType, Data: data})
+	return nil
+}
+
+type decisionSessionCaptureConverter struct {
+	inner converter.DataConverter
+	mu    sync.Mutex
+	data  []string
+}
+
+func (capture *decisionSessionCaptureConverter) record(payload *common.Payload) {
+	if payload == nil {
+		return
+	}
+	capture.mu.Lock()
+	capture.data = append(capture.data, string(payload.Data))
+	capture.mu.Unlock()
+}
+func (capture *decisionSessionCaptureConverter) ToPayload(value interface{}) (*common.Payload, error) {
+	payload, err := capture.inner.ToPayload(value)
+	if err == nil {
+		capture.record(payload)
+	}
+	return payload, err
+}
+func (capture *decisionSessionCaptureConverter) FromPayload(payload *common.Payload, value interface{}) error {
+	return capture.inner.FromPayload(payload, value)
+}
+func (capture *decisionSessionCaptureConverter) ToPayloads(values ...interface{}) (*common.Payloads, error) {
+	payloads, err := capture.inner.ToPayloads(values...)
+	if err == nil && payloads != nil {
+		for _, payload := range payloads.Payloads {
+			capture.record(payload)
+		}
+	}
+	return payloads, err
+}
+func (capture *decisionSessionCaptureConverter) FromPayloads(payloads *common.Payloads, values ...interface{}) error {
+	return capture.inner.FromPayloads(payloads, values...)
+}
+func (capture *decisionSessionCaptureConverter) ToString(payload *common.Payload) string {
+	return capture.inner.ToString(payload)
+}
+func (capture *decisionSessionCaptureConverter) ToStrings(payloads *common.Payloads) []string {
+	return capture.inner.ToStrings(payloads)
+}
+func (capture *decisionSessionCaptureConverter) snapshot() []string {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	return append([]string(nil), capture.data...)
+}
+
+var _ converter.DataConverter = (*decisionSessionCaptureConverter)(nil)
+
+func queryDecisionSession(t *testing.T, env *testsuite.TestWorkflowEnvironment) DecisionSessionSnapshot {
+	t.Helper()
+	value, err := env.QueryWorkflow(DecisionSessionSnapshotQuery)
+	if err != nil {
+		t.Fatalf("query decision workflow: %v", err)
+	}
+	var snapshot DecisionSessionSnapshot
+	if err := value.Get(&snapshot); err != nil {
+		t.Fatalf("decode decision workflow query: %v", err)
+	}
+	return snapshot
+}
+
+func decisionSessionTestEnvironment(input DecisionSessionInput) (*testsuite.TestWorkflowEnvironment, *decisionSessionCaptureConverter) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.SetStartTime(decisionSessionTestStart)
+	capture := &decisionSessionCaptureConverter{inner: converter.GetDefaultDataConverter()}
+	env.SetDataConverter(capture)
+	env.RegisterWorkflowWithOptions(DecisionSessionWorkflow, workflow.RegisterOptions{Name: DecisionSessionWorkflowName})
+	return env, capture
+}
