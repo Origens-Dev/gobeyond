@@ -172,6 +172,10 @@ func TestDecisionSessionRespondMayReemitCachedIntentForReceiptDeduplication(t *t
 		config: agents.Config{Durable: true, TaskQueue: "decision"}, definition: input.Definition,
 		response: sessionUpdate(input, input.Admission.RouteEntryID, decisions.Event{Normalized: &decisionv1.NormalizedEvent{
 			ID: "retry_response", Kind: decisionv1.EventSpeechStarted,
+			TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+			Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry,
+			RouteEntryID: input.Admission.RouteEntryID, InputWindowID: "window_duplicate",
+			Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(time.Second),
 		}}),
 	}
 	fake := &fakeClient{updateOutput: result}
@@ -505,7 +509,12 @@ func TestDecisionSessionUpdateFailureDoesNotEmitEffects(t *testing.T) {
 	identity := decisionSessionIdentity(input)
 	adapter := &decisionSessionAdapterFake{
 		config: agents.Config{Durable: true, TaskQueue: "decision"}, definition: input.Definition,
-		response: DecisionSessionUpdate{Identity: identity, ExpectedRouteEntryID: "stale_entry", Event: decisions.Event{Normalized: &decisionv1.NormalizedEvent{ID: "stale_event", Kind: decisionv1.EventSpeechStarted}}},
+		response: DecisionSessionUpdate{Identity: identity, ExpectedRouteEntryID: "stale_entry", Event: decisions.Event{Normalized: &decisionv1.NormalizedEvent{
+			ID: "stale_event", Kind: decisionv1.EventSpeechStarted, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry,
+			RouteEntryID: input.Admission.RouteEntryID, InputWindowID: "window_stale",
+			Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+		}}},
 	}
 	fake := &fakeClient{updateErr: errors.New("update rejected")}
 	dispatcher, err := New(context.Background(), Options{Client: fake})
@@ -562,6 +571,98 @@ func TestDecisionSessionDispatcherRejectsRawProviderScoreTextBeforeUpdate(t *tes
 	fake.mu.Unlock()
 	if updateSent || len(emitter.events) != 0 {
 		t.Fatalf("raw provider score reached workflow or emitter: update=%v events=%#v", updateSent, emitter.events)
+	}
+}
+
+func TestDecisionSessionDispatcherRejectsMalformedProviderScoreKeyBeforeUpdate(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_bad_score_key", 60)
+	const sensitiveKey = "raw transcript 555-12-3456"
+	adapter := &decisionSessionAdapterFake{
+		config: agents.Config{Durable: true, TaskQueue: "decision"}, definition: input.Definition,
+		response: DecisionSessionUpdate{
+			Identity: decisionSessionIdentity(input), ExpectedRouteEntryID: input.Admission.RouteEntryID,
+			Event: decisions.Event{Normalized: &decisionv1.NormalizedEvent{
+				ID: "valid_score_event", Kind: decisionv1.EventDecisionCompleted,
+				TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+				Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry,
+				RouteEntryID: input.Admission.RouteEntryID, Channel: decisionv1.ChannelVoice,
+				ReceivedAt: decisionSessionTestStart.Add(time.Second),
+				Decision: &decisionv1.DecisionResult{
+					Outcome: decisionv1.OutcomeNoMatch, ProviderRef: "provider_1", ModelRef: "model_1", Revision: "rev_1",
+					ResultSchemaSHA256: strings.Repeat("b", 64), CandidateSetSHA256: input.Pin.SnapshotSHA256,
+					ProviderScoreFields: map[string]json.RawMessage{sensitiveKey: json.RawMessage(`0.5`)},
+					Usage:               decisionv1.UsageRecord{Status: decisionv1.UsageMissing},
+				},
+			}, InputID: "accepted_input"},
+		},
+	}
+	fake := &fakeClient{}
+	dispatcher, err := New(context.Background(), Options{Client: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dispatcher.Close)
+	emitter := &recordingDecisionEmitter{}
+	err = dispatcher.Respond(context.Background(), adapter, httpruntime.RespondCall{
+		Session:  agents.Session{ID: input.Admission.SessionID, AgentID: "operator"},
+		Run:      agents.Run{ID: input.RunID, SessionID: input.Admission.SessionID, AgentID: "operator", Mode: agents.DurableMode},
+		Response: json.RawMessage(`{"score":0.5}`),
+	}, emitter)
+	if err == nil || !strings.Contains(err.Error(), "provider score fields must have stable names") {
+		t.Fatalf("malformed provider score key error = %v", err)
+	}
+	fake.mu.Lock()
+	updateCalls, options := fake.updateCalls, fake.updateOptions
+	fake.mu.Unlock()
+	encoded, err := json.Marshal(options.Args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updateCalls != 0 || options.UpdateName != "" || strings.Contains(string(encoded), sensitiveKey) || len(emitter.events) != 0 {
+		t.Fatalf("malformed score key reached Temporal or emitter: calls=%d options=%#v payload=%s events=%#v", updateCalls, options, encoded, emitter.events)
+	}
+}
+
+func TestDecisionSessionDispatcherRejectsMalformedEventIDBeforeUpdate(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_bad_event_id", 62)
+	const sensitiveID = "raw transcript 555-12-3456"
+	adapter := &decisionSessionAdapterFake{
+		config: agents.Config{Durable: true, TaskQueue: "decision"}, definition: input.Definition,
+		response: DecisionSessionUpdate{
+			Identity: decisionSessionIdentity(input), ExpectedRouteEntryID: input.Admission.RouteEntryID,
+			Event: decisions.Event{Normalized: &decisionv1.NormalizedEvent{
+				ID: sensitiveID, Kind: decisionv1.EventSpeechStarted,
+				TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+				Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry,
+				RouteEntryID: input.Admission.RouteEntryID, InputWindowID: "window_bad_event_id",
+				Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+			}},
+		},
+	}
+	fake := &fakeClient{}
+	dispatcher, err := New(context.Background(), Options{Client: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dispatcher.Close)
+	emitter := &recordingDecisionEmitter{}
+	err = dispatcher.Respond(context.Background(), adapter, httpruntime.RespondCall{
+		Session:  agents.Session{ID: input.Admission.SessionID, AgentID: "operator"},
+		Run:      agents.Run{ID: input.RunID, SessionID: input.Admission.SessionID, AgentID: "operator", Mode: agents.DurableMode},
+		Response: json.RawMessage(`{"text":"synthetic"}`),
+	}, emitter)
+	if err == nil || !strings.Contains(err.Error(), "event, tenant, and session IDs are required") {
+		t.Fatalf("malformed event ID error = %v", err)
+	}
+	fake.mu.Lock()
+	updateCalls, options := fake.updateCalls, fake.updateOptions
+	fake.mu.Unlock()
+	encoded, err := json.Marshal(options.Args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updateCalls != 0 || options.UpdateName != "" || strings.Contains(string(encoded), sensitiveID) || len(emitter.events) != 0 {
+		t.Fatalf("malformed event ID reached Temporal or emitter: calls=%d options=%#v payload=%s events=%#v", updateCalls, options, encoded, emitter.events)
 	}
 }
 
@@ -692,9 +793,73 @@ func TestDecisionSessionSDKValidatorRejectsDirectInlineDTMFBeforeAcceptance(t *t
 	}
 }
 
+func TestDecisionSessionSDKValidatorRejectsMalformedScoreKeysAndEventIDs(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_direct_shape", 69)
+	env, _ := decisionSessionTestEnvironment(input)
+	rejected := map[string]error{}
+	accepted := 0
+	var cancelSnapshot DecisionSessionSnapshot
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		baseEvent := func(id string) decisionv1.NormalizedEvent {
+			return decisionv1.NormalizedEvent{
+				ID: id, TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+				Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry,
+				RouteEntryID: snapshot.View.RouteEntryID, InputWindowID: snapshot.View.InputWindowID,
+				Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+			}
+		}
+		invalidID := baseEvent("raw transcript 555-12-3456")
+		invalidID.Kind = decisionv1.EventSpeechStarted
+		invalidScore := baseEvent("valid_score_event")
+		invalidScore.Kind = decisionv1.EventDecisionCompleted
+		invalidScore.Decision = &decisionv1.DecisionResult{
+			Outcome: decisionv1.OutcomeNoMatch, ProviderRef: "provider_1", ModelRef: "model_1", Revision: "rev_1",
+			ResultSchemaSHA256: strings.Repeat("b", 64), CandidateSetSHA256: input.Pin.SnapshotSHA256,
+			ProviderScoreFields: map[string]json.RawMessage{
+				"raw transcript 555-12-3456": json.RawMessage(`0.5`),
+			}, Usage: decisionv1.UsageRecord{Status: decisionv1.UsageMissing},
+		}
+		send := func(key string, event decisions.Event) {
+			update := sessionUpdate(input, snapshot.View.RouteEntryID, event)
+			env.UpdateWorkflow(DecisionSessionAdvanceUpdate, "direct-shape-"+key, &testsuite.TestUpdateCallback{
+				OnReject: func(err error) { rejected[key] = err },
+				OnAccept: func() { accepted++ },
+				OnComplete: func(_ interface{}, err error) {
+					if err == nil {
+						t.Errorf("malformed %s update completed", key)
+					} else {
+						t.Errorf("malformed %s update passed validation then failed in handler: %v", key, err)
+					}
+				},
+			}, update)
+		}
+		send("event-id", decisions.Event{Normalized: &invalidID})
+		send("score-key", decisions.Event{Normalized: &invalidScore, InputID: "accepted_input"})
+	}, time.Second)
+	env.RegisterDelayedCallback(func() {
+		cancelDecisionSessionTest(env, input, "cancel_direct_shape", &cancelSnapshot, t)
+	}, 2*time.Second)
+	env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if rejected["event-id"] == nil || rejected["score-key"] == nil || accepted != 0 {
+		t.Fatalf("direct SDK validation: rejected=%#v accepted=%d", rejected, accepted)
+	}
+	if !strings.Contains(rejected["event-id"].Error(), "event, tenant, and session IDs are required") || !strings.Contains(rejected["score-key"].Error(), "provider score fields must have stable names") {
+		t.Fatalf("direct SDK validation errors = %#v", rejected)
+	}
+	if cancelSnapshot.Status != DecisionSessionCancelled {
+		t.Fatalf("post-rejection cancellation snapshot = %#v", cancelSnapshot)
+	}
+}
+
 func TestDecisionSessionCandidatePinMismatchRejected(t *testing.T) {
 	input := decisionSessionInputFixture(t, "ses_10", 47)
 	badRef := decisionRef("snapshot_bad", "directory-snapshot", "b", input, decisionSessionTestStart.Add(time.Hour))
+	badSnapshot := decisionv1.CandidateSetSnapshot{CandidateIDs: []string{"candidate_opaque_1"}, ProtectedSnapshot: badRef}
+	badSnapshot.SHA256 = badSnapshot.CanonicalSHA256()
 	update := DecisionSessionUpdate{
 		Identity: decisionSessionIdentity(input), ExpectedRouteEntryID: input.Admission.RouteEntryID,
 		AuthorizedReferences: []decisionv1.ProtectedReference{*badRef},
@@ -704,7 +869,7 @@ func TestDecisionSessionCandidatePinMismatchRejected(t *testing.T) {
 			ReceivedAt: decisionSessionTestStart.Add(time.Second),
 			Bound: decisions.BoundCandidateSnapshot{BindingID: decisionRouteByID(t, input.Definition, input.Definition.Graph.Entry).Match.BindingID,
 				RouteID: input.Definition.Graph.Entry, RouteEntryID: input.Admission.RouteEntryID,
-				Snapshot: decisionv1.CandidateSetSnapshot{CandidateIDs: []string{"candidate_opaque_1"}, ProtectedSnapshot: badRef}},
+				Snapshot: badSnapshot},
 		}},
 	}
 	if err := validateDecisionSessionReferences(update, decisionSessionIdentity(input), decisionSessionTestStart); err == nil || !strings.Contains(err.Error(), "pinned snapshot") {

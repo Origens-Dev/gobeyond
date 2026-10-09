@@ -1004,8 +1004,8 @@ func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapte
 	if update.Identity.SessionID != call.Session.ID || update.Identity.RunID != call.Run.ID {
 		return errors.New("decision response identity does not match the requested session and run")
 	}
-	if err := validateDecisionSessionEventPrivacy(update.Event); err != nil {
-		return fmt.Errorf("decision response contains non-semantic provider score data: %w", err)
+	if err := validateDecisionSessionUpdatePrivacy(update, nil); err != nil {
+		return fmt.Errorf("decision response failed privacy or contract validation: %w", err)
 	}
 	updateID, err := decisionUpdateID(update.Event)
 	if err != nil {
@@ -1082,6 +1082,9 @@ func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter
 	cancel, err := durable.PrepareDecisionCancellation(call)
 	if err != nil {
 		return fmt.Errorf("prepare decision session cancellation: %w", err)
+	}
+	if err := validateDecisionSessionIdentity(cancel.Identity); err != nil {
+		return err
 	}
 	if cancel.Identity.SessionID != call.Session.ID || cancel.Identity.RunID != call.Run.ID {
 		return errors.New("decision cancellation identity does not match the requested session and run")

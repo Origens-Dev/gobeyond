@@ -62,7 +62,9 @@ type DecisionSessionIdentity struct {
 // DecisionSessionUpdate is a server-normalized reducer event. Any protected
 // references are opaque references already authorized by the host authority;
 // this workflow validates only their scope and explicit expiry. Inline DTMF
-// digits are unsupported by this durable seam.
+// digits are unsupported by this durable seam. Identifier and score-field
+// name validation checks syntax only; a trusted adapter must not encode
+// sensitive values in otherwise-valid IDs or field names.
 type DecisionSessionUpdate struct {
 	Identity             DecisionSessionIdentity         `json:"identity"`
 	ExpectedRouteEntryID string                          `json:"expectedRouteEntryId"`
@@ -199,12 +201,12 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 			}, nil
 		}, workflow.UpdateHandlerOptions{
 			Validator: func(update DecisionSessionUpdate) error {
-				return validateDecisionSessionEventPrivacy(update.Event)
+				return validateDecisionSessionUpdatePrivacy(update, &session.identity)
 			},
 		}); err != nil {
 		return DecisionSessionResult{}, fmt.Errorf("register decision session update: %w", err)
 	}
-	if err := workflow.SetUpdateHandler(ctx, DecisionSessionCancelUpdate,
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionCancelUpdate,
 		func(_ workflow.Context, cancel DecisionSessionCancel) (DecisionSessionSnapshot, error) {
 			if cancel.Identity != session.identity {
 				return DecisionSessionSnapshot{}, errors.New("decision cancellation identity does not match the pinned session")
@@ -214,6 +216,16 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 			}
 			session.status = DecisionSessionCancelled
 			return session.snapshot(), nil
+		}, workflow.UpdateHandlerOptions{
+			Validator: func(cancel DecisionSessionCancel) error {
+				if err := validateDecisionSessionIdentity(cancel.Identity); err != nil {
+					return err
+				}
+				if cancel.Identity != session.identity {
+					return errors.New("decision cancellation identity does not match the pinned session")
+				}
+				return nil
+			},
 		}); err != nil {
 		return DecisionSessionResult{}, fmt.Errorf("register decision session cancellation: %w", err)
 	}
@@ -279,20 +291,10 @@ func decisionSessionIdentity(input DecisionSessionInput) DecisionSessionIdentity
 var errDecisionReferenceExpired = errors.New("decision protected reference expired")
 
 func validateDecisionSessionReferences(update DecisionSessionUpdate, identity DecisionSessionIdentity, now time.Time) error {
-	if err := validateDecisionSessionEventPrivacy(update.Event); err != nil {
+	if err := validateDecisionSessionUpdatePrivacy(update, &identity); err != nil {
 		return err
 	}
-	refs := make([]decisionv1.ProtectedReference, 0, len(update.AuthorizedReferences)+1)
-	refs = append(refs, update.AuthorizedReferences...)
-	if update.Event.Normalized != nil && update.Event.Normalized.ProtectedInput != nil {
-		refs = append(refs, *update.Event.Normalized.ProtectedInput)
-	}
-	if update.Event.Normalized != nil && update.Event.Normalized.EffectRequest != nil && update.Event.Normalized.EffectRequest.Payload != nil {
-		refs = append(refs, *update.Event.Normalized.EffectRequest.Payload)
-	}
-	if update.Event.Snapshot != nil && update.Event.Snapshot.Bound.Snapshot.ProtectedSnapshot != nil {
-		refs = append(refs, *update.Event.Snapshot.Bound.Snapshot.ProtectedSnapshot)
-	}
+	refs := decisionSessionReferences(update)
 	for _, ref := range refs {
 		if !ref.ExpiresAt.IsZero() && !ref.ExpiresAt.After(now) {
 			return errDecisionReferenceExpired
@@ -319,29 +321,107 @@ func validateDecisionSessionReferences(update DecisionSessionUpdate, identity De
 	return nil
 }
 
+func validateDecisionSessionIdentity(identity DecisionSessionIdentity) error {
+	if err := decisionv1.ValidateIdentifier(identity.TenantID); err != nil {
+		return fmt.Errorf("decision session tenant identity: %w", err)
+	}
+	if _, err := WorkflowID(identity.SessionID, identity.RunID); err != nil {
+		return errors.New("decision session identity requires valid session and run IDs")
+	}
+	if identity.SchemaVersion != decisionv1.SchemaVersion || identity.Generation == 0 {
+		return errors.New("decision session identity requires a supported schema and positive generation")
+	}
+	for _, digest := range []string{identity.ReleaseSHA256, identity.GraphSHA256, identity.PromptFamiliesSHA256, identity.SnapshotSHA256} {
+		if err := decisionv1.ValidateSHA256(digest); err != nil {
+			return errors.New("decision session identity requires valid pinned digests")
+		}
+	}
+	if err := decisionv1.ValidateLocale(identity.Locale); err != nil {
+		return fmt.Errorf("decision session locale identity: %w", err)
+	}
+	if err := decisionv1.ValidateLocale(identity.PromptVariantLocale); err != nil {
+		return fmt.Errorf("decision session prompt locale identity: %w", err)
+	}
+	if err := decisionv1.ValidateIdentifier(identity.PromptFamily); err != nil {
+		return fmt.Errorf("decision session prompt family identity: %w", err)
+	}
+	return nil
+}
+
+func validateDecisionSessionUpdatePrivacy(update DecisionSessionUpdate, expected *DecisionSessionIdentity) error {
+	if err := validateDecisionSessionIdentity(update.Identity); err != nil {
+		return err
+	}
+	if expected != nil && update.Identity != *expected {
+		return errors.New("decision callback identity does not match the pinned session")
+	}
+	if err := decisionv1.ValidateIdentifier(update.ExpectedRouteEntryID); err != nil {
+		return fmt.Errorf("decision callback route-entry identity: %w", err)
+	}
+	if err := validateDecisionSessionEventPrivacy(update.Event); err != nil {
+		return err
+	}
+	if updateTenantID(update.Event) != update.Identity.TenantID || updateSessionID(update.Event) != update.Identity.SessionID || decisionSessionEventGeneration(update.Event) != update.Identity.Generation {
+		return errors.New("decision callback event scope does not match its session identity")
+	}
+	refs := decisionSessionReferences(update)
+	for _, ref := range refs {
+		if err := ref.ValidateFor(update.Identity.TenantID, update.Identity.SessionID, update.Identity.Generation, time.Time{}); err != nil {
+			return fmt.Errorf("decision protected reference: %w", err)
+		}
+	}
+	if decisionEventNeedsPinnedSnapshot(update.Event) {
+		pinned := false
+		for _, ref := range refs {
+			if ref.Purpose == "directory-snapshot" && ref.SHA256 == update.Identity.SnapshotSHA256 {
+				pinned = true
+				break
+			}
+		}
+		if !pinned {
+			return errors.New("decision callback is missing the pinned authorized snapshot reference")
+		}
+	}
+	return nil
+}
+
+func decisionSessionReferences(update DecisionSessionUpdate) []decisionv1.ProtectedReference {
+	refs := make([]decisionv1.ProtectedReference, 0, len(update.AuthorizedReferences)+1)
+	refs = append(refs, update.AuthorizedReferences...)
+	if update.Event.Normalized != nil && update.Event.Normalized.ProtectedInput != nil {
+		refs = append(refs, *update.Event.Normalized.ProtectedInput)
+	}
+	if update.Event.Normalized != nil && update.Event.Normalized.EffectRequest != nil && update.Event.Normalized.EffectRequest.Payload != nil {
+		refs = append(refs, *update.Event.Normalized.EffectRequest.Payload)
+	}
+	if update.Event.Snapshot != nil && update.Event.Snapshot.Bound.Snapshot.ProtectedSnapshot != nil {
+		refs = append(refs, *update.Event.Snapshot.Bound.Snapshot.ProtectedSnapshot)
+	}
+	return refs
+}
+
 func validateDecisionSessionEventPrivacy(event decisions.Event) error {
 	if event.Normalized != nil && event.Normalized.Digits != "" {
 		return errors.New("inline DTMF input is unsupported in durable decision sessions")
 	}
-	if event.Normalized == nil || event.Normalized.Decision == nil {
-		return nil
+	if event.Normalized != nil && event.Normalized.Decision != nil {
+		for _, raw := range event.Normalized.Decision.ProviderScoreFields {
+			decoder := json.NewDecoder(strings.NewReader(string(raw)))
+			decoder.UseNumber()
+			var value any
+			if err := decoder.Decode(&value); err != nil {
+				return errors.New("provider score field must contain exactly one JSON value")
+			}
+			if _, ok := value.(json.Number); !ok {
+				return errors.New("provider score field must be numeric semantic data")
+			}
+			var trailing any
+			if err := decoder.Decode(&trailing); err != io.EOF {
+				return errors.New("provider score field must contain exactly one JSON value")
+			}
+		}
 	}
-	for name, raw := range event.Normalized.Decision.ProviderScoreFields {
-		decoder := json.NewDecoder(strings.NewReader(string(raw)))
-		decoder.UseNumber()
-		var value any
-		if err := decoder.Decode(&value); err != nil {
-			return fmt.Errorf("provider score field %q is invalid", name)
-		}
-		if _, ok := value.(json.Number); !ok {
-			return fmt.Errorf("provider score field %q must be numeric semantic data", name)
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); err != io.EOF {
-			return fmt.Errorf("provider score field %q must contain exactly one JSON value", name)
-		}
-	}
-	return nil
+	return decisions.ValidateEventStructure(event, time.Time{})
 }
 
 func decisionEventNeedsPinnedSnapshot(event decisions.Event) bool {
@@ -401,6 +481,21 @@ func decisionSessionEventID(event decisions.Event) string {
 		return event.Fallback.ID
 	default:
 		return ""
+	}
+}
+
+func decisionSessionEventGeneration(event decisions.Event) uint64 {
+	switch {
+	case event.Normalized != nil:
+		return event.Normalized.Generation
+	case event.Snapshot != nil:
+		return event.Snapshot.Generation
+	case event.Control != nil:
+		return event.Control.Generation
+	case event.Fallback != nil:
+		return event.Fallback.Generation
+	default:
+		return 0
 	}
 }
 
