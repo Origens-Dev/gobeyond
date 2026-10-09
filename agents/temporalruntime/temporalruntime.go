@@ -662,7 +662,7 @@ func (dispatcher *Dispatcher) startDecisionSession(ctx context.Context, adapter 
 		transition := DecisionSessionAdvanceResult{
 			Accepted: true,
 			Snapshot: DecisionSessionSnapshot{
-				Identity: decisionSessionIdentity(input.Pin), View: state.View(), Status: DecisionSessionRunning,
+				Identity: decisionSessionIdentity(input), View: state.View(), Status: decisionSessionStatusForView(state.View()),
 			},
 			Effects: initialEffects,
 		}
@@ -987,13 +987,22 @@ func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapte
 	if dispatcher.hosted != nil {
 		return errors.New("hosted decision sessions are not registered by this dormant dispatcher seam")
 	}
+	if err := validateDecisionSessionRun(call.Session, call.Run); err != nil {
+		return err
+	}
 	durable, ok := adapter.(DecisionSessionAdapter)
 	if !ok {
 		return ErrDecisionSessionAdapterRequired
 	}
+	if durable.Config().Mode() != agents.DurableMode {
+		return errors.New("decision session response requires a durable adapter")
+	}
 	update, err := durable.PrepareDecisionResponse(call)
 	if err != nil {
 		return fmt.Errorf("prepare decision response: %w", err)
+	}
+	if update.Identity.SessionID != call.Session.ID || update.Identity.RunID != call.Run.ID {
+		return errors.New("decision response identity does not match the requested session and run")
 	}
 	if err := validateDecisionSessionEventPrivacy(update.Event); err != nil {
 		return fmt.Errorf("decision response contains non-semantic provider score data: %w", err)
@@ -1060,13 +1069,22 @@ func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter
 	if dispatcher.hosted != nil {
 		return errors.New("hosted decision sessions are not registered by this dormant dispatcher seam")
 	}
+	if err := validateDecisionSessionRun(call.Session, call.Run); err != nil {
+		return err
+	}
 	durable, ok := adapter.(DecisionSessionAdapter)
 	if !ok {
 		return ErrDecisionSessionAdapterRequired
 	}
+	if durable.Config().Mode() != agents.DurableMode {
+		return errors.New("decision session cancellation requires a durable adapter")
+	}
 	cancel, err := durable.PrepareDecisionCancellation(call)
 	if err != nil {
 		return fmt.Errorf("prepare decision session cancellation: %w", err)
+	}
+	if cancel.Identity.SessionID != call.Session.ID || cancel.Identity.RunID != call.Run.ID {
+		return errors.New("decision cancellation identity does not match the requested session and run")
 	}
 	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
 	if err != nil {

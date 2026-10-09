@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -37,12 +38,16 @@ type DecisionSessionInput struct {
 	Pin        decisionv1.SessionPin      `json:"pin"`
 	Policy     decisions.Policy           `json:"policy,omitempty"`
 	Admission  decisionv1.NormalizedEvent `json:"admission"`
+	RunID      string                     `json:"runId"`
 }
 
 // DecisionSessionIdentity is echoed on callbacks so a replaced or stale host
 // cannot move a workflow pinned to another graph, snapshot, locale, prompt, or
 // ownership generation.
 type DecisionSessionIdentity struct {
+	TenantID             string `json:"tenantId"`
+	SessionID            string `json:"sessionId"`
+	RunID                string `json:"runId"`
 	SchemaVersion        string `json:"schemaVersion"`
 	ReleaseSHA256        string `json:"releaseSha256"`
 	GraphSHA256          string `json:"graphSha256"`
@@ -56,7 +61,8 @@ type DecisionSessionIdentity struct {
 
 // DecisionSessionUpdate is a server-normalized reducer event. Any protected
 // references are opaque references already authorized by the host authority;
-// this workflow validates only their scope and explicit expiry.
+// this workflow validates only their scope and explicit expiry. Inline DTMF
+// digits are unsupported by this durable seam.
 type DecisionSessionUpdate struct {
 	Identity             DecisionSessionIdentity         `json:"identity"`
 	ExpectedRouteEntryID string                          `json:"expectedRouteEntryId"`
@@ -91,6 +97,10 @@ type DecisionSessionSnapshot struct {
 // DecisionSessionAdvanceResult returns reducer effects as semantic intents.
 // The workflow does not execute them; the existing host effect authority,
 // ownership CAS, and authoritative receipts remain required for dispatch.
+// Temporal update deduplication does not provide exactly-once effect execution:
+// a retried Respond may re-emit a cached intent. EffectRequest.Identity.ID is
+// stable for deduplication, and the downstream executor must use authoritative
+// receipts to prevent duplicate effects.
 type DecisionSessionAdvanceResult struct {
 	Accepted bool                    `json:"accepted"`
 	Stopped  bool                    `json:"stopped,omitempty"`
@@ -99,14 +109,16 @@ type DecisionSessionAdvanceResult struct {
 }
 
 type DecisionSessionResult struct {
-	Snapshot DecisionSessionSnapshot `json:"snapshot"`
+	Snapshot       DecisionSessionSnapshot `json:"snapshot"`
+	InitialEffects []decisions.Effect      `json:"initialEffects,omitempty"`
 }
 
 // DecisionSessionAdapter is an opt-in, dormant adapter extension. Its methods
 // run in the host process and must return only normalized semantic data and
-// authorized opaque references. This package does not supply an implementation
-// that resolves owner CAS, protected-payload storage, prompt hydration, or
-// provider execution.
+// authorized opaque references. Inline DTMF is rejected because the contract
+// carries digits in clear text and defines no protected DTMF representation.
+// This package does not supply an implementation that resolves owner CAS,
+// protected-payload storage, prompt hydration, or provider execution.
 type DecisionSessionAdapter interface {
 	httpruntime.DecisionAdapter
 	PrepareDecisionSession(httpruntime.StartCall) (DecisionSessionInput, error)
@@ -124,25 +136,39 @@ type decisionSessionWorkflowState struct {
 // It has no activities and makes no provider, directory, cache, media, storage,
 // or external-write calls. Temporal history therefore contains semantic
 // events and opaque references, never hydrated personal payloads.
+// The SDK update validator rejects privacy-invalid updates before acceptance
+// into workflow history. It is not authentication or transport redaction:
+// application callers must use dispatcher preflight, and direct Temporal
+// clients must be trusted because their requests are transmitted before the
+// workflow validator runs. Reference IDs, digests, and semantic identifiers
+// remain visible in history. Reference expiry is evaluated when an Advance
+// arrives; this workflow does not implement an autonomous idle timeout.
 func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (DecisionSessionResult, error) {
 	if err := ValidateDecisionSessionInput(input); err != nil {
 		return DecisionSessionResult{}, err
 	}
-	state, _, err := decisions.Start(input.Definition, input.Admission, input.Policy)
+	state, initialEffects, err := decisions.Start(input.Definition, input.Admission, input.Policy)
 	if err != nil {
 		return DecisionSessionResult{}, fmt.Errorf("start decision reducer: %w", err)
 	}
+	initialSnapshot := DecisionSessionSnapshot{
+		Identity: decisionSessionIdentity(input), View: state.View(),
+		Status: decisionSessionStatusForView(state.View()),
+	}
+	if initialSnapshot.Status != DecisionSessionRunning {
+		return DecisionSessionResult{Snapshot: initialSnapshot, InitialEffects: initialEffects}, nil
+	}
 	session := &decisionSessionWorkflowState{
-		identity: decisionSessionIdentity(input.Pin),
+		identity: decisionSessionIdentity(input),
 		reducer:  state,
-		status:   DecisionSessionRunning,
+		status:   initialSnapshot.Status,
 	}
 	if err := workflow.SetQueryHandler(ctx, DecisionSessionSnapshotQuery, func() (DecisionSessionSnapshot, error) {
 		return session.snapshot(), nil
 	}); err != nil {
 		return DecisionSessionResult{}, fmt.Errorf("register decision session query: %w", err)
 	}
-	if err := workflow.SetUpdateHandler(ctx, DecisionSessionAdvanceUpdate,
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionAdvanceUpdate,
 		func(ctx workflow.Context, update DecisionSessionUpdate) (DecisionSessionAdvanceResult, error) {
 			if session.status != DecisionSessionRunning {
 				return DecisionSessionAdvanceResult{}, ErrDecisionSessionStopped
@@ -167,14 +193,14 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 			}
 			session.reducer = next
 			nextView := next.View()
-			if nextView.Phase == decisions.PhaseStopped {
-				session.status = DecisionSessionStopped
-			} else if nextView.GraphEnded || nextView.SessionEnded || nextView.Phase == decisions.PhaseTerminal {
-				session.status = DecisionSessionCompleted
-			}
+			session.status = decisionSessionStatusForView(nextView)
 			return DecisionSessionAdvanceResult{
 				Accepted: true, Snapshot: session.snapshot(), Effects: effects,
 			}, nil
+		}, workflow.UpdateHandlerOptions{
+			Validator: func(update DecisionSessionUpdate) error {
+				return validateDecisionSessionEventPrivacy(update.Event)
+			},
 		}); err != nil {
 		return DecisionSessionResult{}, fmt.Errorf("register decision session update: %w", err)
 	}
@@ -194,7 +220,17 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 	if err := workflow.Await(ctx, func() bool { return session.status != DecisionSessionRunning }); err != nil {
 		return DecisionSessionResult{}, err
 	}
-	return DecisionSessionResult{Snapshot: session.snapshot()}, nil
+	return DecisionSessionResult{Snapshot: session.snapshot(), InitialEffects: initialEffects}, nil
+}
+
+func decisionSessionStatusForView(view decisions.View) DecisionSessionStatus {
+	if view.Phase == decisions.PhaseStopped {
+		return DecisionSessionStopped
+	}
+	if view.GraphEnded || view.SessionEnded || view.Phase == decisions.PhaseTerminal {
+		return DecisionSessionCompleted
+	}
+	return DecisionSessionRunning
 }
 
 func (session *decisionSessionWorkflowState) snapshot() DecisionSessionSnapshot {
@@ -204,6 +240,9 @@ func (session *decisionSessionWorkflowState) snapshot() DecisionSessionSnapshot 
 // ValidateDecisionSessionInput verifies the frozen manifest/pin and binds the
 // admission event to that pin before the data can enter Temporal history.
 func ValidateDecisionSessionInput(input DecisionSessionInput) error {
+	if _, err := WorkflowID(input.Admission.SessionID, input.RunID); err != nil {
+		return fmt.Errorf("decision session run identity: %w", err)
+	}
 	if err := input.Definition.ValidateForReview(); err != nil {
 		return fmt.Errorf("frozen decision definition: %w", err)
 	}
@@ -225,8 +264,10 @@ func ValidateDecisionSessionInput(input DecisionSessionInput) error {
 	return nil
 }
 
-func decisionSessionIdentity(pin decisionv1.SessionPin) DecisionSessionIdentity {
+func decisionSessionIdentity(input DecisionSessionInput) DecisionSessionIdentity {
+	pin := input.Pin
 	return DecisionSessionIdentity{
+		TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID, RunID: input.RunID,
 		SchemaVersion: pin.SchemaVersion, ReleaseSHA256: pin.ReleaseSHA256,
 		GraphSHA256: pin.GraphSHA256, PromptFamiliesSHA256: pin.PromptFamiliesSHA256,
 		SnapshotSHA256: pin.SnapshotSHA256, Generation: pin.Generation,
@@ -279,6 +320,9 @@ func validateDecisionSessionReferences(update DecisionSessionUpdate, identity De
 }
 
 func validateDecisionSessionEventPrivacy(event decisions.Event) error {
+	if event.Normalized != nil && event.Normalized.Digits != "" {
+		return errors.New("inline DTMF input is unsupported in durable decision sessions")
+	}
 	if event.Normalized == nil || event.Normalized.Decision == nil {
 		return nil
 	}
@@ -291,6 +335,10 @@ func validateDecisionSessionEventPrivacy(event decisions.Event) error {
 		}
 		if _, ok := value.(json.Number); !ok {
 			return fmt.Errorf("provider score field %q must be numeric semantic data", name)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			return fmt.Errorf("provider score field %q must contain exactly one JSON value", name)
 		}
 	}
 	return nil
@@ -360,6 +408,26 @@ func decisionSessionWorkflowID(call httpruntime.StartCall) (string, error) {
 	return WorkflowID(call.Session.ID, call.Run.ID)
 }
 
+// validateDecisionSessionRun checks dispatcher routing inputs. The HTTP
+// runtime authenticates the actor and resolves the owned session/run before
+// calling the dispatcher; direct dispatcher callers must provide that same
+// host authorization boundary.
+func validateDecisionSessionRun(session agents.Session, run agents.Run) error {
+	if session.ID == "" || run.ID == "" || run.SessionID != session.ID {
+		return errors.New("decision session run does not belong to the requested session")
+	}
+	if session.AgentID == "" || run.AgentID == "" || session.AgentID != run.AgentID {
+		return errors.New("decision session run does not belong to the requested agent")
+	}
+	if run.Mode != agents.DurableMode {
+		return errors.New("decision session requires a durable run")
+	}
+	if _, err := WorkflowID(session.ID, run.ID); err != nil {
+		return err
+	}
+	return nil
+}
+
 func decisionSessionUpdate(ctx context.Context, temporalClient Client, workflowID, updateName, updateID string, arg any, output any) error {
 	if temporalClient == nil {
 		return ErrClosed
@@ -404,6 +472,10 @@ func prepareDecisionSession(adapter httpruntime.Adapter, call httpruntime.StartC
 	if err != nil {
 		return nil, DecisionSessionInput{}, fmt.Errorf("prepare decision session: %w", err)
 	}
+	if call.Run.ID == "" || call.Run.SessionID != call.Session.ID || call.Run.AgentID == "" || call.Session.AgentID != call.Run.AgentID {
+		return nil, DecisionSessionInput{}, errors.New("decision session call does not bind the run to its session and agent")
+	}
+	input.RunID = call.Run.ID
 	if err := ValidateDecisionSessionInput(input); err != nil {
 		return nil, DecisionSessionInput{}, err
 	}
@@ -430,5 +502,5 @@ func decisionUpdateID(event decisions.Event) (string, error) {
 	if id == "" {
 		return "", errors.New("decision session event ID is required")
 	}
-	return id, nil
+	return "advance-" + id, nil
 }

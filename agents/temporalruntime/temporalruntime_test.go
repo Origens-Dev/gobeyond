@@ -538,6 +538,7 @@ type fakeClient struct {
 	signalName       string
 	signalValue      interface{}
 	updateOptions    client.UpdateWorkflowOptions
+	updateCalls      int
 	updateOutput     interface{}
 	updateErr        error
 }
@@ -576,6 +577,7 @@ func (fake *fakeClient) UpdateWorkflow(_ context.Context, options client.UpdateW
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	fake.updateOptions = options
+	fake.updateCalls++
 	if fake.updateErr != nil {
 		return nil, fake.updateErr
 	}
