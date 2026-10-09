@@ -1018,6 +1018,17 @@ func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapte
 	if durable.Config().Mode() != agents.DurableMode {
 		return errors.New("decision session response requires a durable adapter")
 	}
+	approval, isApproval, err := parseDecisionApprovalPayload(call.Response)
+	if err != nil {
+		return err
+	}
+	if isApproval {
+		authority, ok := durable.(DecisionEffectAdapter)
+		if !ok {
+			return ErrDecisionEffectAuthorityRequired
+		}
+		return dispatcher.respondDecisionApproval(ctx, authority, call, approval, emit)
+	}
 	if authority, ok := durable.(DecisionEffectAdapter); ok {
 		pending, err := dispatcher.recoverPendingDecisionEffect(ctx, authority, call, emit)
 		if err != nil {

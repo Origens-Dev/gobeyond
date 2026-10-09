@@ -16,6 +16,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/agents/decisions"
 	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 	"go.temporal.io/api/common/v1"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -176,7 +177,21 @@ func TestDecisionSessionRespondMayReemitCachedIntentForReceiptDeduplication(t *t
 		decisionSessionAdapterFake: base,
 		reconciliations:            []DecisionEffectReconciliation{{State: DecisionEffectPending}},
 	}
-	fake := &fakeClient{updateOutput: result, queryOutput: DecisionSessionPendingEffect{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}}
+	fake := &fakeClient{queryOutput: DecisionSessionPendingEffect{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}}
+	fake.updateFunc = func(_ context.Context, options client.UpdateWorkflowOptions) (interface{}, error) {
+		switch options.UpdateName {
+		case DecisionSessionAdvanceUpdate:
+			return result, nil
+		case DecisionSessionSubmissionUpdate:
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{
+				Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning,
+			}}, nil
+		case DecisionSessionDispatchCommitUpdate:
+			return DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}, nil
+		default:
+			return nil, errors.New("unexpected duplicate-intent update")
+		}
+	}
 	dispatcher, err := New(context.Background(), Options{Client: fake})
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +217,7 @@ func TestDecisionSessionRespondMayReemitCachedIntentForReceiptDeduplication(t *t
 		Data interface{}
 	}(nil), emitter.events...)
 	emitter.mu.Unlock()
-	if updateCalls != 2 || updateOptions.UpdateID != "advance-retry_response" || len(events) != 4 {
+	if updateCalls != 6 || updateOptions.UpdateName != DecisionSessionDispatchCommitUpdate || len(events) != 4 {
 		t.Fatalf("duplicate response routing = calls %d, options %#v, emitted %#v", updateCalls, updateOptions, events)
 	}
 	for _, event := range events {
@@ -335,6 +350,8 @@ func TestDecisionSessionCancelledAfterSubmissionAcceptsLateReceiptAndOwnerCAS(t 
 	env, _ := decisionSessionTestEnvironment(input)
 	var intent decisions.Effect
 	var submission DecisionSessionAdvanceResult
+	var dispatchCommit DecisionSessionSnapshot
+	var dispatchCommitErr error
 	var cancelSnapshot DecisionSessionSnapshot
 	var receiptAdvance DecisionSessionAdvanceResult
 	var receiptErr error
@@ -415,6 +432,20 @@ func TestDecisionSessionCancelledAfterSubmissionAcceptsLateReceiptAndOwnerCAS(t 
 		}, DecisionSessionEffectSubmission{Identity: decisionSessionIdentity(input), Effect: intent})
 	}, 4*time.Second)
 	env.RegisterDelayedCallback(func() {
+		if intent.Request == nil || !submission.Accepted {
+			t.Fatal("missing submitted effect before dispatch commit")
+		}
+		env.UpdateWorkflow(DecisionSessionDispatchCommitUpdate, "dispatch_commit_late_effect", &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { dispatchCommitErr = err },
+			OnComplete: func(value interface{}, err error) {
+				dispatchCommitErr = err
+				if err == nil {
+					dispatchCommit, _ = value.(DecisionSessionSnapshot)
+				}
+			},
+		}, DecisionSessionEffectDispatchCommit{Identity: decisionSessionIdentity(input), EffectID: intent.Request.Identity.ID})
+	}, 4*time.Second+500*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
 		cancelDecisionSessionTest(env, input, "cancel_after_submit", &cancelSnapshot, t)
 	}, 5*time.Second)
 	env.RegisterDelayedCallback(func() {
@@ -464,6 +495,9 @@ func TestDecisionSessionCancelledAfterSubmissionAcceptsLateReceiptAndOwnerCAS(t 
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatal(err)
 	}
+	if dispatchCommitErr != nil || dispatchCommit.Status != DecisionSessionRunning {
+		t.Fatalf("dispatch commit = %#v err=%v", dispatchCommit, dispatchCommitErr)
+	}
 	if cancelSnapshot.Status != DecisionSessionCancelled || submission.Snapshot.View.Phase != decisions.PhaseAwaitingReceipt {
 		t.Fatalf("submission/cancellation state = %#v / %#v", submission, cancelSnapshot)
 	}
@@ -475,6 +509,46 @@ func TestDecisionSessionCancelledAfterSubmissionAcceptsLateReceiptAndOwnerCAS(t 
 	}
 	if result.Snapshot.Status != DecisionSessionCancelled || result.Snapshot.View.Ownership.State != decisionv1.OwnershipReleased {
 		t.Fatalf("late confirmed effect changed cancellation or lost ownership receipt: %#v", result.Snapshot)
+	}
+}
+
+func TestDecisionApprovalFailureReceiptRequiresExactDurableChoice(t *testing.T) {
+	input, effect, _ := decisionEffectTestFixture(t, "ses_approval_failure_receipt", 17)
+	identity := decisionSessionIdentity(input)
+	commit := &DecisionSessionApprovalCommit{
+		Identity: identity, EffectID: effect.Request.Identity.ID, Effect: effect.Request.Identity,
+		ApprovalID: "approval_1", ToolCallID: effect.Request.Identity.ID,
+		InputHash: strings.Repeat("a", 64), ActorID: "actor_1", ActorKind: "user", Approved: false,
+	}
+	receipt := decisionv1.EffectReceipt{
+		Identity: effect.Request.Identity, Status: decisionv1.EffectFailed, ReceiptID: "approval_failure_1",
+		TargetOpaqueID: effect.Request.TargetOpaqueID, FailureCode: "approval_denied", ObservedAt: decisionSessionTestStart,
+	}
+	if err := validateDecisionApprovalFailureCommit(identity, commit, receipt); err != nil {
+		t.Fatalf("exact durable denial rejected: %v", err)
+	}
+	if err := validateDecisionApprovalFailureCommit(identity, nil, receipt); err == nil {
+		t.Fatal("approval denial receipt without a durable decision was accepted")
+	}
+	wrong := *commit
+	wrong.EffectID = "different_effect"
+	if err := validateDecisionApprovalFailureCommit(identity, &wrong, receipt); err == nil {
+		t.Fatal("approval denial receipt for another effect was accepted")
+	}
+	approved := *commit
+	approved.Approved = true
+	if err := validateDecisionApprovalFailureCommit(identity, &approved, receipt); err == nil {
+		t.Fatal("denial receipt contradicted the committed approval")
+	}
+	expired := receipt
+	expired.FailureCode = "approval_expired"
+	if err := validateDecisionApprovalFailureCommit(identity, &approved, expired); err != nil {
+		t.Fatalf("expired receipt after an authenticated late approval choice rejected: %v", err)
+	}
+	unrelated := receipt
+	unrelated.FailureCode = "provider_rejected"
+	if err := validateDecisionApprovalFailureCommit(identity, nil, unrelated); err != nil {
+		t.Fatalf("provider failure incorrectly required an approval record: %v", err)
 	}
 }
 

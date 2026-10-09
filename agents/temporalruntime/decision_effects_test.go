@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
 	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
 	"github.com/Origens-Dev/gobeyond/agents/decisions"
@@ -146,7 +148,19 @@ func TestDecisionEffectCommittedReceiptReconcilesWithoutProviderRetry(t *testing
 	}
 	authority := newDecisionEffectTestAdapter(input)
 	authority.reconciliations = []DecisionEffectReconciliation{{State: DecisionEffectHasReceipt, Receipt: &receipt}}
-	fake := &fakeClient{updateOutput: DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionCompleted}}}
+	fake := &fakeClient{}
+	fake.updateFunc = func(_ context.Context, options client.UpdateWorkflowOptions) (interface{}, error) {
+		switch options.UpdateName {
+		case DecisionSessionSubmissionUpdate:
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}}, nil
+		case DecisionSessionDispatchCommitUpdate:
+			return DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}, nil
+		case DecisionSessionReceiptUpdate:
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionCompleted}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected committed receipt update %q", options.UpdateName)
+		}
+	}
 	dispatcher := newDecisionEffectTestDispatcher(t, fake)
 	if err := dispatcher.dispatchDecisionTransition(context.Background(), authority, decisionEffectTestCall(input), DecisionSessionAdvanceResult{
 		Accepted: true, Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning},
@@ -154,8 +168,10 @@ func TestDecisionEffectCommittedReceiptReconcilesWithoutProviderRetry(t *testing
 	}, nil); err != nil {
 		t.Fatalf("reconcile committed receipt: %v", err)
 	}
-	if fake.updateCalls != 1 || fake.updateOptions.UpdateName != DecisionSessionReceiptUpdate {
-		t.Fatalf("committed receipt recovery updates = %d, last = %#v; provider update must not repeat", fake.updateCalls, fake.updateOptions)
+	if fake.updateCalls != 3 || fake.updateHistory[0].UpdateName != DecisionSessionSubmissionUpdate ||
+		fake.updateHistory[1].UpdateName != DecisionSessionDispatchCommitUpdate ||
+		fake.updateHistory[2].UpdateName != DecisionSessionReceiptUpdate {
+		t.Fatalf("committed receipt recovery did not record submission before receipt: %#v", fake.updateHistory)
 	}
 	if authority.prepareCalls != 0 || authority.ceilingCalls != 0 || authority.verifyCalls != 1 {
 		t.Fatalf("committed receipt authority calls: prepare=%d ceiling=%d verify=%d", authority.prepareCalls, authority.ceilingCalls, authority.verifyCalls)
@@ -167,6 +183,16 @@ func TestDecisionEffectUnknownOutcomeReconcilesBeforeRetry(t *testing.T) {
 	authority := newDecisionEffectTestAdapter(input)
 	authority.reconciliations = []DecisionEffectReconciliation{{State: DecisionEffectPending}}
 	fake := &fakeClient{}
+	fake.updateFunc = func(_ context.Context, options client.UpdateWorkflowOptions) (interface{}, error) {
+		switch options.UpdateName {
+		case DecisionSessionSubmissionUpdate:
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}}, nil
+		case DecisionSessionDispatchCommitUpdate:
+			return DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}, nil
+		default:
+			return nil, fmt.Errorf("unexpected unknown effect update %q", options.UpdateName)
+		}
+	}
 	dispatcher := newDecisionEffectTestDispatcher(t, fake)
 	emitter := &recordingDecisionEmitter{}
 	if err := dispatcher.dispatchDecisionTransition(context.Background(), authority, decisionEffectTestCall(input), DecisionSessionAdvanceResult{
@@ -175,21 +201,33 @@ func TestDecisionEffectUnknownOutcomeReconcilesBeforeRetry(t *testing.T) {
 	}, emitter); err != nil {
 		t.Fatalf("pending effect should be held for reconciliation: %v", err)
 	}
-	if fake.updateCalls != 0 || authority.prepareCalls != 0 || authority.ceilingCalls != 0 {
-		t.Fatalf("unknown provider outcome retried: updates=%d prepare=%d ceiling=%d", fake.updateCalls, authority.prepareCalls, authority.ceilingCalls)
+	if fake.updateCalls != 2 || fake.updateHistory[0].UpdateName != DecisionSessionSubmissionUpdate ||
+		fake.updateHistory[1].UpdateName != DecisionSessionDispatchCommitUpdate || authority.prepareCalls != 0 || authority.ceilingCalls != 0 {
+		t.Fatalf("unknown provider outcome was not durably held before retry: updates=%#v prepare=%d ceiling=%d", fake.updateHistory, authority.prepareCalls, authority.ceilingCalls)
 	}
 	if len(emitter.events) != 1 || emitter.events[0].Type != "agent.decision.effect_pending" {
 		t.Fatalf("pending effect event = %#v", emitter.events)
 	}
 }
 
-func TestDecisionEffectUsesExistingVoiceWriteUpdateAndStableReceipt(t *testing.T) {
-	input, effect, candidateSnapshot := decisionEffectTestFixture(t, "ses_effect_voice_write", 109)
+type syntheticDecisionWriteFixture struct {
+	input             DecisionSessionInput
+	effect            decisions.Effect
+	candidateSnapshot decisionv1.CandidateSetSnapshot
+	call              httpruntime.RespondCall
+	authority         *fakeDecisionEffectAdapter
+	receipt           decisionv1.EffectReceipt
+	providerCalls     *int
+}
+
+func newSyntheticDecisionWriteFixture(t *testing.T, sessionID string, generation uint64, requiresApproval bool) syntheticDecisionWriteFixture {
+	t.Helper()
+	input, effect, candidateSnapshot := decisionEffectTestFixture(t, sessionID, generation)
 	schema, outputSchema := voiceWriteClosedSchemas()
 	providerCalls := 0
 	tool := agents.DefineTool(agents.ToolConfig{
 		Name: "synthetic_lookup", Description: "Synthetic test provider", InputSchema: schema,
-		OutputSchema: outputSchema, VoiceWrite: true,
+		OutputSchema: outputSchema, VoiceWrite: true, RequiresApproval: requiresApproval,
 	}, func(context.Context, agents.Actor, map[string]any) (any, error) {
 		providerCalls++
 		return map[string]any{"ok": true}, nil
@@ -221,8 +259,6 @@ func TestDecisionEffectUsesExistingVoiceWriteUpdateAndStableReceipt(t *testing.T
 	resetVoiceWriteLedgerWithAuthority(t.TempDir(), newMemoryVoiceWriteStore())
 	t.Cleanup(resetVoiceWriteLedger)
 
-	// Tie the synthetic graph action to the current voice manifest so this
-	// exercises the same manifest and schema checks as the real dispatch path.
 	definition := input.Definition
 	for routeIndex := range definition.Graph.Routes {
 		for actionIndex := range definition.Graph.Routes[routeIndex].Act {
@@ -241,7 +277,11 @@ func TestDecisionEffectUsesExistingVoiceWriteUpdateAndStableReceipt(t *testing.T
 			}
 		}
 	}
-	definition.Graph.Authority.Tools = []decisionv1.ToolGrant{{ID: toolSpec.ID, SchemaSHA256: strings.TrimPrefix(toolSpec.SchemaDigest, "sha256:")}}
+	grant := decisionv1.ToolGrant{ID: toolSpec.ID, SchemaSHA256: strings.TrimPrefix(toolSpec.SchemaDigest, "sha256:")}
+	if requiresApproval {
+		grant.ApprovalSHA256 = strings.Repeat("d", 64)
+	}
+	definition.Graph.Authority.Tools = []decisionv1.ToolGrant{grant}
 	frozen, _, _, err := agents.FreezeDecisionManifest(definition)
 	if err != nil {
 		t.Fatalf("freeze synthetic write grant: %v", err)
@@ -267,7 +307,6 @@ func TestDecisionEffectUsesExistingVoiceWriteUpdateAndStableReceipt(t *testing.T
 	effect.Request.Kind = decisionv1.EffectWrite
 	effect.Request.ReauthorizeAtExecution = true
 	effect.ActionID = identity.ActionID
-
 	toolInput, err := json.Marshal(map[string]any{"q": "synthetic lookup"})
 	if err != nil {
 		t.Fatal(err)
@@ -292,6 +331,17 @@ func TestDecisionEffectUsesExistingVoiceWriteUpdateAndStableReceipt(t *testing.T
 	}
 	authority := newDecisionEffectTestAdapter(input)
 	authority.authorization = authorization
+	return syntheticDecisionWriteFixture{
+		input: input, effect: effect, candidateSnapshot: candidateSnapshot, call: call,
+		authority: authority, receipt: receipt, providerCalls: &providerCalls,
+	}
+}
+
+func TestDecisionEffectUsesExistingVoiceWriteUpdateAndStableReceipt(t *testing.T) {
+	fixture := newSyntheticDecisionWriteFixture(t, "ses_effect_voice_write", 109, false)
+	input, effect, call, authority := fixture.input, fixture.effect, fixture.call, fixture.authority
+	receipt, providerCalls := fixture.receipt, fixture.providerCalls
+	identity := effect.Request.Identity
 	authority.reconciliations = []DecisionEffectReconciliation{
 		{State: DecisionEffectNotAttempted}, {State: DecisionEffectHasReceipt, Receipt: &receipt},
 		{State: DecisionEffectHasReceipt, Receipt: &receipt},
@@ -303,6 +353,8 @@ func TestDecisionEffectUsesExistingVoiceWriteUpdateAndStableReceipt(t *testing.T
 			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{
 				Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning,
 			}}, nil
+		case DecisionSessionDispatchCommitUpdate:
+			return DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}, nil
 		case VoiceSessionExecuteToolUpdate:
 			if options.WorkflowID != "gobeyond-agent-run/"+call.Session.ID+"/voice_execution_synthetic" {
 				return nil, errors.New("dispatcher did not target the existing voice workflow")
@@ -341,12 +393,262 @@ func TestDecisionEffectUsesExistingVoiceWriteUpdateAndStableReceipt(t *testing.T
 			}
 		}
 	}
-	if providerCalls != 1 || voiceUpdates != 1 {
-		t.Fatalf("synthetic provider calls=%d voice updates=%d; committed effect must not repeat", providerCalls, voiceUpdates)
+	if *providerCalls != 1 || voiceUpdates != 1 {
+		t.Fatalf("synthetic provider calls=%d voice updates=%d; committed effect must not repeat", *providerCalls, voiceUpdates)
 	}
 	if fake.updateHistory[len(fake.updateHistory)-1].UpdateName != DecisionSessionReceiptUpdate ||
 		fake.updateHistory[len(fake.updateHistory)-1].UpdateID != firstReceiptUpdateID {
 		t.Fatalf("duplicate receipt did not reuse its durable receipt update ID: first=%q last=%#v", firstReceiptUpdateID, fake.updateHistory[len(fake.updateHistory)-1])
+	}
+}
+
+func TestDecisionEffectCancelBetweenSubmissionAndCommitPreventsVoiceUpdate(t *testing.T) {
+	fixture := newSyntheticDecisionWriteFixture(t, "ses_effect_cancel_race", 110, false)
+	input, effect, call, authority := fixture.input, fixture.effect, fixture.call, fixture.authority
+	authority.reconciliations = []DecisionEffectReconciliation{{State: DecisionEffectNotAttempted}}
+	authority.cancellation = DecisionSessionCancel{Identity: decisionSessionIdentity(input)}
+	fake := &fakeClient{}
+	dispatcher := newDecisionEffectTestDispatcher(t, fake)
+	cancelAccepted := false
+	fake.updateFunc = func(_ context.Context, options client.UpdateWorkflowOptions) (interface{}, error) {
+		switch options.UpdateName {
+		case DecisionSessionSubmissionUpdate:
+			// Model a deterministic interleaving after the submission update has
+			// committed in workflow history but before the dispatcher receives its
+			// result and requests the dispatch commit.
+			if err := dispatcher.Cancel(context.Background(), authority, httpruntime.CancelCall{Session: call.Session, Run: call.Run}, nil); err != nil {
+				return nil, err
+			}
+			cancelAccepted = true
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{
+				Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning,
+			}}, nil
+		case DecisionSessionCancelUpdate:
+			return DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionCancelled}, nil
+		case DecisionSessionDispatchCommitUpdate:
+			if !cancelAccepted {
+				return nil, errors.New("dispatch commit arrived before cancellation interleaving")
+			}
+			return nil, ErrDecisionSessionStopped
+		case VoiceSessionExecuteToolUpdate:
+			return nil, errors.New("voice tool update must not start after cancellation won the commit race")
+		default:
+			return nil, errors.New("unexpected update in cancellation race test")
+		}
+	}
+	err := dispatcher.dispatchDecisionTransition(context.Background(), authority, call, DecisionSessionAdvanceResult{
+		Accepted: true, Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning},
+		Effects: []decisions.Effect{effect},
+	}, nil)
+	if err == nil || !cancelAccepted {
+		t.Fatalf("dispatch error=%v cancellation accepted=%v", err, cancelAccepted)
+	}
+	for _, update := range fake.updateHistory {
+		if update.UpdateName == VoiceSessionExecuteToolUpdate {
+			t.Fatalf("provider update was sent after cancel won: %#v", update)
+		}
+	}
+	if len(fake.updateHistory) != 3 || fake.updateHistory[0].UpdateName != DecisionSessionSubmissionUpdate ||
+		fake.updateHistory[1].UpdateName != DecisionSessionCancelUpdate || fake.updateHistory[2].UpdateName != DecisionSessionDispatchCommitUpdate {
+		t.Fatalf("unexpected submission/cancel/commit ordering: %#v", fake.updateHistory)
+	}
+}
+
+func TestDecisionEffectCommittedBeforeCancelResumesAfterProvenNoAttempt(t *testing.T) {
+	fixture := newSyntheticDecisionWriteFixture(t, "ses_effect_committed_cancel", 112, false)
+	input, call, authority := fixture.input, fixture.call, fixture.authority
+	effect := cloneDecisionEffect(fixture.effect)
+	effect.Kind = decisions.EffectAwaitReceipt
+	identity := effect.Request.Identity
+	receipt := fixture.receipt
+	authority.reconciliations = []DecisionEffectReconciliation{
+		{State: DecisionEffectNotAttempted}, {State: DecisionEffectHasReceipt, Receipt: &receipt},
+	}
+	pending := DecisionSessionPendingEffect{
+		Identity: decisionSessionIdentity(input), Effect: &effect, Submitted: true, DispatchCommitted: true,
+		Status:   DecisionSessionCancelled,
+		Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionCancelled},
+	}
+	fake := &fakeClient{queryOutputs: map[string]interface{}{
+		DecisionSessionPendingEffectQuery: pending,
+	}}
+	fake.updateFunc = func(ctx context.Context, options client.UpdateWorkflowOptions) (interface{}, error) {
+		switch options.UpdateName {
+		case VoiceSessionExecuteToolUpdate:
+			request, ok := options.Args[0].(VoiceSessionExecuteToolInput)
+			if !ok || request.ToolCallID != identity.ID || request.DecisionEffectIdentity == nil || *request.DecisionEffectIdentity != identity {
+				return nil, errors.New("committed recovery lost the exact effect binding")
+			}
+			return VoiceSessionExecuteToolActivity(ctx, request)
+		case DecisionSessionReceiptUpdate:
+			fake.mu.Lock()
+			fake.queryOutputs[DecisionSessionPendingEffectQuery] = DecisionSessionPendingEffect{
+				Identity: pending.Identity, Status: DecisionSessionCompleted,
+				Snapshot: DecisionSessionSnapshot{Identity: pending.Identity, Status: DecisionSessionCompleted},
+			}
+			fake.mu.Unlock()
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{
+				Identity: pending.Identity, Status: DecisionSessionCompleted,
+			}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected committed cancellation recovery update %q", options.UpdateName)
+		}
+	}
+	dispatcher := newDecisionEffectTestDispatcher(t, fake)
+	retry, err := dispatcher.recoverPendingDecisionEffect(context.Background(), authority, call, &recordingDecisionEmitter{})
+	if err != nil || retry {
+		t.Fatalf("committed cancelled no-attempt recovery = retry %v err %v", retry, err)
+	}
+	if *fixture.providerCalls != 1 || len(fake.updateHistory) != 2 ||
+		fake.updateHistory[0].UpdateName != VoiceSessionExecuteToolUpdate ||
+		fake.updateHistory[0].UpdateID != "decision-effect-"+identity.ID ||
+		fake.updateHistory[1].UpdateName != DecisionSessionReceiptUpdate {
+		t.Fatalf("committed recovery did not resume exactly once: provider calls=%d updates=%#v", *fixture.providerCalls, fake.updateHistory)
+	}
+	if authority.prepareCalls != 1 || authority.ceilingCalls != 1 {
+		t.Fatalf("committed recovery skipped current authorization: prepare=%d signed ceiling=%d", authority.prepareCalls, authority.ceilingCalls)
+	}
+}
+
+func TestDecisionEffectApprovalCallsExistingVoiceApprovalUpdateAndReconciles(t *testing.T) {
+	for _, approved := range []bool{true, false} {
+		name := "denied"
+		if approved {
+			name = "approved"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture := newSyntheticDecisionWriteFixture(t, "ses_effect_approval_"+name, 111, true)
+			identity := fixture.effect.Request.Identity
+			voiceRequest, err := validateDecisionEffectAuthorization(fixture.input.Definition,
+				decisionSessionIdentity(fixture.input), fixture.effect, fixture.authority.authorization, fixture.call)
+			if err != nil {
+				t.Fatalf("prepare approved voice request: %v", err)
+			}
+			var input map[string]any
+			if err := json.Unmarshal(voiceRequest.Input, &input); err != nil {
+				t.Fatal(err)
+			}
+			voiceApproval, err := newVoiceSessionToolApproval(voiceRequest, ai.ToolCall{
+				ToolCallID: voiceRequest.ToolCallID, ToolName: voiceRequest.ToolName, Input: input,
+			})
+			if err != nil {
+				t.Fatalf("derive synthetic approval identity: %v", err)
+			}
+			voiceApproval.ExpiresAt = time.Now().UTC().Add(time.Minute)
+			pendingVoiceApproval := VoiceSessionDecisionApprovalSnapshot{
+				Found: true, InteractionID: voiceApproval.InteractionID, ActorID: voiceApproval.ActorID,
+				ActorKind: voiceApproval.ActorKind, ToolCallID: voiceApproval.ToolCallID, ToolName: voiceApproval.ToolName,
+				InputHash: voiceApproval.InputHash, ExpiresAt: voiceApproval.ExpiresAt,
+				DecisionEffectIdentity: &identity,
+			}
+			pendingEffect := cloneDecisionEffect(fixture.effect)
+			pendingEffect.Kind = decisions.EffectAwaitReceipt
+			pending := DecisionSessionPendingEffect{
+				Identity: decisionSessionIdentity(fixture.input), Effect: &pendingEffect, Submitted: true,
+				DispatchCommitted: true, Status: DecisionSessionRunning,
+				Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(fixture.input), Status: DecisionSessionRunning},
+			}
+			receipt := fixture.receipt
+			if !approved {
+				receipt.Status = decisionv1.EffectFailed
+				receipt.ReceiptID = "approval-denied-receipt"
+				receipt.ProviderRequestID = ""
+				receipt.FailureCode = "approval_denied"
+			}
+			receipt.ObservedAt = time.Now().UTC()
+			fixture.authority.reconciliations = []DecisionEffectReconciliation{
+				{State: DecisionEffectPending}, {State: DecisionEffectPending},
+			}
+			if approved {
+				fixture.authority.reconciliations = append(fixture.authority.reconciliations,
+					DecisionEffectReconciliation{State: DecisionEffectHasReceipt, Receipt: &receipt},
+					DecisionEffectReconciliation{State: DecisionEffectHasReceipt, Receipt: &receipt})
+			} else {
+				fixture.authority.reconciliations = append(fixture.authority.reconciliations,
+					DecisionEffectReconciliation{State: DecisionEffectNotAttempted},
+					DecisionEffectReconciliation{State: DecisionEffectNotAttempted})
+			}
+			fake := &fakeClient{queryOutputs: map[string]interface{}{
+				DecisionSessionPendingEffectQuery:              pending,
+				VoiceSessionPendingDecisionEffectApprovalQuery: pendingVoiceApproval,
+			}}
+			voiceApprovalUpdates := 0
+			var voiceApprovalUpdateIDs []string
+			var receiptUpdateIDs []string
+			fake.updateFunc = func(_ context.Context, options client.UpdateWorkflowOptions) (interface{}, error) {
+				switch options.UpdateName {
+				case DecisionSessionApprovalCommitUpdate:
+					return DecisionSessionSnapshot{Identity: pending.Identity, Status: DecisionSessionRunning}, nil
+				case VoiceSessionApproveToolUpdate:
+					voiceApprovalUpdates++
+					voiceApprovalUpdateIDs = append(voiceApprovalUpdateIDs, options.UpdateID)
+					if options.WorkflowID != "gobeyond-agent-run/"+voiceRequest.SessionID+"/voice_execution_synthetic" {
+						return nil, errors.New("approval update did not target the existing voice workflow")
+					}
+					response, ok := options.Args[0].(VoiceSessionApprovalResponse)
+					if !ok || response.InteractionID != voiceApproval.InteractionID || response.Approved != approved ||
+						response.ToolCallID != identity.ID || response.InputHash != voiceApproval.InputHash ||
+						response.DecisionEffectIdentity == nil || *response.DecisionEffectIdentity != identity {
+						return nil, errors.New("approval update did not preserve exact decision-effect binding")
+					}
+					if approved {
+						return VoiceSessionExecuteToolResult{Result: json.RawMessage(`{"ok":true}`)}, nil
+					}
+					return VoiceSessionExecuteToolResult{Error: "tool approval denied"}, nil
+				case DecisionSessionReceiptUpdate:
+					receiptUpdateIDs = append(receiptUpdateIDs, options.UpdateID)
+					update, ok := options.Args[0].(DecisionSessionUpdate)
+					if !ok || update.Event.Normalized == nil || update.Event.Normalized.Effect == nil ||
+						update.Event.Normalized.Effect.Identity != identity {
+						return nil, errors.New("decision receipt update lost the exact effect receipt")
+					}
+					if !approved && (update.Event.Normalized.Effect.Status != decisionv1.EffectFailed ||
+						update.Event.Normalized.Effect.FailureCode != "approval_denied") {
+						return nil, errors.New("explicit approval denial was not recorded as a failed effect receipt")
+					}
+					return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{
+						Identity: pending.Identity, Status: DecisionSessionCompleted,
+					}}, nil
+				default:
+					return nil, fmt.Errorf("unexpected decision approval update %q", options.UpdateName)
+				}
+			}
+			dispatcher := newDecisionEffectTestDispatcher(t, fake)
+			approvalCommit := &DecisionSessionApprovalCommit{
+				Identity: pending.Identity, EffectID: identity.ID, Effect: identity,
+				ApprovalID: voiceApproval.InteractionID, ToolCallID: voiceApproval.ToolCallID,
+				InputHash: voiceApproval.InputHash, ActorID: voiceApproval.ActorID, ActorKind: voiceApproval.ActorKind,
+				Approved: approved,
+			}
+			payload, err := json.Marshal(map[string]any{
+				"interactionId": voiceApproval.InteractionID, "approved": approved, "toolCallId": voiceApproval.ToolCallID,
+				"inputHash": voiceApproval.InputHash, "effectIdentity": identity,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			call := fixture.call
+			call.Response = payload
+			if err := dispatcher.Respond(context.Background(), fixture.authority, call, &recordingDecisionEmitter{}); err != nil {
+				t.Fatalf("respond to pending decision approval: %v", err)
+			}
+			pending.ApprovalCommit = approvalCommit
+			fake.mu.Lock()
+			fake.queryOutputs[DecisionSessionPendingEffectQuery] = pending
+			fake.mu.Unlock()
+			if err := dispatcher.Respond(context.Background(), fixture.authority, call, &recordingDecisionEmitter{}); err != nil {
+				t.Fatalf("reconcile duplicate decision approval: %v", err)
+			}
+			if voiceApprovalUpdates < 1 || voiceApprovalUpdateIDs[0] != voiceApprovalUpdateIDs[len(voiceApprovalUpdateIDs)-1] {
+				t.Fatalf("voice approval retries did not use a stable update ID: %#v", voiceApprovalUpdateIDs)
+			}
+			if len(receiptUpdateIDs) != 2 || receiptUpdateIDs[0] != receiptUpdateIDs[1] {
+				t.Fatalf("receipt replay did not use its stable ID: %#v", receiptUpdateIDs)
+			}
+			if !approved && receipt.Status != decisionv1.EffectFailed {
+				t.Fatalf("denied approval failed to reconcile as an authoritative failure: %#v", receipt)
+			}
+		})
 	}
 }
 

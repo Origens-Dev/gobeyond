@@ -544,6 +544,8 @@ type fakeClient struct {
 	updateFunc       func(context.Context, client.UpdateWorkflowOptions) (interface{}, error)
 	updateHistory    []client.UpdateWorkflowOptions
 	queryOutput      interface{}
+	queryOutputs     map[string]interface{}
+	queryHistory     []string
 	queryErr         error
 }
 
@@ -573,16 +575,23 @@ func (fake *fakeClient) SignalWorkflow(_ context.Context, workflowID, _ string, 
 	return nil
 }
 
-func (fake *fakeClient) QueryWorkflow(context.Context, string, string, string, ...interface{}) (converter.EncodedValue, error) {
+func (fake *fakeClient) QueryWorkflow(_ context.Context, _, _, queryType string, _ ...interface{}) (converter.EncodedValue, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	fake.queryHistory = append(fake.queryHistory, queryType)
 	if fake.queryErr != nil {
 		return nil, fake.queryErr
 	}
-	if fake.queryOutput == nil {
+	output := fake.queryOutput
+	if fake.queryOutputs != nil {
+		if queryOutput, ok := fake.queryOutputs[queryType]; ok {
+			output = queryOutput
+		}
+	}
+	if output == nil {
 		return nil, errors.New("no approval query in fake workflow")
 	}
-	return fakeEncodedValue{value: fake.queryOutput}, nil
+	return fakeEncodedValue{value: output}, nil
 }
 
 type fakeEncodedValue struct{ value interface{} }

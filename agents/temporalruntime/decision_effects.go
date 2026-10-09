@@ -20,6 +20,7 @@ import (
 var (
 	ErrDecisionEffectAuthorityRequired = errors.New("decision effect authority is unavailable")
 	ErrDecisionEffectOutcomeUnknown    = errors.New("decision effect outcome is unknown; reconcile before retry")
+	ErrDecisionEffectApprovalStale     = errors.New("decision effect approval is stale or does not match the pending effect")
 )
 
 type DecisionEffectReconciliationState string
@@ -58,6 +59,64 @@ type DecisionEffectAuthorization struct {
 	PermissionExpiresAt  time.Time                       `json:"permissionExpiresAt"`
 }
 
+type decisionApprovalPayload struct {
+	InteractionID string
+	ToolCallID    string
+	InputHash     string
+	Effect        decisionv1.EffectIdentity
+	Approved      bool
+}
+
+func parseDecisionApprovalPayload(raw json.RawMessage) (decisionApprovalPayload, bool, error) {
+	var response struct {
+		InteractionID string                     `json:"interactionId"`
+		ApprovalID    string                     `json:"approvalId"`
+		ToolCallID    string                     `json:"toolCallId"`
+		InputHash     string                     `json:"inputHash"`
+		Effect        *decisionv1.EffectIdentity `json:"effectIdentity"`
+		Approved      *bool                      `json:"approved"`
+		Answers       struct {
+			ToolCallID string                     `json:"toolCallId"`
+			InputHash  string                     `json:"inputHash"`
+			Effect     *decisionv1.EffectIdentity `json:"effectIdentity"`
+			Approved   *bool                      `json:"approved"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return decisionApprovalPayload{}, false, fmt.Errorf("decode decision approval response: %w", err)
+	}
+	interactionID := strings.TrimSpace(response.InteractionID)
+	if interactionID == "" {
+		interactionID = strings.TrimSpace(response.ApprovalID)
+	}
+	toolCallID := strings.TrimSpace(response.ToolCallID)
+	if toolCallID == "" {
+		toolCallID = strings.TrimSpace(response.Answers.ToolCallID)
+	}
+	inputHash := strings.TrimSpace(response.InputHash)
+	if inputHash == "" {
+		inputHash = strings.TrimSpace(response.Answers.InputHash)
+	}
+	approved := response.Approved
+	if approved == nil {
+		approved = response.Answers.Approved
+	}
+	effect := response.Effect
+	if effect == nil {
+		effect = response.Answers.Effect
+	}
+	if toolCallID == "" && inputHash == "" && approved == nil && effect == nil {
+		return decisionApprovalPayload{}, false, nil
+	}
+	if interactionID == "" || approved == nil || toolCallID == "" || inputHash == "" || effect == nil {
+		return decisionApprovalPayload{}, true, errors.New("decision approval response requires approved, toolCallId, inputHash, and effectIdentity")
+	}
+	if err := effect.Validate(); err != nil {
+		return decisionApprovalPayload{}, true, fmt.Errorf("decision approval effect identity: %w", err)
+	}
+	return decisionApprovalPayload{InteractionID: interactionID, ToolCallID: toolCallID, InputHash: inputHash, Effect: *effect, Approved: *approved}, true, nil
+}
+
 // DecisionEffectAdapter is the product-owned boundary for live authority.
 // ReconcileDecisionEffect must read the existing operation/receipt SoR. It may
 // return NotAttempted only when that SoR has no reservation or effect outcome.
@@ -83,6 +142,34 @@ func decisionEffectUpdateID(identity decisionv1.EffectIdentity) (string, error) 
 		return "", err
 	}
 	return "decision-effect-" + identity.ID, nil
+}
+
+func decisionApprovalUpdateID(prefix string, identity decisionv1.EffectIdentity, approvalID, toolCallID, inputHash, actorID, actorKind string, approved bool) (string, error) {
+	if err := identity.Validate(); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(approvalID) == "" || strings.TrimSpace(toolCallID) == "" || strings.TrimSpace(inputHash) == "" ||
+		strings.TrimSpace(actorID) == "" || strings.TrimSpace(actorKind) == "" {
+		return "", errors.New("decision approval update identity is incomplete")
+	}
+	encoded, err := json.Marshal(struct {
+		Effect     decisionv1.EffectIdentity `json:"effect"`
+		ApprovalID string                    `json:"approvalId"`
+		ToolCallID string                    `json:"toolCallId"`
+		InputHash  string                    `json:"inputHash"`
+		ActorID    string                    `json:"actorId"`
+		ActorKind  string                    `json:"actorKind"`
+		Approved   bool                      `json:"approved"`
+	}{identity, approvalID, toolCallID, inputHash, actorID, actorKind, approved})
+	if err != nil {
+		return "", err
+	}
+	canonical, err := voicecontract.CanonicalJSON(encoded, voicecontract.MaxEnvelopeBytes)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return prefix + hex.EncodeToString(digest[:]), nil
 }
 
 func decisionReceiptEventID(receipt decisionv1.EffectReceipt) (string, error) {
@@ -123,9 +210,26 @@ func hasDecisionEffectWork(effects []decisions.Effect) bool {
 	return false
 }
 
-func decisionReceiptUpdate(call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect, receipt decisionv1.EffectReceipt) (DecisionSessionUpdate, string, error) {
+func validateDecisionEffectRequestBinding(identity DecisionSessionIdentity, effect decisions.Effect) error {
 	if effect.Request == nil {
-		return DecisionSessionUpdate{}, "", errors.New("decision effect receipt has no bound request")
+		return errors.New("decision effect has no typed request")
+	}
+	request := effect.Request
+	if err := request.Validate(time.Time{}); err != nil {
+		return fmt.Errorf("decision effect request: %w", err)
+	}
+	if request.Identity.TenantID != identity.TenantID || request.Identity.SessionID != identity.SessionID ||
+		request.Identity.Generation != identity.Generation || request.Identity.GraphSHA256 != identity.GraphSHA256 ||
+		request.Identity.RouteEntryID != effect.RouteEntryID || request.Identity.InputID != effect.InputID ||
+		request.Identity.ActionID != effect.ActionID {
+		return errors.New("decision effect request does not match its pinned session and reducer step")
+	}
+	return nil
+}
+
+func decisionReceiptUpdate(call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect, receipt decisionv1.EffectReceipt) (DecisionSessionUpdate, string, error) {
+	if err := validateDecisionEffectRequestBinding(identity, effect); err != nil {
+		return DecisionSessionUpdate{}, "", err
 	}
 	if err := receipt.Validate(); err != nil {
 		return DecisionSessionUpdate{}, "", fmt.Errorf("decision effect receipt: %w", err)
@@ -202,6 +306,9 @@ func (dispatcher *Dispatcher) recoverPendingDecisionEffect(ctx context.Context, 
 	}
 	effect := cloneDecisionEffect(*pending.Effect)
 	if effect.Kind == decisions.EffectReleaseOwnership {
+		if err := validateDecisionEffectRequestBinding(pending.Identity, effect); err != nil {
+			return false, err
+		}
 		transition := DecisionSessionAdvanceResult{Snapshot: pending.Snapshot, Effects: []decisions.Effect{effect}}
 		if err := dispatcher.applyDecisionOwnershipCAS(ctx, authority, call, pending.Identity, effect, transition, emit); err != nil {
 			return true, err
@@ -211,8 +318,11 @@ func (dispatcher *Dispatcher) recoverPendingDecisionEffect(ctx context.Context, 
 	if effect.Kind != decisions.EffectDispatchIntent && effect.Kind != decisions.EffectAwaitReceipt {
 		return false, errors.New("pending decision effect query returned a non-dispatchable effect")
 	}
-	if effect.Request == nil {
-		return false, errors.New("pending decision effect query omitted its typed request")
+	if err := validateDecisionEffectRequestBinding(pending.Identity, effect); err != nil {
+		return false, err
+	}
+	if pending.ApprovalCommit != nil {
+		return dispatcher.completeDecisionApprovalCommit(ctx, authority, call, pending.Identity, effect, *pending.ApprovalCommit, emit)
 	}
 	effect.Kind = decisions.EffectDispatchIntent
 	reconciliation, err := authority.ReconcileDecisionEffect(ctx, call, effect)
@@ -232,6 +342,23 @@ func (dispatcher *Dispatcher) recoverPendingDecisionEffect(ctx context.Context, 
 		return true, nil
 	case DecisionEffectNotAttempted:
 		if pending.Status == DecisionSessionCancelled {
+			if pending.DispatchCommitted {
+				if err := dispatcher.dispatchCommittedDecisionIntent(ctx, authority, call, pending.Identity, effect, emit); err != nil {
+					return true, err
+				}
+				encoded, err = dispatcher.client.QueryWorkflow(ctx, workflowID, "", DecisionSessionPendingEffectQuery)
+				if err != nil {
+					return true, fmt.Errorf("recheck committed cancelled effect after recovery: %w", err)
+				}
+				if encoded == nil {
+					return true, errors.New("Temporal returned no committed cancelled effect recovery query result")
+				}
+				pending = DecisionSessionPendingEffect{}
+				if err := encoded.Get(&pending); err != nil {
+					return true, fmt.Errorf("decode committed cancelled effect recovery state: %w", err)
+				}
+				return pending.Effect != nil, nil
+			}
 			abandon := DecisionSessionAbandonEffect{Identity: pending.Identity, EffectID: effect.Request.Identity.ID}
 			ackID := "abandon-" + effect.Request.Identity.ID
 			var snapshot DecisionSessionSnapshot
@@ -253,6 +380,7 @@ func (dispatcher *Dispatcher) recoverPendingDecisionEffect(ctx context.Context, 
 		if encoded == nil {
 			return true, errors.New("Temporal returned no decision effect recovery query result")
 		}
+		pending = DecisionSessionPendingEffect{}
 		if err := encoded.Get(&pending); err != nil {
 			return true, fmt.Errorf("decode recovered decision effect state: %w", err)
 		}
@@ -264,28 +392,285 @@ func (dispatcher *Dispatcher) recoverPendingDecisionEffect(ctx context.Context, 
 	}
 }
 
+func (dispatcher *Dispatcher) queryPendingDecisionEffect(ctx context.Context, call httpruntime.RespondCall) (string, DecisionSessionPendingEffect, error) {
+	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
+	if err != nil {
+		return "", DecisionSessionPendingEffect{}, err
+	}
+	encoded, err := dispatcher.client.QueryWorkflow(ctx, workflowID, "", DecisionSessionPendingEffectQuery)
+	if err != nil {
+		return "", DecisionSessionPendingEffect{}, fmt.Errorf("query pending decision effect: %w", err)
+	}
+	if encoded == nil {
+		return "", DecisionSessionPendingEffect{}, errors.New("Temporal returned no pending decision effect query result")
+	}
+	var pending DecisionSessionPendingEffect
+	if err := encoded.Get(&pending); err != nil {
+		return "", DecisionSessionPendingEffect{}, fmt.Errorf("decode pending decision effect: %w", err)
+	}
+	if pending.Identity.SessionID != call.Session.ID || pending.Identity.RunID != call.Run.ID {
+		return "", DecisionSessionPendingEffect{}, errors.New("pending decision effect query returned a different session run")
+	}
+	return workflowID, pending, nil
+}
+
+func (dispatcher *Dispatcher) respondDecisionApproval(ctx context.Context, authority DecisionEffectAdapter, call httpruntime.RespondCall, payload decisionApprovalPayload, emit httpruntime.EventEmitter) error {
+	workflowID, pending, err := dispatcher.queryPendingDecisionEffect(ctx, call)
+	if err != nil {
+		return err
+	}
+	if pending.Effect == nil || pending.Effect.Request == nil {
+		return ErrDecisionEffectApprovalStale
+	}
+	effect := cloneDecisionEffect(*pending.Effect)
+	request := effect.Request
+	if err := validateDecisionEffectRequestBinding(pending.Identity, effect); err != nil {
+		return err
+	}
+	if request.Identity != payload.Effect || payload.ToolCallID != request.Identity.ID ||
+		!pending.Submitted || !pending.DispatchCommitted || effect.Kind != decisions.EffectAwaitReceipt {
+		return ErrDecisionEffectApprovalStale
+	}
+	commit := DecisionSessionApprovalCommit{
+		Identity: pending.Identity, EffectID: request.Identity.ID, Effect: request.Identity,
+		ApprovalID: payload.InteractionID, ToolCallID: payload.ToolCallID, InputHash: payload.InputHash,
+		ActorID: call.Actor.ID, ActorKind: call.Actor.Kind, Approved: payload.Approved,
+	}
+	if pending.ApprovalCommit != nil {
+		if *pending.ApprovalCommit != commit {
+			return ErrDecisionEffectApprovalStale
+		}
+		pendingCommitted := cloneDecisionSessionApprovalCommit(pending.ApprovalCommit)
+		returnErr, err := dispatcher.completeDecisionApprovalCommit(ctx, authority, call, pending.Identity, effect, *pendingCommitted, emit)
+		if err != nil {
+			return err
+		}
+		if returnErr {
+			return ErrDecisionEffectOutcomeUnknown
+		}
+		return nil
+	}
+	if pending.Status != DecisionSessionRunning {
+		return ErrDecisionEffectApprovalStale
+	}
+	reconciliation, err := authority.ReconcileDecisionEffect(ctx, call, effect)
+	if err != nil {
+		return fmt.Errorf("reconcile decision effect before approval: %w", err)
+	}
+	if reconciliation.State == DecisionEffectHasReceipt {
+		if !payload.Approved && (reconciliation.Receipt == nil || reconciliation.Receipt.Status != decisionv1.EffectFailed) {
+			return ErrDecisionEffectApprovalStale
+		}
+		return dispatcher.applyDecisionReceipt(ctx, authority, call, pending.Identity, effect, reconciliation.Receipt, emit)
+	}
+	if reconciliation.State != DecisionEffectNotAttempted && reconciliation.State != DecisionEffectPending {
+		return errors.New("decision effect reconciliation returned an invalid state before approval")
+	}
+	authorization, voiceRequest, err := prepareCurrentDecisionEffectAuthorization(ctx, authority, call, pending.Identity, effect)
+	if err != nil {
+		return err
+	}
+	voiceWorkflowID, err := WorkflowID(voiceRequest.SessionID, authorization.VoiceExecutionID)
+	if err != nil {
+		return err
+	}
+	encoded, err := dispatcher.client.QueryWorkflow(ctx, voiceWorkflowID, "", VoiceSessionPendingDecisionEffectApprovalQuery, request.Identity)
+	if err != nil {
+		return fmt.Errorf("query exact pending voice approval: %w", err)
+	}
+	if encoded == nil {
+		return errors.New("Temporal returned no exact pending voice approval query result")
+	}
+	var approval VoiceSessionDecisionApprovalSnapshot
+	if err := encoded.Get(&approval); err != nil {
+		return fmt.Errorf("decode exact pending voice approval: %w", err)
+	}
+	if !approval.Found || approval.InteractionID != payload.InteractionID || approval.ToolCallID != payload.ToolCallID ||
+		approval.InputHash != payload.InputHash || approval.InputHash != voiceToolInputHash(voiceRequest.Input) ||
+		approval.ActorID != call.Actor.ID || approval.ActorKind != call.Actor.Kind || approval.ToolName != voiceRequest.ToolName ||
+		approval.DecisionEffectIdentity == nil || *approval.DecisionEffectIdentity != request.Identity {
+		return ErrDecisionEffectApprovalStale
+	}
+	commitID, err := decisionApprovalUpdateID("decision-approval-commit-", request.Identity, commit.ApprovalID,
+		commit.ToolCallID, commit.InputHash, commit.ActorID, commit.ActorKind, commit.Approved)
+	if err != nil {
+		return err
+	}
+	var commitSnapshot DecisionSessionSnapshot
+	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionApprovalCommitUpdate, commitID, commit, &commitSnapshot); err != nil {
+		return fmt.Errorf("commit authenticated decision approval before voice update: %w", err)
+	}
+	if commitSnapshot.Identity != pending.Identity || commitSnapshot.Status != DecisionSessionRunning {
+		return ErrDecisionEffectApprovalStale
+	}
+	pending.ApprovalCommit = &commit
+	pending.DispatchCommitted = true
+	if retry, err := dispatcher.completeDecisionApprovalCommit(ctx, authority, call, pending.Identity, effect, commit, emit); err != nil {
+		return err
+	} else if retry {
+		return ErrDecisionEffectOutcomeUnknown
+	}
+	return nil
+}
+
+func prepareCurrentDecisionEffectAuthorization(ctx context.Context, authority DecisionEffectAdapter, call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect) (DecisionEffectAuthorization, VoiceSessionExecuteToolInput, error) {
+	authorization, err := authority.PrepareDecisionEffect(ctx, call, identity, effect)
+	if err != nil {
+		return DecisionEffectAuthorization{}, VoiceSessionExecuteToolInput{}, fmt.Errorf("reauthorize decision effect: %w", err)
+	}
+	request, err := validateDecisionEffectAuthorization(authority.DecisionDefinition(), identity, effect, authorization, call)
+	if err != nil {
+		return DecisionEffectAuthorization{}, VoiceSessionExecuteToolInput{}, fmt.Errorf("decision effect authorization rejected: %w", err)
+	}
+	if err := authority.VerifyDecisionEffectToolCeiling(ctx, call, effect, request); err != nil {
+		return DecisionEffectAuthorization{}, VoiceSessionExecuteToolInput{}, fmt.Errorf("verify current signed voice tool ceiling: %w", err)
+	}
+	return authorization, request, nil
+}
+
+func (dispatcher *Dispatcher) completeDecisionApprovalCommit(ctx context.Context, authority DecisionEffectAdapter, call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect, commit DecisionSessionApprovalCommit, emit httpruntime.EventEmitter) (bool, error) {
+	if err := validateDecisionEffectRequestBinding(identity, effect); err != nil {
+		return true, err
+	}
+	if commit.Identity != identity || commit.Effect != effect.Request.Identity ||
+		commit.EffectID != effect.Request.Identity.ID || commit.ToolCallID != effect.Request.Identity.ID ||
+		call.Actor.ID != commit.ActorID || call.Actor.Kind != commit.ActorKind {
+		return true, ErrDecisionEffectApprovalStale
+	}
+	reconciliation, err := authority.ReconcileDecisionEffect(ctx, call, effect)
+	if err != nil {
+		return true, fmt.Errorf("reconcile decision effect before committed approval update: %w", err)
+	}
+	if reconciliation.State == DecisionEffectHasReceipt {
+		if !commit.Approved && (reconciliation.Receipt == nil || reconciliation.Receipt.Status != decisionv1.EffectFailed) {
+			return true, ErrDecisionEffectApprovalStale
+		}
+		if err := dispatcher.applyDecisionReceipt(ctx, authority, call, identity, effect, reconciliation.Receipt, emit); err != nil {
+			return true, err
+		}
+		return false, nil
+	}
+	if reconciliation.State != DecisionEffectNotAttempted && reconciliation.State != DecisionEffectPending {
+		return true, errors.New("decision effect reconciliation returned an invalid state for committed approval")
+	}
+	authorization, voiceRequest, err := prepareCurrentDecisionEffectAuthorization(ctx, authority, call, identity, effect)
+	if err != nil {
+		return true, err
+	}
+	voiceWorkflowID, err := WorkflowID(voiceRequest.SessionID, authorization.VoiceExecutionID)
+	if err != nil {
+		return true, err
+	}
+	response := VoiceSessionApprovalResponse{
+		InteractionID: commit.ApprovalID, Approved: commit.Approved, ActorID: commit.ActorID,
+		ActorKind: commit.ActorKind, ToolCallID: commit.ToolCallID, InputHash: commit.InputHash,
+		DecisionEffectIdentity: cloneEffectIdentity(&commit.Effect),
+	}
+	updateID, err := decisionApprovalUpdateID("decision-voice-approval-", commit.Effect,
+		commit.ApprovalID, commit.ToolCallID, commit.InputHash, commit.ActorID, commit.ActorKind, commit.Approved)
+	if err != nil {
+		return true, err
+	}
+	var toolResult VoiceSessionExecuteToolResult
+	updateErr := decisionSessionUpdate(ctx, dispatcher.client, voiceWorkflowID, VoiceSessionApproveToolUpdate, updateID, response, &toolResult)
+	if toolResult.Approval != nil {
+		return true, errors.New("voice approval update returned another pending approval")
+	}
+	reconciliation, err = authority.ReconcileDecisionEffect(ctx, call, effect)
+	if err != nil {
+		return true, fmt.Errorf("reconcile decision effect after voice approval: %w", err)
+	}
+	if reconciliation.State == DecisionEffectHasReceipt {
+		if !commit.Approved && (reconciliation.Receipt == nil || reconciliation.Receipt.Status != decisionv1.EffectFailed) {
+			return true, errors.New("denied voice approval did not reconcile to an authoritative failed receipt")
+		}
+		if err := dispatcher.applyDecisionReceipt(ctx, authority, call, identity, effect, reconciliation.Receipt, emit); err != nil {
+			return true, err
+		}
+		return false, nil
+	}
+	if reconciliation.State == DecisionEffectNotAttempted && updateErr == nil &&
+		((!commit.Approved && toolResult.Error == "tool approval denied") || toolResult.Error == "tool approval expired") {
+		failureCode := "approval_denied"
+		if toolResult.Error == "tool approval expired" {
+			failureCode = "approval_expired"
+		}
+		if err := dispatcher.applyDecisionApprovalFailure(ctx, authority, call, identity, effect, commit, failureCode, emit); err != nil {
+			return true, err
+		}
+		return false, nil
+	}
+	if reconciliation.State == DecisionEffectPending || reconciliation.State == DecisionEffectNotAttempted {
+		if err := emitDecisionEffectPending(ctx, emit, identity, commit.EffectID); err != nil {
+			return true, err
+		}
+		if updateErr != nil {
+			return true, fmt.Errorf("voice approval update outcome is unresolved: %w", updateErr)
+		}
+		return true, ErrDecisionEffectOutcomeUnknown
+	}
+	return true, errors.New("decision effect reconciliation returned an invalid state after voice approval")
+}
+
+func (dispatcher *Dispatcher) applyDecisionApprovalFailure(ctx context.Context, authority DecisionEffectAdapter, call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect, commit DecisionSessionApprovalCommit, failureCode string, emit httpruntime.EventEmitter) error {
+	if err := validateDecisionEffectRequestBinding(identity, effect); err != nil {
+		return err
+	}
+	if commit.Identity != identity || commit.Effect != effect.Request.Identity ||
+		(failureCode == "approval_denied" && commit.Approved) ||
+		(failureCode != "approval_denied" && failureCode != "approval_expired") {
+		return ErrDecisionEffectApprovalStale
+	}
+	receiptID, err := decisionApprovalUpdateID("", commit.Effect, commit.ApprovalID,
+		commit.ToolCallID, commit.InputHash, commit.ActorID, commit.ActorKind, commit.Approved)
+	if err != nil {
+		return err
+	}
+	receipt := decisionv1.EffectReceipt{
+		Identity: commit.Effect, Status: decisionv1.EffectFailed,
+		ReceiptID: "approval-failure-" + receiptID[:32], TargetOpaqueID: effect.Request.TargetOpaqueID,
+		FailureCode: failureCode, ObservedAt: time.Now().UTC(),
+	}
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	update, updateID, err := decisionReceiptUpdate(call, identity, effect, receipt)
+	if err != nil {
+		return err
+	}
+	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
+	if err != nil {
+		return err
+	}
+	var advanced DecisionSessionAdvanceResult
+	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionReceiptUpdate, updateID, update, &advanced); err != nil {
+		return fmt.Errorf("apply durably committed decision approval failure: %w", err)
+	}
+	if err := dispatcher.emitDecisionTransition(ctx, emit, advanced); err != nil {
+		return err
+	}
+	return dispatcher.dispatchDecisionTransition(ctx, authority, call, advanced, emit)
+}
+
 func (dispatcher *Dispatcher) dispatchDecisionIntent(ctx context.Context, authority DecisionEffectAdapter, call httpruntime.RespondCall, identity DecisionSessionIdentity, definition decisionv1.Definition, effect decisions.Effect, emit httpruntime.EventEmitter) error {
-	if effect.Request == nil {
-		return errors.New("decision dispatch intent has no typed request")
+	if err := validateDecisionEffectRequestBinding(identity, effect); err != nil {
+		return err
 	}
 	request := *effect.Request
-	if err := request.Validate(time.Time{}); err != nil {
-		return fmt.Errorf("decision dispatch request: %w", err)
-	}
-	if request.Identity.TenantID != identity.TenantID || request.Identity.SessionID != identity.SessionID || request.Identity.Generation != identity.Generation || request.Identity.GraphSHA256 != identity.GraphSHA256 {
-		return errors.New("decision dispatch request does not match the pinned session")
-	}
-	if request.Identity.RouteEntryID != effect.RouteEntryID || request.Identity.InputID != effect.InputID || request.Identity.ActionID != effect.ActionID {
-		return errors.New("decision dispatch request does not match its reducer effect")
-	}
 	reconciliation, err := authority.ReconcileDecisionEffect(ctx, call, effect)
 	if err != nil {
 		return fmt.Errorf("reconcile decision effect before dispatch: %w", err)
 	}
 	switch reconciliation.State {
 	case DecisionEffectHasReceipt:
+		if err := dispatcher.submitAndCommitDecisionEffect(ctx, call, identity, effect); err != nil {
+			return fmt.Errorf("record reconciled decision effect before receipt: %w", err)
+		}
 		return dispatcher.applyDecisionReceipt(ctx, authority, call, identity, effect, reconciliation.Receipt, emit)
 	case DecisionEffectPending:
+		if err := dispatcher.submitAndCommitDecisionEffect(ctx, call, identity, effect); err != nil {
+			return fmt.Errorf("record pending decision effect before waiting: %w", err)
+		}
 		return emitDecisionEffectPending(ctx, emit, identity, request.Identity.ID)
 	case DecisionEffectNotAttempted:
 	default:
@@ -306,20 +691,42 @@ func (dispatcher *Dispatcher) dispatchDecisionIntent(ctx context.Context, author
 	if err := authority.VerifyDecisionEffectToolCeiling(ctx, call, effect, voiceRequest); err != nil {
 		return fmt.Errorf("verify current signed voice tool ceiling: %w", err)
 	}
-	decisionWorkflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
+	if err := dispatcher.submitAndCommitDecisionEffect(ctx, call, identity, effect); err != nil {
+		return fmt.Errorf("commit decision effect before voice update: %w", err)
+	}
+	return dispatcher.dispatchCommittedDecisionIntent(ctx, authority, call, identity, effect, emit)
+}
+
+func (dispatcher *Dispatcher) submitAndCommitDecisionEffect(ctx context.Context, call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect) error {
+	if effect.Request == nil {
+		return errors.New("decision effect submission has no typed request")
+	}
+	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
 	if err != nil {
 		return err
 	}
-	submissionID := "submission-" + request.Identity.ID
 	var submitted DecisionSessionAdvanceResult
-	if err := decisionSessionUpdate(ctx, dispatcher.client, decisionWorkflowID, DecisionSessionSubmissionUpdate, submissionID,
+	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionSubmissionUpdate,
+		"submission-"+effect.Request.Identity.ID,
 		DecisionSessionEffectSubmission{Identity: identity, Effect: cloneDecisionEffect(effect)}, &submitted); err != nil {
-		return fmt.Errorf("record decision effect submission before voice dispatch: %w", err)
+		return fmt.Errorf("record decision effect submission: %w", err)
 	}
-	if err := dispatcher.emitDecisionTransition(ctx, emit, submitted); err != nil {
+	if err := dispatcher.commitDecisionEffectDispatch(ctx, workflowID, identity, effect.Request.Identity.ID); err != nil {
 		return err
 	}
-	updateID, err := decisionEffectUpdateID(request.Identity)
+	return nil
+}
+
+// dispatchCommittedDecisionIntent resumes only after the reducer has durably
+// linearized dispatch against cancellation. It may be used after cancellation
+// only for an already-committed intent whose existing effect authority proves
+// that no provider attempt exists.
+func (dispatcher *Dispatcher) dispatchCommittedDecisionIntent(ctx context.Context, authority DecisionEffectAdapter, call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect, emit httpruntime.EventEmitter) error {
+	if err := validateDecisionEffectRequestBinding(identity, effect); err != nil {
+		return err
+	}
+	request := effect.Request
+	authorization, voiceRequest, err := prepareCurrentDecisionEffectAuthorization(ctx, authority, call, identity, effect)
 	if err != nil {
 		return err
 	}
@@ -327,19 +734,24 @@ func (dispatcher *Dispatcher) dispatchDecisionIntent(ctx context.Context, author
 	if err != nil {
 		return err
 	}
+	updateID, err := decisionEffectUpdateID(request.Identity)
+	if err != nil {
+		return err
+	}
 	var toolResult VoiceSessionExecuteToolResult
 	dispatchErr := decisionSessionUpdate(ctx, dispatcher.client, voiceWorkflowID, VoiceSessionExecuteToolUpdate, updateID, voiceRequest, &toolResult)
 	if toolResult.Approval != nil && dispatchErr == nil {
-		if err := emitDecisionApproval(ctx, emit, identity, request.Identity.ID, *toolResult.Approval); err != nil {
+		if err := validateDecisionEffectVoiceApproval(call, request.Identity, voiceRequest, *toolResult.Approval); err != nil {
+			return fmt.Errorf("voice tool approval binding rejected: %w", err)
+		}
+		if err := emitDecisionApproval(ctx, emit, identity, request.Identity, *toolResult.Approval); err != nil {
 			return err
 		}
 		return emitDecisionEffectPending(ctx, emit, identity, request.Identity.ID)
 	}
-	// A timeout, provider error, or approval response is reconciled against the
-	// existing authority. It never becomes an automatic retry instruction.
-	reconciliation, reconcileErr := authority.ReconcileDecisionEffect(ctx, call, effect)
-	if reconcileErr != nil {
-		return fmt.Errorf("reconcile decision effect after voice dispatch: %w", reconcileErr)
+	reconciliation, err := authority.ReconcileDecisionEffect(ctx, call, effect)
+	if err != nil {
+		return fmt.Errorf("reconcile decision effect after committed voice dispatch: %w", err)
 	}
 	switch reconciliation.State {
 	case DecisionEffectHasReceipt:
@@ -348,15 +760,31 @@ func (dispatcher *Dispatcher) dispatchDecisionIntent(ctx context.Context, author
 		return emitDecisionEffectPending(ctx, emit, identity, request.Identity.ID)
 	case DecisionEffectNotAttempted:
 		if dispatchErr != nil {
-			return fmt.Errorf("dispatch decision effect through voice session: %w", dispatchErr)
+			return fmt.Errorf("dispatch committed decision effect through voice session: %w", dispatchErr)
 		}
-		return errors.New("voice tool returned without an authoritative decision effect receipt")
+		return errors.New("committed voice tool returned without an authoritative decision effect receipt")
 	default:
-		return errors.New("decision effect reconciliation returned an invalid state")
+		return errors.New("committed decision effect reconciliation returned an invalid state")
 	}
 }
 
+func (dispatcher *Dispatcher) commitDecisionEffectDispatch(ctx context.Context, workflowID string, identity DecisionSessionIdentity, effectID string) error {
+	var snapshot DecisionSessionSnapshot
+	updateID := "dispatch-commit-" + effectID
+	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionDispatchCommitUpdate, updateID,
+		DecisionSessionEffectDispatchCommit{Identity: identity, EffectID: effectID}, &snapshot); err != nil {
+		return err
+	}
+	if snapshot.Identity != identity || snapshot.Status != DecisionSessionRunning {
+		return errors.New("decision effect dispatch commit was not accepted by the running session")
+	}
+	return nil
+}
+
 func (dispatcher *Dispatcher) applyDecisionReceipt(ctx context.Context, authority DecisionEffectAdapter, call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect, receipt *decisionv1.EffectReceipt, emit httpruntime.EventEmitter) error {
+	if err := validateDecisionEffectRequestBinding(identity, effect); err != nil {
+		return err
+	}
 	if receipt == nil {
 		return errors.New("decision effect receipt authority returned no receipt")
 	}
@@ -388,7 +816,10 @@ func (dispatcher *Dispatcher) applyDecisionReceipt(ctx context.Context, authorit
 }
 
 func (dispatcher *Dispatcher) applyDecisionOwnershipCAS(ctx context.Context, authority DecisionEffectAdapter, call httpruntime.RespondCall, identity DecisionSessionIdentity, effect decisions.Effect, transition DecisionSessionAdvanceResult, emit httpruntime.EventEmitter) error {
-	if effect.Request == nil || effect.ReceiptID == "" {
+	if err := validateDecisionEffectRequestBinding(identity, effect); err != nil {
+		return err
+	}
+	if effect.ReceiptID == "" {
 		return errors.New("decision ownership release is missing its confirmed request receipt")
 	}
 	if effect.Request.Identity.TenantID != identity.TenantID || effect.Request.Identity.SessionID != identity.SessionID || effect.Request.Identity.Generation != identity.Generation {
@@ -449,24 +880,37 @@ func emitDecisionEffectPending(ctx context.Context, emit httpruntime.EventEmitte
 	}{Identity: identity, EffectID: effectID})
 }
 
-func emitDecisionApproval(ctx context.Context, emit httpruntime.EventEmitter, identity DecisionSessionIdentity, effectID string, approval VoiceSessionToolApproval) error {
+func emitDecisionApproval(ctx context.Context, emit httpruntime.EventEmitter, identity DecisionSessionIdentity, effectIdentity decisionv1.EffectIdentity, approval VoiceSessionToolApproval) error {
 	if emit == nil {
 		return errors.New("decision effect approval emitter is required")
 	}
 	// Do not publish the approval's raw tool input. The existing voice approval
 	// workflow remains the authority for actor binding and approval completion.
 	return emit.Emit(ctx, "agent.decision.effect_approval", struct {
-		Identity      DecisionSessionIdentity `json:"identity"`
-		EffectID      string                  `json:"effectId"`
-		InteractionID string                  `json:"interactionId"`
-		ActorID       string                  `json:"actorId"`
-		ActorKind     string                  `json:"actorKind"`
-		ToolName      string                  `json:"toolName"`
-		InputHash     string                  `json:"inputHash"`
-		ExpiresAt     time.Time               `json:"expiresAt"`
-	}{Identity: identity, EffectID: effectID, InteractionID: approval.InteractionID,
+		Identity       DecisionSessionIdentity   `json:"identity"`
+		EffectID       string                    `json:"effectId"`
+		EffectIdentity decisionv1.EffectIdentity `json:"effectIdentity"`
+		InteractionID  string                    `json:"interactionId"`
+		ActorID        string                    `json:"actorId"`
+		ActorKind      string                    `json:"actorKind"`
+		ToolCallID     string                    `json:"toolCallId"`
+		ToolName       string                    `json:"toolName"`
+		InputHash      string                    `json:"inputHash"`
+		ExpiresAt      time.Time                 `json:"expiresAt"`
+	}{Identity: identity, EffectID: effectIdentity.ID, EffectIdentity: effectIdentity, InteractionID: approval.InteractionID,
 		ActorID: approval.ActorID, ActorKind: approval.ActorKind, ToolName: approval.ToolName,
-		InputHash: approval.InputHash, ExpiresAt: approval.ExpiresAt})
+		ToolCallID: approval.ToolCallID, InputHash: approval.InputHash, ExpiresAt: approval.ExpiresAt})
+}
+
+func validateDecisionEffectVoiceApproval(call httpruntime.RespondCall, identity decisionv1.EffectIdentity, request VoiceSessionExecuteToolInput, approval VoiceSessionToolApproval) error {
+	if approval.DecisionEffectIdentity == nil || *approval.DecisionEffectIdentity != identity ||
+		approval.ToolCallID != identity.ID || request.ToolCallID != identity.ID || approval.ToolName != request.ToolName ||
+		approval.ActorID != call.Actor.ID || approval.ActorKind != call.Actor.Kind ||
+		approval.InputHash == "" || approval.InputHash != voiceToolInputHash(request.Input) ||
+		!approval.ExpiresAt.IsZero() && !approval.ExpiresAt.After(time.Now().UTC()) {
+		return errors.New("voice approval does not match the current effect, actor, tool input, or expiry")
+	}
+	return nil
 }
 
 func validateDecisionEffectAuthorization(definition decisionv1.Definition, identity DecisionSessionIdentity, effect decisions.Effect, authorization DecisionEffectAuthorization, call httpruntime.RespondCall) (VoiceSessionExecuteToolInput, error) {
@@ -585,6 +1029,8 @@ func validateDecisionVoiceToolGrant(decisionDefinition decisionv1.Definition, ef
 	}
 	request.ToolName = spec.Name
 	request.ToolCallID = effect.Request.Identity.ID
+	effectIdentity := effect.Request.Identity
+	request.DecisionEffectIdentity = &effectIdentity
 	request.IdempotencyKey = ""
 	request.WriteReconcileOnly = false
 	// Narrow the API-verified tool list to the exact inherited tool for this
