@@ -140,6 +140,27 @@ func controlTools(d agents.AIDefinition, cfg voice.StartConfig) (map[string]ai.T
 		}
 		out[name] = tool
 	}
+	// VoiceWrite tools (leave_text_message) are likewise not CallControl
+	// ToolNames. Platform hang_up injection previously dropped them from
+	// Gemini Live, so mailbox sessions only declared hang_up, greeted, then
+	// cut the call. Re-attach authored writes without adding them to the
+	// verified dial executor.
+	for id, tool := range agents.ModelTools(d.AI.Tools) {
+		if !agents.VoiceWritePolicy(tool) {
+			continue
+		}
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			name = id
+		}
+		if name == "" || !agents.VoiceToolEnabled(cfg.EnabledToolIDs, id, name) {
+			continue
+		}
+		if _, exists := out[name]; exists {
+			continue
+		}
+		out[name] = tool
+	}
 	// Hosted web search is likewise not a CallControl ToolName. Platform voice
 	// sessions always inject hang_up CallControl, which previously dropped
 	// web-search from Gemini Live (only hang_up was declared). Re-attach
