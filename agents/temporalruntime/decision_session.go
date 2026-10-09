@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"time"
 
@@ -19,10 +20,18 @@ import (
 )
 
 const (
-	DecisionSessionWorkflowName  = "gobeyond.agents.decision_session.v1"
-	DecisionSessionAdvanceUpdate = "gobeyond.agents.decision_session.advance.v1"
-	DecisionSessionCancelUpdate  = "gobeyond.agents.decision_session.cancel.v1"
-	DecisionSessionSnapshotQuery = "gobeyond.agents.decision_session.snapshot.v1"
+	DecisionSessionWorkflowName         = "gobeyond.agents.decision_session.v1"
+	DecisionSessionPendingEffectQuery   = "gobeyond.agents.decision_session.pending_effect.v1"
+	DecisionSessionInitialUpdate        = "gobeyond.agents.decision_session.initial.v1"
+	DecisionSessionAdvanceUpdate        = "gobeyond.agents.decision_session.advance.v1"
+	DecisionSessionSubmissionUpdate     = "gobeyond.agents.decision_session.effect_submission.v1"
+	DecisionSessionDispatchCommitUpdate = "gobeyond.agents.decision_session.effect_dispatch_commit.v1"
+	DecisionSessionApprovalCommitUpdate = "gobeyond.agents.decision_session.effect_approval_commit.v1"
+	DecisionSessionReceiptUpdate        = "gobeyond.agents.decision_session.effect_receipt.v1"
+	DecisionSessionOwnershipCASUpdate   = "gobeyond.agents.decision_session.ownership_cas.v1"
+	DecisionSessionAbandonEffectUpdate  = "gobeyond.agents.decision_session.abandon_effect.v1"
+	DecisionSessionCancelUpdate         = "gobeyond.agents.decision_session.cancel.v1"
+	DecisionSessionSnapshotQuery        = "gobeyond.agents.decision_session.snapshot.v1"
 )
 
 var (
@@ -79,6 +88,61 @@ type DecisionSessionCancel struct {
 	Identity DecisionSessionIdentity `json:"identity"`
 }
 
+// DecisionSessionEffectSubmission binds the reducer's typed dispatch intent
+// to the exact submission event before any existing voice tool update runs.
+type DecisionSessionEffectSubmission struct {
+	Identity DecisionSessionIdentity `json:"identity"`
+	Effect   decisions.Effect        `json:"effect"`
+}
+
+// DecisionSessionEffectDispatchCommit linearizes cancellation against the
+// outbound voice-tool update. A successful commit wins a later cancellation;
+// cancellation accepted first prevents provider dispatch.
+type DecisionSessionEffectDispatchCommit struct {
+	Identity DecisionSessionIdentity `json:"identity"`
+	EffectID string                  `json:"effectId"`
+}
+
+// DecisionSessionApprovalCommit durably binds an authenticated approval
+// choice to one submitted effect before the existing voice approval update.
+type DecisionSessionApprovalCommit struct {
+	Identity   DecisionSessionIdentity   `json:"identity"`
+	EffectID   string                    `json:"effectId"`
+	Effect     decisionv1.EffectIdentity `json:"effectIdentity"`
+	ApprovalID string                    `json:"approvalId"`
+	ToolCallID string                    `json:"toolCallId"`
+	InputHash  string                    `json:"inputHash"`
+	ActorID    string                    `json:"actorId"`
+	ActorKind  string                    `json:"actorKind"`
+	Approved   bool                      `json:"approved"`
+}
+
+// DecisionSessionOwnershipCAS acknowledges the host's existing owner CAS only
+// after it has verified the exact confirmed effect receipt.
+type DecisionSessionOwnershipCAS struct {
+	Identity  DecisionSessionIdentity `json:"identity"`
+	EffectID  string                  `json:"effectId"`
+	ReceiptID string                  `json:"receiptId"`
+}
+
+// DecisionSessionPendingEffect is a minimal recovery projection. It contains
+// only the typed intent and workflow identity, never hydrated input or prompt
+// material.
+type DecisionSessionPendingEffect struct {
+	Identity          DecisionSessionIdentity        `json:"identity"`
+	Effect            *decisions.Effect              `json:"effect,omitempty"`
+	Submitted         bool                           `json:"submitted"`
+	DispatchCommitted bool                           `json:"dispatchCommitted"`
+	ApprovalCommit    *DecisionSessionApprovalCommit `json:"approvalCommit,omitempty"`
+	Status            DecisionSessionStatus          `json:"status"`
+	Snapshot          DecisionSessionSnapshot        `json:"snapshot"`
+}
+
+type DecisionSessionAbandonEffect struct {
+	Identity DecisionSessionIdentity `json:"identity"`
+	EffectID string                  `json:"effectId"`
+}
+
 type DecisionSessionStatus string
 
 const (
@@ -129,9 +193,16 @@ type DecisionSessionAdapter interface {
 }
 
 type decisionSessionWorkflowState struct {
-	identity DecisionSessionIdentity
-	reducer  decisions.State
-	status   DecisionSessionStatus
+	identity                   DecisionSessionIdentity
+	reducer                    decisions.State
+	status                     DecisionSessionStatus
+	initialEffects             []decisions.Effect
+	pendingEffect              *decisions.Effect
+	effectSubmitted            bool
+	effectDispatchCommitted    bool
+	approvalCommit             *DecisionSessionApprovalCommit
+	pendingOwnershipCAS        string
+	initialEffectsAcknowledged bool
 }
 
 // DecisionSessionWorkflow applies only deterministic reducer transitions.
@@ -157,18 +228,47 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 		Identity: decisionSessionIdentity(input), View: state.View(),
 		Status: decisionSessionStatusForView(state.View()),
 	}
-	if initialSnapshot.Status != DecisionSessionRunning {
-		return DecisionSessionResult{Snapshot: initialSnapshot, InitialEffects: initialEffects}, nil
-	}
 	session := &decisionSessionWorkflowState{
-		identity: decisionSessionIdentity(input),
-		reducer:  state,
-		status:   initialSnapshot.Status,
+		identity:                   decisionSessionIdentity(input),
+		reducer:                    state,
+		status:                     initialSnapshot.Status,
+		initialEffects:             cloneDecisionEffects(initialEffects),
+		initialEffectsAcknowledged: !hasDecisionEffectWork(initialEffects),
 	}
+	session.trackEffects(initialEffects)
 	if err := workflow.SetQueryHandler(ctx, DecisionSessionSnapshotQuery, func() (DecisionSessionSnapshot, error) {
 		return session.snapshot(), nil
 	}); err != nil {
 		return DecisionSessionResult{}, fmt.Errorf("register decision session query: %w", err)
+	}
+	if err := workflow.SetQueryHandler(ctx, DecisionSessionPendingEffectQuery, func() (DecisionSessionPendingEffect, error) {
+		if session.pendingEffect == nil {
+			return DecisionSessionPendingEffect{Identity: session.identity, Status: session.status, Snapshot: session.snapshot()}, nil
+		}
+		effect := cloneDecisionEffect(*session.pendingEffect)
+		return DecisionSessionPendingEffect{Identity: session.identity, Effect: &effect, Submitted: session.effectSubmitted,
+			DispatchCommitted: session.effectDispatchCommitted, ApprovalCommit: cloneDecisionSessionApprovalCommit(session.approvalCommit),
+			Status: session.status, Snapshot: session.snapshot()}, nil
+	}); err != nil {
+		return DecisionSessionResult{}, fmt.Errorf("register decision pending-effect query: %w", err)
+	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionInitialUpdate,
+		func(_ workflow.Context, identity DecisionSessionIdentity) (DecisionSessionAdvanceResult, error) {
+			if identity != session.identity {
+				return DecisionSessionAdvanceResult{}, errors.New("decision initial transition identity does not match the pinned session")
+			}
+			session.initialEffectsAcknowledged = true
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: session.snapshot(), Effects: cloneDecisionEffects(session.initialEffects)}, nil
+		}, workflow.UpdateHandlerOptions{Validator: func(identity DecisionSessionIdentity) error {
+			if err := validateDecisionSessionIdentity(identity); err != nil {
+				return err
+			}
+			if identity != session.identity {
+				return errors.New("decision initial transition identity does not match the pinned session")
+			}
+			return nil
+		}}); err != nil {
+		return DecisionSessionResult{}, fmt.Errorf("register decision initial transition update: %w", err)
 	}
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionAdvanceUpdate,
 		func(ctx workflow.Context, update DecisionSessionUpdate) (DecisionSessionAdvanceResult, error) {
@@ -196,6 +296,7 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 			session.reducer = next
 			nextView := next.View()
 			session.status = decisionSessionStatusForView(nextView)
+			session.trackEffects(effects)
 			return DecisionSessionAdvanceResult{
 				Accepted: true, Snapshot: session.snapshot(), Effects: effects,
 			}, nil
@@ -206,6 +307,196 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 		}); err != nil {
 		return DecisionSessionResult{}, fmt.Errorf("register decision session update: %w", err)
 	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionSubmissionUpdate,
+		func(ctx workflow.Context, submission DecisionSessionEffectSubmission) (DecisionSessionAdvanceResult, error) {
+			if submission.Identity != session.identity {
+				return DecisionSessionAdvanceResult{}, errors.New("decision effect submission identity does not match the pinned session")
+			}
+			if session.status != DecisionSessionRunning {
+				return DecisionSessionAdvanceResult{}, ErrDecisionSessionStopped
+			}
+			if submission.Effect.Kind != decisions.EffectDispatchIntent || session.pendingEffect == nil ||
+				submission.Effect.RouteID != session.pendingEffect.RouteID || submission.Effect.RouteEntryID != session.pendingEffect.RouteEntryID ||
+				submission.Effect.InputID != session.pendingEffect.InputID || submission.Effect.ActionID != session.pendingEffect.ActionID ||
+				!sameDecisionEffectRequest(submission.Effect.Request, session.pendingEffect.Request) {
+				return DecisionSessionAdvanceResult{}, errors.New("effect submission does not match the active reducer intent")
+			}
+			if session.effectSubmitted {
+				return DecisionSessionAdvanceResult{Accepted: true, Snapshot: session.snapshot(), Effects: []decisions.Effect{{
+					Kind: decisions.EffectAwaitReceipt, RouteID: submission.Effect.RouteID, RouteEntryID: submission.Effect.RouteEntryID,
+					InputID: submission.Effect.InputID, ActionID: submission.Effect.ActionID, Request: cloneDecisionEffectRequest(submission.Effect.Request),
+				}}}, nil
+			}
+			event := decisionv1.NormalizedEvent{
+				ID: "submit_" + submission.Effect.Request.Identity.ID, Kind: decisionv1.EventEffectSubmitted,
+				TenantID: session.identity.TenantID, SessionID: session.identity.SessionID, Generation: session.identity.Generation,
+				RouteID: submission.Effect.RouteID, RouteEntryID: submission.Effect.RouteEntryID,
+				Channel: decisionv1.ChannelVoice, ReceivedAt: workflow.Now(ctx), EffectRequest: cloneDecisionEffectRequest(submission.Effect.Request),
+			}
+			next, effects, err := decisions.Reduce(session.reducer, decisions.Event{Normalized: &event})
+			if err != nil {
+				return DecisionSessionAdvanceResult{}, err
+			}
+			session.reducer = next
+			session.effectSubmitted = true
+			session.trackEffects(effects)
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: session.snapshot(), Effects: effects}, nil
+		}, workflow.UpdateHandlerOptions{Validator: func(submission DecisionSessionEffectSubmission) error {
+			if err := validateDecisionSessionIdentity(submission.Identity); err != nil {
+				return err
+			}
+			if submission.Identity != session.identity || submission.Effect.Kind != decisions.EffectDispatchIntent || submission.Effect.Request == nil {
+				return errors.New("invalid decision effect submission")
+			}
+			return nil
+		}}); err != nil {
+		return DecisionSessionResult{}, fmt.Errorf("register decision effect submission update: %w", err)
+	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionDispatchCommitUpdate,
+		func(_ workflow.Context, commit DecisionSessionEffectDispatchCommit) (DecisionSessionSnapshot, error) {
+			if commit.Identity != session.identity || session.pendingEffect == nil || session.pendingEffect.Request == nil ||
+				commit.EffectID != session.pendingEffect.Request.Identity.ID || !session.effectSubmitted {
+				return DecisionSessionSnapshot{}, errors.New("decision dispatch commit does not match a submitted effect")
+			}
+			if session.status != DecisionSessionRunning {
+				return DecisionSessionSnapshot{}, ErrDecisionSessionStopped
+			}
+			session.effectDispatchCommitted = true
+			return session.snapshot(), nil
+		}, workflow.UpdateHandlerOptions{Validator: func(commit DecisionSessionEffectDispatchCommit) error {
+			if err := validateDecisionSessionIdentity(commit.Identity); err != nil {
+				return err
+			}
+			if commit.Identity != session.identity || strings.TrimSpace(commit.EffectID) == "" {
+				return errors.New("invalid decision effect dispatch commit")
+			}
+			return nil
+		}}); err != nil {
+		return DecisionSessionResult{}, fmt.Errorf("register decision effect dispatch commit update: %w", err)
+	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionApprovalCommitUpdate,
+		func(_ workflow.Context, commit DecisionSessionApprovalCommit) (DecisionSessionSnapshot, error) {
+			if commit.Identity != session.identity || session.pendingEffect == nil || session.pendingEffect.Request == nil ||
+				commit.EffectID != session.pendingEffect.Request.Identity.ID || commit.Effect != session.pendingEffect.Request.Identity ||
+				!session.effectSubmitted || !session.effectDispatchCommitted {
+				return DecisionSessionSnapshot{}, errors.New("decision approval does not match the submitted and committed effect")
+			}
+			if session.approvalCommit != nil {
+				if *session.approvalCommit != commit {
+					return DecisionSessionSnapshot{}, errors.New("conflicting decision approval replay")
+				}
+				return session.snapshot(), nil
+			}
+			if session.status != DecisionSessionRunning {
+				return DecisionSessionSnapshot{}, ErrDecisionSessionStopped
+			}
+			copy := commit
+			session.approvalCommit = &copy
+			return session.snapshot(), nil
+		}, workflow.UpdateHandlerOptions{Validator: func(commit DecisionSessionApprovalCommit) error {
+			if err := validateDecisionSessionIdentity(commit.Identity); err != nil {
+				return err
+			}
+			if err := commit.Effect.Validate(); err != nil {
+				return err
+			}
+			if commit.Identity != session.identity || commit.EffectID != commit.Effect.ID ||
+				strings.TrimSpace(commit.ApprovalID) == "" || commit.ToolCallID != commit.Effect.ID ||
+				strings.TrimSpace(commit.InputHash) == "" || strings.TrimSpace(commit.ActorID) == "" || strings.TrimSpace(commit.ActorKind) == "" {
+				return errors.New("invalid decision effect approval commit")
+			}
+			return nil
+		}}); err != nil {
+		return DecisionSessionResult{}, fmt.Errorf("register decision effect approval commit update: %w", err)
+	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionReceiptUpdate,
+		func(ctx workflow.Context, update DecisionSessionUpdate) (DecisionSessionAdvanceResult, error) {
+			if update.Identity != session.identity {
+				return DecisionSessionAdvanceResult{}, errors.New("decision receipt identity does not match the pinned session")
+			}
+			if update.Event.Normalized == nil || update.Event.Normalized.Kind != decisionv1.EventEffectReceipt || update.Event.Normalized.Effect == nil ||
+				session.pendingEffect == nil || session.pendingEffect.Request == nil ||
+				!session.effectSubmitted || !session.effectDispatchCommitted ||
+				update.Event.Normalized.RouteID != session.pendingEffect.RouteID || update.Event.Normalized.RouteEntryID != session.pendingEffect.RouteEntryID ||
+				update.ExpectedRouteEntryID != session.pendingEffect.RouteEntryID ||
+				update.Event.Normalized.Effect.Identity != session.pendingEffect.Request.Identity ||
+				update.Event.Normalized.Effect.TargetOpaqueID != session.pendingEffect.Request.TargetOpaqueID {
+				return DecisionSessionAdvanceResult{}, errors.New("decision receipt does not match an outstanding effect")
+			}
+			if err := validateDecisionApprovalFailureCommit(session.identity, session.approvalCommit, *update.Event.Normalized.Effect); err != nil {
+				return DecisionSessionAdvanceResult{}, err
+			}
+			if session.status != DecisionSessionRunning && session.status != DecisionSessionCancelled {
+				return DecisionSessionAdvanceResult{}, ErrDecisionSessionStopped
+			}
+			if session.status == DecisionSessionRunning && update.ExpectedRouteEntryID != session.reducer.View().RouteEntryID {
+				return DecisionSessionAdvanceResult{}, decisions.ErrStaleEvent
+			}
+			if err := validateDecisionSessionReferences(update, session.identity, workflow.Now(ctx)); err != nil {
+				return DecisionSessionAdvanceResult{}, err
+			}
+			next, effects, err := decisions.Reduce(session.reducer, update.Event)
+			if err != nil {
+				return DecisionSessionAdvanceResult{}, err
+			}
+			session.reducer = next
+			if session.status == DecisionSessionCancelled {
+				effects = cancelledReceiptEffects(effects)
+			} else {
+				session.status = decisionSessionStatusForView(next.View())
+			}
+			session.trackReceiptEffects(effects)
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: session.snapshot(), Effects: effects}, nil
+		}, workflow.UpdateHandlerOptions{Validator: func(update DecisionSessionUpdate) error {
+			return validateDecisionSessionUpdatePrivacy(update, &session.identity)
+		}}); err != nil {
+		return DecisionSessionResult{}, fmt.Errorf("register decision effect receipt update: %w", err)
+	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionOwnershipCASUpdate,
+		func(_ workflow.Context, ack DecisionSessionOwnershipCAS) (DecisionSessionSnapshot, error) {
+			if ack.Identity != session.identity || session.pendingOwnershipCAS == "" || ack.ReceiptID != session.pendingOwnershipCAS || session.pendingEffect == nil || session.pendingEffect.Request == nil || ack.EffectID != session.pendingEffect.Request.Identity.ID {
+				return DecisionSessionSnapshot{}, errors.New("ownership CAS acknowledgement does not match a confirmed pending receipt")
+			}
+			session.pendingOwnershipCAS = ""
+			session.pendingEffect = nil
+			session.effectSubmitted = false
+			session.effectDispatchCommitted = false
+			session.approvalCommit = nil
+			return session.snapshot(), nil
+		}, workflow.UpdateHandlerOptions{Validator: func(ack DecisionSessionOwnershipCAS) error {
+			if err := validateDecisionSessionIdentity(ack.Identity); err != nil {
+				return err
+			}
+			if ack.Identity != session.identity || strings.TrimSpace(ack.EffectID) == "" || strings.TrimSpace(ack.ReceiptID) == "" {
+				return errors.New("invalid ownership CAS acknowledgement")
+			}
+			return nil
+		}}); err != nil {
+		return DecisionSessionResult{}, fmt.Errorf("register decision ownership CAS acknowledgement update: %w", err)
+	}
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionAbandonEffectUpdate,
+		func(_ workflow.Context, abandon DecisionSessionAbandonEffect) (DecisionSessionSnapshot, error) {
+			if abandon.Identity != session.identity || session.status != DecisionSessionCancelled || !session.effectSubmitted ||
+				session.effectDispatchCommitted || session.pendingEffect == nil ||
+				session.pendingEffect.Request == nil || abandon.EffectID != session.pendingEffect.Request.Identity.ID {
+				return DecisionSessionSnapshot{}, errors.New("decision effect abandonment does not match a cancelled, submitted intent")
+			}
+			session.pendingEffect = nil
+			session.effectSubmitted = false
+			session.effectDispatchCommitted = false
+			session.approvalCommit = nil
+			return session.snapshot(), nil
+		}, workflow.UpdateHandlerOptions{Validator: func(abandon DecisionSessionAbandonEffect) error {
+			if err := validateDecisionSessionIdentity(abandon.Identity); err != nil {
+				return err
+			}
+			if abandon.Identity != session.identity || strings.TrimSpace(abandon.EffectID) == "" {
+				return errors.New("invalid decision effect abandonment")
+			}
+			return nil
+		}}); err != nil {
+		return DecisionSessionResult{}, fmt.Errorf("register decision effect abandonment update: %w", err)
+	}
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, DecisionSessionCancelUpdate,
 		func(_ workflow.Context, cancel DecisionSessionCancel) (DecisionSessionSnapshot, error) {
 			if cancel.Identity != session.identity {
@@ -215,6 +506,11 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 				return DecisionSessionSnapshot{}, ErrDecisionSessionStopped
 			}
 			session.status = DecisionSessionCancelled
+			if session.pendingEffect != nil && !session.effectSubmitted {
+				session.pendingEffect = nil
+				session.effectDispatchCommitted = false
+				session.approvalCommit = nil
+			}
 			return session.snapshot(), nil
 		}, workflow.UpdateHandlerOptions{
 			Validator: func(cancel DecisionSessionCancel) error {
@@ -229,7 +525,9 @@ func DecisionSessionWorkflow(ctx workflow.Context, input DecisionSessionInput) (
 		}); err != nil {
 		return DecisionSessionResult{}, fmt.Errorf("register decision session cancellation: %w", err)
 	}
-	if err := workflow.Await(ctx, func() bool { return session.status != DecisionSessionRunning }); err != nil {
+	if err := workflow.Await(ctx, func() bool {
+		return session.initialEffectsAcknowledged && session.status != DecisionSessionRunning && session.pendingEffect == nil && session.pendingOwnershipCAS == ""
+	}); err != nil {
 		return DecisionSessionResult{}, err
 	}
 	return DecisionSessionResult{Snapshot: session.snapshot(), InitialEffects: initialEffects}, nil
@@ -247,6 +545,127 @@ func decisionSessionStatusForView(view decisions.View) DecisionSessionStatus {
 
 func (session *decisionSessionWorkflowState) snapshot() DecisionSessionSnapshot {
 	return DecisionSessionSnapshot{Identity: session.identity, View: session.reducer.View(), Status: session.status}
+}
+
+func (session *decisionSessionWorkflowState) trackEffects(effects []decisions.Effect) {
+	for _, effect := range effects {
+		switch effect.Kind {
+		case decisions.EffectDispatchIntent:
+			if effect.Request != nil {
+				copy := cloneDecisionEffect(effect)
+				session.pendingEffect = &copy
+				session.effectSubmitted = false
+				session.effectDispatchCommitted = false
+				session.approvalCommit = nil
+			}
+		case decisions.EffectAwaitReceipt:
+			if effect.Request != nil {
+				committed := session.effectDispatchCommitted && session.pendingEffect != nil &&
+					session.pendingEffect.Request != nil && session.pendingEffect.Request.Identity == effect.Request.Identity
+				copy := cloneDecisionEffect(effect)
+				session.pendingEffect = &copy
+				session.effectSubmitted = true
+				session.effectDispatchCommitted = committed
+			}
+		case decisions.EffectReleaseOwnership:
+			if effect.Request != nil {
+				copy := cloneDecisionEffect(effect)
+				session.pendingEffect = &copy
+				session.effectSubmitted = true
+				session.effectDispatchCommitted = true
+				session.approvalCommit = nil
+				session.pendingOwnershipCAS = effect.ReceiptID
+			}
+		}
+	}
+}
+
+func (session *decisionSessionWorkflowState) trackReceiptEffects(effects []decisions.Effect) {
+	session.pendingEffect = nil
+	session.effectSubmitted = false
+	session.effectDispatchCommitted = false
+	session.approvalCommit = nil
+	session.pendingOwnershipCAS = ""
+	for _, effect := range effects {
+		if effect.Kind == decisions.EffectAwaitReceipt && effect.Request != nil {
+			copy := cloneDecisionEffect(effect)
+			session.pendingEffect = &copy
+			session.effectSubmitted = true
+			session.effectDispatchCommitted = true
+			return
+		}
+		if effect.Kind == decisions.EffectReleaseOwnership && effect.Request != nil {
+			copy := cloneDecisionEffect(effect)
+			session.pendingEffect = &copy
+			session.effectSubmitted = true
+			session.effectDispatchCommitted = true
+			session.pendingOwnershipCAS = effect.ReceiptID
+			return
+		}
+	}
+	if session.status == DecisionSessionRunning {
+		session.trackEffects(effects)
+	}
+}
+
+func cancelledReceiptEffects(effects []decisions.Effect) []decisions.Effect {
+	filtered := make([]decisions.Effect, 0, len(effects))
+	for _, effect := range effects {
+		if effect.Kind == decisions.EffectAwaitReceipt || effect.Kind == decisions.EffectReleaseOwnership {
+			filtered = append(filtered, cloneDecisionEffect(effect))
+		}
+	}
+	return filtered
+}
+
+func cloneDecisionEffects(effects []decisions.Effect) []decisions.Effect {
+	cloned := make([]decisions.Effect, len(effects))
+	for index, effect := range effects {
+		cloned[index] = cloneDecisionEffect(effect)
+	}
+	return cloned
+}
+
+func cloneDecisionSessionApprovalCommit(commit *DecisionSessionApprovalCommit) *DecisionSessionApprovalCommit {
+	if commit == nil {
+		return nil
+	}
+	copy := *commit
+	return &copy
+}
+
+func validateDecisionApprovalFailureCommit(identity DecisionSessionIdentity, commit *DecisionSessionApprovalCommit, receipt decisionv1.EffectReceipt) error {
+	if receipt.FailureCode != "approval_denied" && receipt.FailureCode != "approval_expired" {
+		return nil
+	}
+	if commit == nil || (receipt.FailureCode == "approval_denied" && commit.Approved) ||
+		commit.Identity != identity || commit.EffectID != receipt.Identity.ID || commit.Effect != receipt.Identity {
+		return errors.New("approval failure receipt lacks its exact committed decision")
+	}
+	return nil
+}
+
+func cloneDecisionEffect(effect decisions.Effect) decisions.Effect {
+	effect.Request = cloneDecisionEffectRequest(effect.Request)
+	effect.MessageFamilies = append([]string(nil), effect.MessageFamilies...)
+	effect.Accept = append([]decisionv1.InputModality(nil), effect.Accept...)
+	return effect
+}
+
+func cloneDecisionEffectRequest(request *decisionv1.EffectRequest) *decisionv1.EffectRequest {
+	if request == nil {
+		return nil
+	}
+	copy := *request
+	if request.Payload != nil {
+		payload := *request.Payload
+		copy.Payload = &payload
+	}
+	return &copy
+}
+
+func sameDecisionEffectRequest(left, right *decisionv1.EffectRequest) bool {
+	return left != nil && right != nil && reflect.DeepEqual(left, right)
 }
 
 // ValidateDecisionSessionInput verifies the frozen manifest/pin and binds the

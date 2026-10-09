@@ -167,6 +167,8 @@ func (runtime *Runtime) handleResume(prefix string) http.HandlerFunc {
 				writeError(writer, http.StatusNotFound, "session_not_found", "agent session not found")
 			case errors.Is(err, errRunActive):
 				writeError(writer, http.StatusConflict, "run_active", "agent session already has an active run")
+			case errors.Is(err, errCancelCleanupPending):
+				writeError(writer, http.StatusConflict, "cancel_cleanup_pending", "retry cancellation cleanup before starting another run")
 			default:
 				writeError(writer, http.StatusInternalServerError, "run_create_failed", "could not create agent run")
 			}
@@ -311,24 +313,48 @@ func (runtime *Runtime) handleCancel(writer http.ResponseWriter, request *http.R
 		writeError(writer, http.StatusNotFound, "run_not_found", "agent run not found")
 		return
 	}
+	emitter := boundEmitter{runtime: runtime, sessionID: sessionID, runID: run.ID}
+	if run.Status == RunStatusCancelled && runtime.cancelCleanupPending(sessionID, run.ID) {
+		cleanupPending := true
+		if runtime.dispatcher != nil {
+			if retryer, ok := runtime.dispatcher.(CancelRecoveryDispatcher); ok {
+				call := CancelCall{Session: session, Run: run, Actor: actor, Reason: input.Reason}
+				err := retryer.RetryCancel(request.Context(), adapter, call, emitter)
+				cleanupPending = err != nil
+				if !runtime.finishCancelCleanupRetry(sessionID, run.ID, cleanupPending) {
+					writeError(writer, http.StatusConflict, "run_not_active", "agent run cancellation cleanup is no longer pending")
+					return
+				}
+			}
+		}
+		writeJSON(writer, http.StatusAccepted, map[string]any{
+			"cancelled": true, "cleanupPending": cleanupPending,
+			"sessionId": session.ID, "runId": run.ID, "session": session, "run": run,
+		})
+		return
+	}
 	adapter, call, cancel, changed := runtime.beginCancel(sessionID, run.ID, input.Reason)
 	if !changed {
 		writeError(writer, http.StatusConflict, "run_not_active", "agent run is not active")
 		return
 	}
 	call.Actor = actor
-	emitter := boundEmitter{runtime: runtime, sessionID: sessionID, runID: run.ID}
+	cleanupPending := false
 	if run.Mode == agents.DurableMode {
 		err = runtime.dispatcher.Cancel(request.Context(), adapter, call, emitter)
 	} else {
 		err = adapter.Cancel(request.Context(), call, emitter)
 	}
 	if err != nil {
-		runtime.abortCancel(sessionID, run.ID)
-		writeError(writer, http.StatusBadGateway, "cancel_dispatch_failed", "agent cancellation could not be dispatched")
-		return
+		var accepted *CancellationAcceptedError
+		if !errors.As(err, &accepted) {
+			runtime.abortCancel(sessionID, run.ID)
+			writeError(writer, http.StatusBadGateway, "cancel_dispatch_failed", "agent cancellation could not be dispatched")
+			return
+		}
+		cleanupPending = true
 	}
-	session, run, committed := runtime.commitCancel(sessionID, run.ID, input.Reason)
+	session, run, committed := runtime.commitCancel(sessionID, run.ID, input.Reason, cleanupPending)
 	if !committed {
 		writeError(writer, http.StatusConflict, "run_not_active", "agent run is not active")
 		return
@@ -337,11 +363,8 @@ func (runtime *Runtime) handleCancel(writer http.ResponseWriter, request *http.R
 		cancel()
 	}
 	writeJSON(writer, http.StatusAccepted, map[string]any{
-		"cancelled": true,
-		"sessionId": session.ID,
-		"runId":     run.ID,
-		"session":   session,
-		"run":       run,
+		"cancelled": true, "cleanupPending": cleanupPending,
+		"sessionId": session.ID, "runId": run.ID, "session": session, "run": run,
 	})
 }
 

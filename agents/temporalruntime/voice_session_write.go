@@ -141,13 +141,23 @@ func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, toolID
 
 func (s *voiceWriteWorkflowState) finish(identity string, result VoiceSessionExecuteToolResult, err error) (VoiceSessionExecuteToolResult, error) {
 	s.pending[identity] = false
-	if err != nil {
+	if err != nil || voiceWriteResultUncertain(result) {
 		s.unknown[identity] = true
 		return VoiceSessionExecuteToolResult{}, errWriteOutcomeUnknown
 	}
 	s.unknown[identity] = false
 	s.results[identity] = result
 	return result, nil
+}
+
+// finishDefinitive records workflow-owned outcomes such as an explicit
+// approval denial or expiry. These outcomes must not be confused with a tool
+// error after provider submission, which stays unknown and reconcile-only.
+func (s *voiceWriteWorkflowState) finishDefinitive(identity string, result VoiceSessionExecuteToolResult) VoiceSessionExecuteToolResult {
+	s.pending[identity] = false
+	s.unknown[identity] = false
+	s.results[identity] = result
+	return result
 }
 
 func executeVoiceWriteToolLocal(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {

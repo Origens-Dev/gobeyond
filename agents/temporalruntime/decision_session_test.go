@@ -16,6 +16,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/agents/decisions"
 	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 	"go.temporal.io/api/common/v1"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -155,20 +156,14 @@ func TestDecisionSessionDispatcherRejectsMismatchedCancelTargetBeforeTemporalUpd
 }
 
 func TestDecisionSessionRespondMayReemitCachedIntentForReceiptDeduplication(t *testing.T) {
-	input := decisionSessionInputFixture(t, "ses_duplicate", 13)
-	identity := decisionv1.EffectIdentity{
-		TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
-		Generation: input.Pin.Generation, RouteEntryID: "entry_1", InputID: "input_1",
-		ActionID: "action_1", GraphSHA256: input.Pin.GraphSHA256,
-	}
-	identity.ID = identity.CanonicalID()
-	request := &decisionv1.EffectRequest{Identity: identity}
+	input, effect, _ := decisionEffectTestFixture(t, "ses_duplicate", 13)
+	identity := effect.Request.Identity
 	result := DecisionSessionAdvanceResult{
 		Accepted: true,
 		Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning},
-		Effects:  []decisions.Effect{{Kind: decisions.EffectDispatchIntent, Request: request}},
+		Effects:  []decisions.Effect{effect},
 	}
-	adapter := &decisionSessionAdapterFake{
+	base := &decisionSessionAdapterFake{
 		config: agents.Config{Durable: true, TaskQueue: "decision"}, definition: input.Definition,
 		response: sessionUpdate(input, input.Admission.RouteEntryID, decisions.Event{Normalized: &decisionv1.NormalizedEvent{
 			ID: "retry_response", Kind: decisionv1.EventSpeechStarted,
@@ -178,7 +173,25 @@ func TestDecisionSessionRespondMayReemitCachedIntentForReceiptDeduplication(t *t
 			Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(time.Second),
 		}}),
 	}
-	fake := &fakeClient{updateOutput: result}
+	adapter := &fakeDecisionEffectAdapter{
+		decisionSessionAdapterFake: base,
+		reconciliations:            []DecisionEffectReconciliation{{State: DecisionEffectPending}},
+	}
+	fake := &fakeClient{queryOutput: DecisionSessionPendingEffect{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}}
+	fake.updateFunc = func(_ context.Context, options client.UpdateWorkflowOptions) (interface{}, error) {
+		switch options.UpdateName {
+		case DecisionSessionAdvanceUpdate:
+			return result, nil
+		case DecisionSessionSubmissionUpdate:
+			return DecisionSessionAdvanceResult{Accepted: true, Snapshot: DecisionSessionSnapshot{
+				Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning,
+			}}, nil
+		case DecisionSessionDispatchCommitUpdate:
+			return DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning}, nil
+		default:
+			return nil, errors.New("unexpected duplicate-intent update")
+		}
+	}
 	dispatcher, err := New(context.Background(), Options{Client: fake})
 	if err != nil {
 		t.Fatal(err)
@@ -204,10 +217,13 @@ func TestDecisionSessionRespondMayReemitCachedIntentForReceiptDeduplication(t *t
 		Data interface{}
 	}(nil), emitter.events...)
 	emitter.mu.Unlock()
-	if updateCalls != 2 || updateOptions.UpdateID != "advance-retry_response" || len(events) != 2 {
+	if updateCalls != 6 || updateOptions.UpdateName != DecisionSessionDispatchCommitUpdate || len(events) != 4 {
 		t.Fatalf("duplicate response routing = calls %d, options %#v, emitted %#v", updateCalls, updateOptions, events)
 	}
 	for _, event := range events {
+		if event.Type == "agent.decision.effect_pending" {
+			continue
+		}
 		advance, ok := event.Data.(DecisionSessionAdvanceResult)
 		if event.Type != "agent.decision.transition" || !ok || len(advance.Effects) != 1 || advance.Effects[0].Request == nil {
 			t.Fatalf("unexpected duplicate response intent: %#v", event)
@@ -326,6 +342,330 @@ func TestDecisionSessionWorkflowUsesRecordedResultsAndOpaqueReferences(t *testin
 	}
 	if !strings.Contains(serialized, "transcript_ref_1") {
 		t.Fatal("Temporal serialization omitted the opaque protected reference")
+	}
+}
+
+func TestDecisionSessionCancelledAfterSubmissionAcceptsLateReceiptAndOwnerCAS(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_cancel_late_receipt", 12)
+	env, _ := decisionSessionTestEnvironment(input)
+	var intent decisions.Effect
+	var submission DecisionSessionAdvanceResult
+	var dispatchCommit DecisionSessionSnapshot
+	var dispatchCommitErr error
+	var cancelSnapshot DecisionSessionSnapshot
+	var receiptAdvance DecisionSessionAdvanceResult
+	var receiptErr error
+	var casSnapshot DecisionSessionSnapshot
+	var casErr error
+	route := decisionRouteByID(t, input.Definition, input.Definition.Graph.Entry)
+	candidateRef := decisionRef("snapshot_late", "directory-snapshot", "a", input, decisionSessionTestStart.Add(time.Hour))
+	candidateSet := decisionv1.CandidateSetSnapshot{CandidateIDs: []string{"candidate_late"}, ProtectedSnapshot: candidateRef}
+	candidateSet.SHA256 = candidateSet.CanonicalSHA256()
+
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		event := decisionv1.NormalizedEvent{
+			ID: "input_late", Kind: decisionv1.EventInputFinal, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			InputWindowID: snapshot.View.InputWindowID, Channel: decisionv1.ChannelVoice,
+			Modality: decisionv1.ModalitySpeechFinal, Locale: input.Pin.Locale,
+			ProtectedInput: decisionRef("transcript_late", "final-transcript", "b", input, decisionSessionTestStart.Add(time.Hour)),
+			SourceEventIDs: []string{"speech_late"}, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+		}
+		sendDecisionSessionUpdate(env, "input_late", sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event}), func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted {
+				t.Errorf("late-receipt input rejected: %#v", result)
+			}
+		})
+	}, time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		refresh := decisions.SnapshotRefresh{
+			ID: "snapshot_late", TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+			Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			ReceivedAt: decisionSessionTestStart.Add(2 * time.Second),
+			Bound: decisions.BoundCandidateSnapshot{BindingID: route.Match.BindingID, RouteID: input.Definition.Graph.Entry,
+				RouteEntryID: snapshot.View.RouteEntryID, Snapshot: candidateSet},
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Snapshot: &refresh})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "snapshot_late", update, func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted {
+				t.Errorf("late-receipt snapshot rejected: %#v", result)
+			}
+		})
+	}, 2*time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		match := decisionv1.NormalizedEvent{
+			ID: "match_late", Kind: decisionv1.EventMatchCompleted, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(3 * time.Second),
+			Match: &decisionv1.MatchResult{Outcome: decisionv1.OutcomeCandidate, CandidateID: "candidate_late",
+				SnapshotSHA256: candidateSet.SHA256, BindingID: route.Match.BindingID},
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &match, InputID: "input_late"})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "match_late", update, func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted || len(result.advance.Effects) != 1 || result.advance.Effects[0].Kind != decisions.EffectDispatchIntent {
+				t.Errorf("match did not produce reducer dispatch intent: %#v", result)
+				return
+			}
+			intent = cloneDecisionEffect(result.advance.Effects[0])
+		})
+	}, 3*time.Second)
+	env.RegisterDelayedCallback(func() {
+		if intent.Request == nil {
+			t.Fatal("missing reducer dispatch request before submission")
+		}
+		env.UpdateWorkflow(DecisionSessionSubmissionUpdate, "submit_late_effect", &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { t.Errorf("effect submission rejected: %v", err) },
+			OnComplete: func(value interface{}, err error) {
+				if err != nil {
+					t.Errorf("effect submission failed: %v", err)
+					return
+				}
+				submission, _ = value.(DecisionSessionAdvanceResult)
+			},
+		}, DecisionSessionEffectSubmission{Identity: decisionSessionIdentity(input), Effect: intent})
+	}, 4*time.Second)
+	env.RegisterDelayedCallback(func() {
+		if intent.Request == nil || !submission.Accepted {
+			t.Fatal("missing submitted effect before dispatch commit")
+		}
+		env.UpdateWorkflow(DecisionSessionDispatchCommitUpdate, "dispatch_commit_late_effect", &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { dispatchCommitErr = err },
+			OnComplete: func(value interface{}, err error) {
+				dispatchCommitErr = err
+				if err == nil {
+					dispatchCommit, _ = value.(DecisionSessionSnapshot)
+				}
+			},
+		}, DecisionSessionEffectDispatchCommit{Identity: decisionSessionIdentity(input), EffectID: intent.Request.Identity.ID})
+	}, 4*time.Second+500*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		cancelDecisionSessionTest(env, input, "cancel_after_submit", &cancelSnapshot, t)
+	}, 5*time.Second)
+	env.RegisterDelayedCallback(func() {
+		receipt := decisionv1.EffectReceipt{
+			Identity: intent.Request.Identity, Status: decisionv1.EffectConfirmed,
+			ReceiptID: "receipt_late", ProviderRequestID: "provider_late", TargetOpaqueID: intent.Request.TargetOpaqueID,
+			ObservedAt: decisionSessionTestStart.Add(6 * time.Second),
+		}
+		update, updateID, err := decisionReceiptUpdate(httpruntime.RespondCall{
+			Session: agents.Session{ID: input.Admission.SessionID}, Run: agents.Run{ID: input.RunID},
+		}, decisionSessionIdentity(input), intent, receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.UpdateWorkflow(DecisionSessionReceiptUpdate, updateID, &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { receiptErr = err },
+			OnComplete: func(value interface{}, err error) {
+				receiptErr = err
+				if err == nil {
+					receiptAdvance, _ = value.(DecisionSessionAdvanceResult)
+				}
+			},
+		}, update)
+	}, 6*time.Second)
+	env.RegisterDelayedCallback(func() {
+		if len(receiptAdvance.Effects) != 1 || receiptAdvance.Effects[0].Kind != decisions.EffectReleaseOwnership {
+			t.Errorf("confirmed late receipt did not request owner CAS: %#v", receiptAdvance)
+			return
+		}
+		ack := DecisionSessionOwnershipCAS{Identity: decisionSessionIdentity(input), EffectID: intent.Request.Identity.ID, ReceiptID: "receipt_late"}
+		env.UpdateWorkflow(DecisionSessionOwnershipCASUpdate, "owner_cas_late", &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { casErr = err },
+			OnComplete: func(value interface{}, err error) {
+				casErr = err
+				if err == nil {
+					casSnapshot, _ = value.(DecisionSessionSnapshot)
+				}
+			},
+		}, ack)
+	}, 7*time.Second)
+
+	env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("cancelled decision workflow failed: %v", err)
+	}
+	var result DecisionSessionResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if dispatchCommitErr != nil || dispatchCommit.Status != DecisionSessionRunning {
+		t.Fatalf("dispatch commit = %#v err=%v", dispatchCommit, dispatchCommitErr)
+	}
+	if cancelSnapshot.Status != DecisionSessionCancelled || submission.Snapshot.View.Phase != decisions.PhaseAwaitingReceipt {
+		t.Fatalf("submission/cancellation state = %#v / %#v", submission, cancelSnapshot)
+	}
+	if receiptErr != nil || len(receiptAdvance.Effects) != 1 || receiptAdvance.Effects[0].Kind != decisions.EffectReleaseOwnership {
+		t.Fatalf("late receipt outcome = %v, %#v", receiptErr, receiptAdvance)
+	}
+	if casErr != nil || casSnapshot.View.Ownership.State != decisionv1.OwnershipReleased {
+		t.Fatalf("owner CAS acknowledgement = %#v / %v", casSnapshot, casErr)
+	}
+	if result.Snapshot.Status != DecisionSessionCancelled || result.Snapshot.View.Ownership.State != decisionv1.OwnershipReleased {
+		t.Fatalf("late confirmed effect changed cancellation or lost ownership receipt: %#v", result.Snapshot)
+	}
+}
+
+func TestDecisionSessionCancelledSubmittedNotAttemptedClosesWithoutRespond(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_cancel_not_attempted_closes", 120)
+	env, _ := decisionSessionTestEnvironment(input)
+	var intent decisions.Effect
+	var submission DecisionSessionAdvanceResult
+	var cancelSnapshot DecisionSessionSnapshot
+	var abandonSnapshot DecisionSessionSnapshot
+	var abandonErr error
+	route := decisionRouteByID(t, input.Definition, input.Definition.Graph.Entry)
+	candidateRef := decisionRef("snapshot_cancel_not_attempted", "directory-snapshot", "a", input, decisionSessionTestStart.Add(time.Hour))
+	candidateSet := decisionv1.CandidateSetSnapshot{CandidateIDs: []string{"candidate_cancel_not_attempted"}, ProtectedSnapshot: candidateRef}
+	candidateSet.SHA256 = candidateSet.CanonicalSHA256()
+
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		event := decisionv1.NormalizedEvent{
+			ID: "input_cancel_not_attempted", Kind: decisionv1.EventInputFinal, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			InputWindowID: snapshot.View.InputWindowID, Channel: decisionv1.ChannelVoice,
+			Modality: decisionv1.ModalitySpeechFinal, Locale: input.Pin.Locale,
+			ProtectedInput: decisionRef("transcript_cancel_not_attempted", "final-transcript", "b", input, decisionSessionTestStart.Add(time.Hour)),
+			SourceEventIDs: []string{"speech_cancel_not_attempted"}, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+		}
+		sendDecisionSessionUpdate(env, "input_cancel_not_attempted", sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event}), func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted {
+				t.Errorf("cancel-not-attempted input rejected: %#v", result)
+			}
+		})
+	}, time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		refresh := decisions.SnapshotRefresh{
+			ID: "snapshot_cancel_not_attempted", TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+			Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			ReceivedAt: decisionSessionTestStart.Add(2 * time.Second),
+			Bound: decisions.BoundCandidateSnapshot{BindingID: route.Match.BindingID, RouteID: input.Definition.Graph.Entry,
+				RouteEntryID: snapshot.View.RouteEntryID, Snapshot: candidateSet},
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Snapshot: &refresh})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "snapshot_cancel_not_attempted", update, func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted {
+				t.Errorf("cancel-not-attempted snapshot rejected: %#v", result)
+			}
+		})
+	}, 2*time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		match := decisionv1.NormalizedEvent{
+			ID: "match_cancel_not_attempted", Kind: decisionv1.EventMatchCompleted, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(3 * time.Second),
+			Match: &decisionv1.MatchResult{Outcome: decisionv1.OutcomeCandidate, CandidateID: "candidate_cancel_not_attempted",
+				SnapshotSHA256: candidateSet.SHA256, BindingID: route.Match.BindingID},
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &match, InputID: "input_cancel_not_attempted"})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "match_cancel_not_attempted", update, func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted || len(result.advance.Effects) != 1 || result.advance.Effects[0].Kind != decisions.EffectDispatchIntent {
+				t.Errorf("cancel-not-attempted match did not produce one dispatch intent: %#v", result)
+				return
+			}
+			intent = cloneDecisionEffect(result.advance.Effects[0])
+		})
+	}, 3*time.Second)
+	env.RegisterDelayedCallback(func() {
+		if intent.Request == nil {
+			t.Fatal("missing reducer dispatch request before submission")
+		}
+		env.UpdateWorkflow(DecisionSessionSubmissionUpdate, "submit_cancel_not_attempted", &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { t.Errorf("cancel-not-attempted submission rejected: %v", err) },
+			OnComplete: func(value interface{}, err error) {
+				if err != nil {
+					t.Errorf("cancel-not-attempted submission failed: %v", err)
+					return
+				}
+				submission, _ = value.(DecisionSessionAdvanceResult)
+			},
+		}, DecisionSessionEffectSubmission{Identity: decisionSessionIdentity(input), Effect: intent})
+	}, 4*time.Second)
+	env.RegisterDelayedCallback(func() {
+		cancelDecisionSessionTest(env, input, "cancel_submitted_not_attempted", &cancelSnapshot, t)
+	}, 5*time.Second)
+	env.RegisterDelayedCallback(func() {
+		if intent.Request == nil || !submission.Accepted {
+			t.Fatal("missing submitted effect before authoritative no-attempt reconciliation")
+		}
+		// The host sends this only after its existing operation authority returns
+		// DecisionEffectNotAttempted. No Respond is sent after cancellation.
+		abandon := DecisionSessionAbandonEffect{Identity: decisionSessionIdentity(input), EffectID: intent.Request.Identity.ID}
+		env.UpdateWorkflow(DecisionSessionAbandonEffectUpdate, "abandon-"+intent.Request.Identity.ID, &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { abandonErr = err },
+			OnComplete: func(value interface{}, err error) {
+				abandonErr = err
+				if err == nil {
+					abandonSnapshot, _ = value.(DecisionSessionSnapshot)
+				}
+			},
+		}, abandon)
+	}, 6*time.Second)
+
+	env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("cancelled workflow failed: %v", err)
+	}
+	var result DecisionSessionResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("workflow did not close after abandoning the authoritative no-attempt effect: %v", err)
+	}
+	if !submission.Accepted || cancelSnapshot.Status != DecisionSessionCancelled || abandonErr != nil ||
+		abandonSnapshot.Status != DecisionSessionCancelled || result.Snapshot.Status != DecisionSessionCancelled {
+		t.Fatalf("submission/cancel/abandon/final states = %#v / %#v / %#v err=%v / %#v", submission, cancelSnapshot, abandonSnapshot, abandonErr, result.Snapshot)
+	}
+}
+
+func TestDecisionApprovalFailureReceiptRequiresExactDurableChoice(t *testing.T) {
+	input, effect, _ := decisionEffectTestFixture(t, "ses_approval_failure_receipt", 17)
+	identity := decisionSessionIdentity(input)
+	commit := &DecisionSessionApprovalCommit{
+		Identity: identity, EffectID: effect.Request.Identity.ID, Effect: effect.Request.Identity,
+		ApprovalID: "approval_1", ToolCallID: effect.Request.Identity.ID,
+		InputHash: strings.Repeat("a", 64), ActorID: "actor_1", ActorKind: "user", Approved: false,
+	}
+	receipt := decisionv1.EffectReceipt{
+		Identity: effect.Request.Identity, Status: decisionv1.EffectFailed, ReceiptID: "approval_failure_1",
+		TargetOpaqueID: effect.Request.TargetOpaqueID, FailureCode: "approval_denied", ObservedAt: decisionSessionTestStart,
+	}
+	if err := validateDecisionApprovalFailureCommit(identity, commit, receipt); err != nil {
+		t.Fatalf("exact durable denial rejected: %v", err)
+	}
+	if err := validateDecisionApprovalFailureCommit(identity, nil, receipt); err == nil {
+		t.Fatal("approval denial receipt without a durable decision was accepted")
+	}
+	wrong := *commit
+	wrong.EffectID = "different_effect"
+	if err := validateDecisionApprovalFailureCommit(identity, &wrong, receipt); err == nil {
+		t.Fatal("approval denial receipt for another effect was accepted")
+	}
+	approved := *commit
+	approved.Approved = true
+	if err := validateDecisionApprovalFailureCommit(identity, &approved, receipt); err == nil {
+		t.Fatal("denial receipt contradicted the committed approval")
+	}
+	expired := receipt
+	expired.FailureCode = "approval_expired"
+	if err := validateDecisionApprovalFailureCommit(identity, &approved, expired); err != nil {
+		t.Fatalf("expired receipt after an authenticated late approval choice rejected: %v", err)
+	}
+	unrelated := receipt
+	unrelated.FailureCode = "provider_rejected"
+	if err := validateDecisionApprovalFailureCommit(identity, nil, unrelated); err != nil {
+		t.Fatalf("provider failure incorrectly required an approval record: %v", err)
 	}
 }
 

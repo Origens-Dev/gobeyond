@@ -12,6 +12,7 @@ import (
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
+	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
@@ -28,8 +29,9 @@ const (
 	VoiceSessionExecuteToolUpdate = "gobeyond.agents.voice_session.execute_tool.v1"
 	// VoiceSessionApproveToolUpdate responds to one exact workflow-owned pending
 	// call and returns its final result after execution or denial.
-	VoiceSessionApproveToolUpdate    = "gobeyond.agents.voice_session.approve_tool.v1"
-	VoiceSessionPendingApprovalQuery = "gobeyond.agents.voice_session.pending_approval.v1"
+	VoiceSessionApproveToolUpdate                  = "gobeyond.agents.voice_session.approve_tool.v1"
+	VoiceSessionPendingApprovalQuery               = "gobeyond.agents.voice_session.pending_approval.v1"
+	VoiceSessionPendingDecisionEffectApprovalQuery = "gobeyond.agents.voice_session.pending_decision_effect_approval.v1"
 
 	voiceSessionExecuteToolActivityName = "gobeyond.agents.voice_session.execute_tool"
 	maxVoiceSessionToolCalls            = 8
@@ -83,29 +85,48 @@ type VoiceSessionExecuteToolInput struct {
 	WriteReconcileOnly bool `json:"write_reconcile_only,omitempty"`
 	// Set only by the workflow after validating an approval response. The public
 	// execute-tool update always clears this field before dispatch.
-	ApprovalConfirmed bool      `json:"approval_confirmed,omitempty"`
-	ApprovalExpiresAt time.Time `json:"approval_expires_at,omitempty"`
+	ApprovalConfirmed      bool                       `json:"approval_confirmed,omitempty"`
+	ApprovalExpiresAt      time.Time                  `json:"approval_expires_at,omitempty"`
+	DecisionEffectIdentity *decisionv1.EffectIdentity `json:"decision_effect_identity,omitempty"`
 }
 
 type VoiceSessionToolApproval struct {
-	InteractionID string          `json:"interaction_id"`
-	ActorID       string          `json:"actor_id"`
-	ActorKind     string          `json:"actor_kind"`
-	ToolCallID    string          `json:"tool_call_id"`
-	ToolName      string          `json:"tool_name"`
-	Input         json.RawMessage `json:"input"`
-	InputHash     string          `json:"input_hash"`
-	ExpiresAt     time.Time       `json:"expires_at"`
+	InteractionID          string                     `json:"interaction_id"`
+	ActorID                string                     `json:"actor_id"`
+	ActorKind              string                     `json:"actor_kind"`
+	ToolCallID             string                     `json:"tool_call_id"`
+	ToolName               string                     `json:"tool_name"`
+	Input                  json.RawMessage            `json:"input"`
+	InputHash              string                     `json:"input_hash"`
+	ExpiresAt              time.Time                  `json:"expires_at"`
+	DecisionEffectIdentity *decisionv1.EffectIdentity `json:"decision_effect_identity,omitempty"`
+}
+
+// VoiceSessionDecisionApprovalSnapshot exposes only the approval metadata
+// required to bind a decision response. Raw tool input stays in voice workflow state.
+type VoiceSessionDecisionApprovalSnapshot struct {
+	Found                  bool                       `json:"found"`
+	InteractionID          string                     `json:"interactionId,omitempty"`
+	ActorID                string                     `json:"actorId,omitempty"`
+	ActorKind              string                     `json:"actorKind,omitempty"`
+	ToolCallID             string                     `json:"toolCallId,omitempty"`
+	ToolName               string                     `json:"toolName,omitempty"`
+	InputHash              string                     `json:"inputHash,omitempty"`
+	ExpiresAt              time.Time                  `json:"expiresAt,omitempty"`
+	DecisionEffectIdentity *decisionv1.EffectIdentity `json:"decisionEffectIdentity,omitempty"`
 }
 
 // VoiceSessionApprovalResponse is an internal workflow update payload. The
 // API derives actor fields from its verified grant; clients submit only ID and
 // decision.
 type VoiceSessionApprovalResponse struct {
-	InteractionID string `json:"interaction_id"`
-	Approved      bool   `json:"approved"`
-	ActorID       string `json:"actor_id"`
-	ActorKind     string `json:"actor_kind"`
+	InteractionID          string                     `json:"interaction_id"`
+	Approved               bool                       `json:"approved"`
+	ActorID                string                     `json:"actor_id"`
+	ActorKind              string                     `json:"actor_kind"`
+	ToolCallID             string                     `json:"tool_call_id,omitempty"`
+	InputHash              string                     `json:"input_hash,omitempty"`
+	DecisionEffectIdentity *decisionv1.EffectIdentity `json:"decision_effect_identity,omitempty"`
 }
 
 // VoiceSessionExecuteToolResult is returned to Maglev so it can SendToolResponse.
@@ -177,7 +198,10 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 	pendingByCall := map[string]string{}
 	type approvalOutcome struct {
 		actorID, actorKind string
+		toolCallID         string
+		inputHash          string
 		approved           bool
+		decisionIdentity   *decisionv1.EffectIdentity
 		result             VoiceSessionExecuteToolResult
 	}
 	approvalResults := map[string]approvalOutcome{}
@@ -189,6 +213,28 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 		}
 		return nil, nil
 	}); err != nil {
+		return err
+	}
+	if err := workflow.SetQueryHandler(ctx, VoiceSessionPendingDecisionEffectApprovalQuery,
+		func(identity decisionv1.EffectIdentity) (VoiceSessionDecisionApprovalSnapshot, error) {
+			if err := identity.Validate(); err != nil {
+				return VoiceSessionDecisionApprovalSnapshot{}, err
+			}
+			if in.Context == nil || identity.SessionID != in.SessionID || identity.Generation != in.Context.Generation {
+				return VoiceSessionDecisionApprovalSnapshot{}, errors.New("decision approval query does not match the current voice session generation")
+			}
+			for interactionID, req := range pendingApprovals {
+				if req.DecisionEffectIdentity == nil || *req.DecisionEffectIdentity != identity {
+					continue
+				}
+				return VoiceSessionDecisionApprovalSnapshot{
+					Found: true, InteractionID: interactionID, ActorID: req.ActorID, ActorKind: req.ActorKind,
+					ToolCallID: req.ToolCallID, ToolName: req.ToolName, InputHash: voiceToolInputHash(req.Input),
+					ExpiresAt: req.ApprovalExpiresAt, DecisionEffectIdentity: cloneEffectIdentity(req.DecisionEffectIdentity),
+				}, nil
+			}
+			return VoiceSessionDecisionApprovalSnapshot{}, nil
+		}); err != nil {
 		return err
 	}
 	control := newVoiceControlWorkflowState()
@@ -205,6 +251,9 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 			if !exclusiveVoiceDispatch(req) {
 				return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
+			}
+			if err := validateVoiceDecisionEffectBinding(in, req); err != nil {
+				return VoiceSessionExecuteToolResult{}, err
 			}
 			if req.SourcePlayback != nil || req.HiddenCompletion != nil {
 				return playback.execute(ctx, in, req)
@@ -258,7 +307,9 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 		func(ctx workflow.Context, response VoiceSessionApprovalResponse) (VoiceSessionExecuteToolResult, error) {
 			interactionID := strings.TrimSpace(response.InteractionID)
 			if prior, ok := approvalResults[interactionID]; ok {
-				if prior.actorID != response.ActorID || prior.actorKind != response.ActorKind || prior.approved != response.Approved {
+				if prior.actorID != response.ActorID || prior.actorKind != response.ActorKind || prior.approved != response.Approved ||
+					prior.toolCallID != response.ToolCallID || prior.inputHash != response.InputHash ||
+					!sameEffectIdentity(prior.decisionIdentity, response.DecisionEffectIdentity) {
 					return VoiceSessionExecuteToolResult{}, errors.New("conflicting or unauthorized replay for voice approval")
 				}
 				return prior.result, nil
@@ -270,6 +321,14 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 			if response.ActorID != req.ActorID || response.ActorKind != req.ActorKind || response.ActorID == "" {
 				return VoiceSessionExecuteToolResult{}, errors.New("approval actor does not own the pending voice tool call")
 			}
+			if req.DecisionEffectIdentity != nil {
+				if response.DecisionEffectIdentity == nil || *response.DecisionEffectIdentity != *req.DecisionEffectIdentity ||
+					response.ToolCallID != req.ToolCallID || response.InputHash != voiceToolInputHash(req.Input) {
+					return VoiceSessionExecuteToolResult{}, errors.New("approval does not match the pending decision effect identity and input")
+				}
+			} else if response.DecisionEffectIdentity != nil {
+				return VoiceSessionExecuteToolResult{}, errors.New("decision effect identity supplied for a non-decision approval")
+			}
 			identity := voiceWriteIdentity(req.ToolName, req.ToolCallID)
 			expired := !req.ApprovalExpiresAt.IsZero() && !workflow.Now(ctx).Before(req.ApprovalExpiresAt)
 			// Expired approval blocks a new mutation, but an authorized unknown
@@ -277,12 +336,17 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 			if expired && !(response.Approved && writes.unknown[identity]) {
 				delete(pendingApprovals, interactionID)
 				delete(pendingByCall, req.ToolCallID)
-				result, _ := writes.finish(identity, VoiceSessionExecuteToolResult{Error: "tool approval expired"}, nil)
+				result := writes.finishDefinitive(identity, VoiceSessionExecuteToolResult{Error: "tool approval expired"})
+				approvalResults[interactionID] = approvalOutcome{
+					actorID: response.ActorID, actorKind: response.ActorKind, toolCallID: response.ToolCallID,
+					inputHash: response.InputHash, approved: response.Approved,
+					decisionIdentity: cloneEffectIdentity(response.DecisionEffectIdentity), result: result,
+				}
 				return result, nil
 			}
 			var result VoiceSessionExecuteToolResult
 			if !response.Approved {
-				result, _ = writes.finish(identity, VoiceSessionExecuteToolResult{Error: "tool approval denied"}, nil)
+				result = writes.finishDefinitive(identity, VoiceSessionExecuteToolResult{Error: "tool approval denied"})
 			} else {
 				req.ApprovalConfirmed = true
 				if writes.unknown[identity] {
@@ -295,10 +359,14 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 				}
 				result, err = writes.finish(identity, result, err)
 				if err != nil {
-					return VoiceSessionExecuteToolResult{}, err
+					result = VoiceSessionExecuteToolResult{Error: err.Error()}
 				}
 			}
-			approvalResults[interactionID] = approvalOutcome{actorID: response.ActorID, actorKind: response.ActorKind, approved: response.Approved, result: result}
+			approvalResults[interactionID] = approvalOutcome{
+				actorID: response.ActorID, actorKind: response.ActorKind, toolCallID: response.ToolCallID,
+				inputHash: response.InputHash, approved: response.Approved,
+				decisionIdentity: cloneEffectIdentity(response.DecisionEffectIdentity), result: result,
+			}
 			delete(pendingApprovals, interactionID)
 			delete(pendingByCall, req.ToolCallID)
 			return result, nil
@@ -359,7 +427,43 @@ func newVoiceSessionToolApproval(req VoiceSessionExecuteToolInput, call ai.ToolC
 		ActorID:       strings.TrimSpace(req.ActorID), ActorKind: strings.TrimSpace(req.ActorKind),
 		ToolCallID: strings.TrimSpace(req.ToolCallID), ToolName: strings.TrimSpace(req.ToolName),
 		Input: input, InputHash: inputHash, ExpiresAt: req.ApprovalExpiresAt,
+		DecisionEffectIdentity: cloneEffectIdentity(req.DecisionEffectIdentity),
 	}, nil
+}
+
+func validateVoiceDecisionEffectBinding(in VoiceSessionInput, req VoiceSessionExecuteToolInput) error {
+	if req.DecisionEffectIdentity == nil {
+		return nil
+	}
+	identity := *req.DecisionEffectIdentity
+	if err := identity.Validate(); err != nil {
+		return err
+	}
+	if in.Context == nil || in.Context.Validate() != nil || in.Context.SessionID != in.SessionID ||
+		identity.SessionID != in.SessionID || identity.Generation != in.Context.Generation || identity.ID != req.ToolCallID {
+		return errors.New("decision effect identity does not match the current voice session generation")
+	}
+	if req.AgentID != in.AgentID || req.SessionID != in.SessionID || req.CallID != in.CallID ||
+		req.ActorID != in.Context.ActorID || req.ActorKind != in.Context.ActorKind || req.NetworkID != in.Context.NetworkID ||
+		req.ManifestDigest != in.Context.ManifestDigest || req.AgentRevision != in.Context.AgentRevision {
+		return errors.New("decision effect voice tool request does not match the verified voice session context")
+	}
+	return nil
+}
+
+func sameEffectIdentity(left, right *decisionv1.EffectIdentity) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func cloneEffectIdentity(identity *decisionv1.EffectIdentity) *decisionv1.EffectIdentity {
+	if identity == nil {
+		return nil
+	}
+	copy := *identity
+	return &copy
 }
 
 func voiceToolInputHash(input []byte) string {

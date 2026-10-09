@@ -24,6 +24,7 @@ import (
 	"github.com/Origens-Dev/gobeyond/agents/decisions"
 	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -651,6 +652,8 @@ func (dispatcher *Dispatcher) startDecisionSession(ctx context.Context, adapter 
 	}
 	run, err := dispatcher.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: physicalQueue,
+		WorkflowIDConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+		WorkflowIDReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 	}, DecisionSessionWorkflowName, input)
 	if err != nil {
 		return fmt.Errorf("start durable decision session workflow: %w", err)
@@ -658,17 +661,35 @@ func (dispatcher *Dispatcher) startDecisionSession(ctx context.Context, adapter 
 	if run == nil {
 		return errors.New("start durable decision session workflow: Temporal returned a nil run")
 	}
-	if len(initialEffects) > 0 {
-		transition := DecisionSessionAdvanceResult{
-			Accepted: true,
-			Snapshot: DecisionSessionSnapshot{
-				Identity: decisionSessionIdentity(input), View: state.View(), Status: decisionSessionStatusForView(state.View()),
-			},
-			Effects: initialEffects,
+	identity := decisionSessionIdentity(input)
+	transition := DecisionSessionAdvanceResult{
+		Accepted: true,
+		Snapshot: DecisionSessionSnapshot{Identity: identity, View: state.View(), Status: decisionSessionStatusForView(state.View())},
+		Effects:  initialEffects,
+	}
+	if hasDecisionEffectWork(initialEffects) {
+		initialUpdateID := fmt.Sprintf("initial-%s-%d", identity.SnapshotSHA256, identity.Generation)
+		if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionInitialUpdate, initialUpdateID, identity, &transition); err != nil {
+			return fmt.Errorf("recover initial durable decision transition: %w", err)
 		}
-		if err := emit.Emit(ctx, "agent.decision.transition", transition); err != nil {
-			_ = dispatcher.client.CancelWorkflow(ctx, workflowID, "")
+	}
+	var effectAuthority DecisionEffectAdapter
+	if hasDecisionEffectWork(transition.Effects) {
+		var ok bool
+		effectAuthority, ok = adapter.(DecisionEffectAdapter)
+		if !ok {
+			return ErrDecisionEffectAuthorityRequired
+		}
+	}
+	if len(transition.Effects) > 0 {
+		if err := dispatcher.emitDecisionTransition(ctx, emit, transition); err != nil {
 			return fmt.Errorf("emit initial decision session transition: %w", err)
+		}
+		if hasDecisionEffectWork(transition.Effects) {
+			respond := httpruntime.RespondCall{Session: call.Session, Run: call.Run, Actor: call.Actor}
+			if err := dispatcher.dispatchDecisionTransition(ctx, effectAuthority, respond, transition, emit); err != nil {
+				return fmt.Errorf("dispatch initial decision effects: %w", err)
+			}
 		}
 	}
 	var result DecisionSessionResult
@@ -997,6 +1018,26 @@ func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapte
 	if durable.Config().Mode() != agents.DurableMode {
 		return errors.New("decision session response requires a durable adapter")
 	}
+	approval, isApproval, err := parseDecisionApprovalPayload(call.Response)
+	if err != nil {
+		return err
+	}
+	if isApproval {
+		authority, ok := durable.(DecisionEffectAdapter)
+		if !ok {
+			return ErrDecisionEffectAuthorityRequired
+		}
+		return dispatcher.respondDecisionApproval(ctx, authority, call, approval, emit)
+	}
+	if authority, ok := durable.(DecisionEffectAdapter); ok {
+		pending, err := dispatcher.recoverPendingDecisionEffect(ctx, authority, call, emit)
+		if err != nil {
+			return fmt.Errorf("recover outstanding decision effect before response: %w", err)
+		}
+		if pending {
+			return ErrDecisionEffectOutcomeUnknown
+		}
+	}
 	update, err := durable.PrepareDecisionResponse(call)
 	if err != nil {
 		return fmt.Errorf("prepare decision response: %w", err)
@@ -1030,6 +1071,14 @@ func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapte
 	if !result.Accepted {
 		return errors.New("durable decision session did not accept the response")
 	}
+	var effectAuthority DecisionEffectAdapter
+	if hasDecisionEffectWork(result.Effects) {
+		var ok bool
+		effectAuthority, ok = adapter.(DecisionEffectAdapter)
+		if !ok {
+			return ErrDecisionEffectAuthorityRequired
+		}
+	}
 	if len(result.Effects) > 0 {
 		if emit == nil {
 			return errors.New("durable decision session effect emitter is required")
@@ -1037,17 +1086,22 @@ func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapte
 		if err := emit.Emit(ctx, "agent.decision.transition", result); err != nil {
 			return fmt.Errorf("emit decision session transition: %w", err)
 		}
+		if hasDecisionEffectWork(result.Effects) {
+			if err := dispatcher.dispatchDecisionTransition(ctx, effectAuthority, call, result, emit); err != nil {
+				return fmt.Errorf("dispatch decision effects: %w", err)
+			}
+		}
 	}
 	return nil
 }
 
 // Cancel requests cancellation of the stable workflow execution for the run.
-func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, _ httpruntime.EventEmitter) error {
+func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, emit httpruntime.EventEmitter) error {
 	if err := dispatcher.ready(); err != nil {
 		return err
 	}
 	if _, ok := adapter.(httpruntime.DecisionAdapter); ok {
-		return dispatcher.cancelDecisionSession(ctx, adapter, call)
+		return dispatcher.cancelDecisionSession(ctx, adapter, call, emit)
 	}
 	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
 	if err != nil {
@@ -1065,7 +1119,15 @@ func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Ad
 	return nil
 }
 
-func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall) error {
+// RetryCancel retries reconciliation for a cancellation that the HTTP runtime
+// has already committed locally. Decision effect recovery re-reads the
+// existing authority on every attempt and never treats an unknown outcome as
+// permission to submit another provider operation or reopen the run.
+func (dispatcher *Dispatcher) RetryCancel(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, emit httpruntime.EventEmitter) error {
+	return dispatcher.Cancel(ctx, adapter, call, emit)
+}
+
+func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, emit httpruntime.EventEmitter) error {
 	if dispatcher.hosted != nil {
 		return errors.New("hosted decision sessions are not registered by this dormant dispatcher seam")
 	}
@@ -1100,6 +1162,19 @@ func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter
 	var result DecisionSessionSnapshot
 	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionCancelUpdate, updateID, cancel, &result); err != nil {
 		return fmt.Errorf("cancel durable decision session: %w", err)
+	}
+	if result.Identity != cancel.Identity || result.Status != DecisionSessionCancelled {
+		return &httpruntime.CancellationAcceptedError{Cause: errors.New("durable cancellation update completed without its expected cancelled snapshot")}
+	}
+	if authority, ok := durable.(DecisionEffectAdapter); ok {
+		respondCall := httpruntime.RespondCall{Session: call.Session, Run: call.Run, Actor: call.Actor}
+		pending, err := dispatcher.recoverPendingDecisionEffect(ctx, authority, respondCall, emit)
+		if err != nil {
+			return &httpruntime.CancellationAcceptedError{Cause: fmt.Errorf("reconcile decision effect after cancellation: %w", err)}
+		}
+		if pending {
+			return &httpruntime.CancellationAcceptedError{Cause: ErrDecisionEffectOutcomeUnknown}
+		}
 	}
 	return nil
 }

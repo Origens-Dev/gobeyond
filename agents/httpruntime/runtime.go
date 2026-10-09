@@ -79,11 +79,12 @@ type sessionState struct {
 }
 
 type runState struct {
-	run              agents.Run
-	cancel           context.CancelFunc
-	cancelPending    bool
-	pendingFinish    bool
-	pendingFinishErr error
+	run                  agents.Run
+	cancel               context.CancelFunc
+	cancelCleanupPending bool
+	cancelPending        bool
+	pendingFinish        bool
+	pendingFinishErr     error
 }
 
 // Event is the canonical persisted and SSE-delivered session event.
@@ -268,8 +269,13 @@ func (runtime *Runtime) createRun(sessionID string, metadata map[string]string, 
 		return nil, agents.Session{}, agents.Run{}, errSessionNotFound
 	}
 	for _, priorID := range state.runOrder {
-		if prior := state.runs[priorID]; prior != nil && prior.run.Status == RunStatusRunning {
-			return nil, agents.Session{}, agents.Run{}, errRunActive
+		if prior := state.runs[priorID]; prior != nil {
+			if prior.cancelCleanupPending {
+				return nil, agents.Session{}, agents.Run{}, errCancelCleanupPending
+			}
+			if prior.run.Status == RunStatusRunning {
+				return nil, agents.Session{}, agents.Run{}, errRunActive
+			}
 		}
 	}
 	if metadata != nil {
@@ -367,7 +373,7 @@ func (runtime *Runtime) beginCancel(sessionID, runID, reason string) (Adapter, C
 	return state.adapter, call, run.cancel, true
 }
 
-func (runtime *Runtime) commitCancel(sessionID, runID, reason string) (agents.Session, agents.Run, bool) {
+func (runtime *Runtime) commitCancel(sessionID, runID, reason string, cleanupPending bool) (agents.Session, agents.Run, bool) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	state := runtime.sessions[sessionID]
@@ -379,6 +385,7 @@ func (runtime *Runtime) commitCancel(sessionID, runID, reason string) (agents.Se
 		return agents.Session{}, agents.Run{}, false
 	}
 	run.cancelPending = false
+	run.cancelCleanupPending = cleanupPending
 	run.pendingFinish = false
 	run.pendingFinishErr = nil
 	now := runtime.now().UTC()
@@ -388,6 +395,32 @@ func (runtime *Runtime) commitCancel(sessionID, runID, reason string) (agents.Se
 	payload, _ := json.Marshal(map[string]any{"runId": runID, "reason": reason})
 	runtime.appendEventLocked(state, sessionID, runID, "run.cancelled", payload)
 	return cloneSession(state.session), cloneRun(run.run), true
+}
+
+func (runtime *Runtime) cancelCleanupPending(sessionID, runID string) bool {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	state := runtime.sessions[sessionID]
+	if state == nil {
+		return false
+	}
+	run := state.runs[runID]
+	return run != nil && run.run.Status == RunStatusCancelled && run.cancelCleanupPending
+}
+
+func (runtime *Runtime) finishCancelCleanupRetry(sessionID, runID string, cleanupPending bool) bool {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	state := runtime.sessions[sessionID]
+	if state == nil {
+		return false
+	}
+	run := state.runs[runID]
+	if run == nil || run.run.Status != RunStatusCancelled || !run.cancelCleanupPending {
+		return false
+	}
+	run.cancelCleanupPending = cleanupPending
+	return true
 }
 
 func (runtime *Runtime) abortCancel(sessionID, runID string) {
@@ -628,9 +661,10 @@ func (emitter boundEmitter) Emit(ctx context.Context, eventType string, data any
 }
 
 var (
-	errSessionNotFound = errors.New("agent session not found")
-	errRunNotFound     = errors.New("agent run not found")
-	errRunActive       = errors.New("agent run is already active")
-	errRunNotActive    = errors.New("agent run is not active")
-	errActorForbidden  = errors.New("agent actor does not own this session")
+	errSessionNotFound      = errors.New("agent session not found")
+	errRunNotFound          = errors.New("agent run not found")
+	errRunActive            = errors.New("agent run is already active")
+	errCancelCleanupPending = errors.New("durable cancellation cleanup is still pending")
+	errRunNotActive         = errors.New("agent run is not active")
+	errActorForbidden       = errors.New("agent actor does not own this session")
 )
