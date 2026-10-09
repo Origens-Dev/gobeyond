@@ -7,12 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go/format"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
+
+	gbagents "github.com/Origens-Dev/gobeyond/agents"
+	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
+	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 )
 
 type Manifest struct {
@@ -51,6 +55,7 @@ type AgentsManifest struct {
 type AgentManifestDefinition struct {
 	VoiceManifest       *voicecontract.Manifest `json:"voiceManifest,omitempty"`
 	VoiceManifestDigest string                  `json:"voiceManifestDigest,omitempty"`
+	Decision            *decisionv1.Definition  `json:"decision,omitempty"`
 	ID                  string                  `json:"id"`
 	Kind                string                  `json:"kind"`
 	Mode                string                  `json:"mode"`
@@ -120,7 +125,13 @@ func WriteWithAgentRevisions(root string, routes []Route, buildID string, check 
 	if len(revisions) > 0 {
 		agentsManifest.APIVersion = "gobeyond.agents/v1alpha5"
 	}
+	if hasDecisionAgent(agentDefinitions) {
+		agentsManifest.APIVersion = "gobeyond.agents/v1alpha6"
+	}
 	if err := attachVoiceManifests(&agentsManifest, agentDefinitions); err != nil {
+		return err
+	}
+	if err := attachDecisionManifests(&agentsManifest, agentDefinitions); err != nil {
 		return err
 	}
 	agentsManifestBytes, err := json.MarshalIndent(agentsManifest, "", "  ")
@@ -320,13 +331,50 @@ func LoadAgentsManifest(root string) (AgentsManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return AgentsManifest{}, err
 	}
-	if (manifest.APIVersion != "gobeyond.agents/v1alpha4" && manifest.APIVersion != "gobeyond.agents/v1alpha5") || strings.TrimSpace(manifest.BuildID) == "" {
+	if (manifest.APIVersion != "gobeyond.agents/v1alpha4" && manifest.APIVersion != "gobeyond.agents/v1alpha5" && manifest.APIVersion != "gobeyond.agents/v1alpha6") || strings.TrimSpace(manifest.BuildID) == "" {
 		return AgentsManifest{}, errors.New("unsupported or incomplete agent manifest")
 	}
 	if manifest.Agents == nil {
 		manifest.Agents = []AgentManifestDefinition{}
 	}
+	for _, agent := range manifest.Agents {
+		if agent.Kind == AgentKindDecision && agent.Decision == nil {
+			return AgentsManifest{}, fmt.Errorf("agent %s is missing its frozen decision manifest", agent.ID)
+		}
+		if agent.Decision == nil {
+			continue
+		}
+		if agent.Kind != AgentKindDecision {
+			return AgentsManifest{}, fmt.Errorf("agent %s carries a decision manifest but is not a decision agent", agent.ID)
+		}
+		if manifest.APIVersion != "gobeyond.agents/v1alpha6" {
+			return AgentsManifest{}, errors.New("decision manifest requires gobeyond.agents/v1alpha6")
+		}
+		parentSHA, err := decisionParentManifestSHA256(agent)
+		if err != nil {
+			return AgentsManifest{}, err
+		}
+		if agent.Decision.Graph.Authority.ParentManifestSHA256 != parentSHA {
+			return AgentsManifest{}, fmt.Errorf("agent %s decision parent digest does not match its frozen manifest record", agent.ID)
+		}
+		frozen, _, _, err := gbagents.FreezeDecisionManifest(*agent.Decision)
+		if err != nil {
+			return AgentsManifest{}, fmt.Errorf("agent %s decision manifest: %w", agent.ID, err)
+		}
+		if !reflect.DeepEqual(frozen, *agent.Decision) {
+			return AgentsManifest{}, fmt.Errorf("agent %s decision manifest is not in canonical frozen form", agent.ID)
+		}
+	}
 	return manifest, nil
+}
+
+func hasDecisionAgent(definitions []AgentDefinition) bool {
+	for _, definition := range definitions {
+		if definition.Decision != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func BuildID(root string, routes []Route) (string, error) {

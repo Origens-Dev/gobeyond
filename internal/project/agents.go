@@ -3,23 +3,28 @@ package project
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 	"go/ast"
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+
+	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
+	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 )
 
 const (
-	AgentModeDirect  = "direct"
-	AgentModeDurable = "durable"
-	AgentKindHandler = "handler"
-	AgentKindAI      = "ai"
+	AgentModeDirect   = "direct"
+	AgentModeDurable  = "durable"
+	AgentKindHandler  = "handler"
+	AgentKindAI       = "ai"
+	AgentKindDecision = "decision"
 )
 
 // AgentDefinition is the compiler-visible model for agents/<id>/agent.go.
@@ -59,6 +64,9 @@ type AgentDefinition struct {
 	// sip.Handlers field in agents/<id>/sip.go (subset). Empty means
 	// edge-local defaults.
 	SIPHandlers []string
+	// Decision is serialized as part of the existing agent manifest. This
+	// compiler-only slice does not register a runtime adapter.
+	Decision *decisionv1.Definition
 }
 
 // AgentToolDefinition is the compiler-visible execution metadata for one
@@ -66,6 +74,7 @@ type AgentDefinition struct {
 // expose the stable map key and resolved logical queue.
 type AgentToolDefinition struct {
 	VoiceControl *voicecontract.Tool `json:"-"`
+	SchemaSHA256 string              `json:"-"`
 	ID           string              `json:"id"`
 	Variable     string              `json:"-"`
 	TaskQueue    string              `json:"taskQueue,omitempty"`
@@ -145,13 +154,25 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 	if err != nil {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
 	}
-	taskQueue, durable, durableSet, realtime, public, model, liveModel, toolModel, voiceName, maxSteps, err := parseAgentConfig(call.Config, call.Kind)
-	voiceBudgetPolicy, budgetErr := parseVoiceBudgetPolicy(call.Config)
-	if budgetErr != nil {
-		return AgentDefinition{}, budgetErr
+	configExpr := call.Config
+	var decision *decisionv1.Definition
+	routesDir := ""
+	if call.Kind == AgentKindDecision {
+		configExpr, decision, routesDir, err = parseDecisionConfig(call.Config)
+		if err != nil {
+			return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
+		}
 	}
+	taskQueue, durable, durableSet, realtime, public, model, liveModel, toolModel, voiceName, maxSteps, err := parseAgentConfig(configExpr, call.Kind)
 	if err != nil {
 		return AgentDefinition{}, fmt.Errorf("%s: %w", authorPath(root, entryFile), err)
+	}
+	voiceBudgetPolicy := ""
+	if call.Kind == AgentKindAI {
+		voiceBudgetPolicy, err = parseVoiceBudgetPolicy(call.Config)
+		if err != nil {
+			return AgentDefinition{}, err
+		}
 	}
 	if taskQueue != "" {
 		taskQueue, err = normalizeLogicalQueue(taskQueue)
@@ -177,6 +198,7 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 		EntryFile: authorPath(root, entryFile), PackageName: packageName,
 		Handler: call.Handler, SourceFiles: files, Slots: call.Slots,
 		Model: model, LiveModel: liveModel, ToolModel: toolModel, VoiceName: voiceName, VoiceBudgetPolicy: voiceBudgetPolicy, MaxSteps: maxSteps, Tools: tools, SIPHandlers: sipHandlers,
+		Decision: decision,
 	}
 	for _, tool := range tools {
 		if !containsString(definition.Slots.Tools, tool.ID) {
@@ -201,8 +223,20 @@ func discoverAgentDefinition(root, dir, id string) (AgentDefinition, error) {
 		if err != nil {
 			return AgentDefinition{}, err
 		}
-	} else if err := populateAgentSignature(parsed, &definition); err != nil {
-		return AgentDefinition{}, fmt.Errorf("%s: %w", definition.EntryFile, err)
+	} else if call.Kind == AgentKindHandler {
+		if err := populateAgentSignature(parsed, &definition); err != nil {
+			return AgentDefinition{}, fmt.Errorf("%s: %w", definition.EntryFile, err)
+		}
+	}
+	if definition.Decision != nil {
+		compiled, compileErr := compileDecisionRoutes(root, dir, routesDir, *definition.Decision)
+		if compileErr != nil {
+			return AgentDefinition{}, fmt.Errorf("%s: %w", definition.SourceDir, compileErr)
+		}
+		if validateErr := validateDecisionDefinition(compiled, definition.Tools); validateErr != nil {
+			return AgentDefinition{}, fmt.Errorf("%s: %w", definition.SourceDir, validateErr)
+		}
+		definition.Decision = &compiled
 	}
 	return definition, nil
 }
@@ -230,13 +264,27 @@ func findAgentCall(file *ast.File) (agentCall, error) {
 					continue
 				}
 				if index >= len(value.Values) {
-					return agentCall{}, errors.New("var Agent must be initialized with agents.Define(...) or agents.DefineAI(...)")
+					return agentCall{}, errors.New("var Agent must be initialized with agents.Define(...), agents.DefineAI(...), or agents.DefineDecision(...)")
 				}
 				call, ok := value.Values[index].(*ast.CallExpr)
 				if !ok {
-					return agentCall{}, errors.New("var Agent must be initialized with agents.Define(...) or agents.DefineAI(...)")
+					return agentCall{}, errors.New("var Agent must be initialized with agents.Define(...), agents.DefineAI(...), or agents.DefineDecision(...)")
 				}
 				called := calledName(call.Fun)
+				if called == "DefineDecision" {
+					if len(call.Args) < 1 || len(call.Args) > 2 {
+						return agentCall{}, errors.New("agents.DefineDecision accepts an inline DecisionConfig and optional Slots")
+					}
+					slots := AgentSlots{}
+					if len(call.Args) == 2 {
+						parsed, err := parseAgentSlots(call.Args[1])
+						if err != nil {
+							return agentCall{}, err
+						}
+						slots = parsed
+					}
+					return agentCall{Kind: AgentKindDecision, Config: call.Args[0], Slots: slots}, nil
+				}
 				if called == "DefineAI" {
 					if len(call.Args) < 1 || len(call.Args) > 2 {
 						return agentCall{}, errors.New("agents.DefineAI accepts an inline AIConfig and optional Slots")
@@ -252,7 +300,7 @@ func findAgentCall(file *ast.File) (agentCall, error) {
 					return agentCall{Kind: AgentKindAI, Config: call.Args[0], Slots: slots}, nil
 				}
 				if called != "Define" || len(call.Args) < 2 || len(call.Args) > 3 {
-					return agentCall{}, errors.New("var Agent must be initialized with agents.Define(...) or agents.DefineAI(...)")
+					return agentCall{}, errors.New("var Agent must be initialized with agents.Define(...), agents.DefineAI(...), or agents.DefineDecision(...)")
 				}
 				handler, ok := call.Args[1].(*ast.Ident)
 				if !ok {
@@ -270,7 +318,214 @@ func findAgentCall(file *ast.File) (agentCall, error) {
 			}
 		}
 	}
-	return agentCall{}, errors.New("missing exported var Agent = agents.Define(...) or agents.DefineAI(...)")
+	return agentCall{}, errors.New("missing exported var Agent = agents.Define(...), agents.DefineAI(...), or agents.DefineDecision(...)")
+}
+
+func parseDecisionConfig(expression ast.Expr) (ast.Expr, *decisionv1.Definition, string, error) {
+	config, ok := expression.(*ast.CompositeLit)
+	if !ok {
+		return nil, nil, "", errors.New("agents.DefineDecision requires an inline DecisionConfig literal")
+	}
+	fields := make(map[string]ast.Expr, len(config.Elts))
+	for _, element := range config.Elts {
+		field, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			return nil, nil, "", errors.New("decision config must use named fields")
+		}
+		key, ok := field.Key.(*ast.Ident)
+		if !ok {
+			return nil, nil, "", errors.New("decision config field must be named")
+		}
+		if _, exists := fields[key.Name]; exists {
+			return nil, nil, "", fmt.Errorf("decision config field %s is duplicated", key.Name)
+		}
+		switch key.Name {
+		case "Config", "Tools", "RoutesDir", "Definition":
+		default:
+			return nil, nil, "", fmt.Errorf("decision config field %s is not supported", key.Name)
+		}
+		fields[key.Name] = field.Value
+	}
+	agentConfig, ok := fields["Config"]
+	if !ok {
+		return nil, nil, "", errors.New("decision config requires an inline Config literal")
+	}
+	if _, ok := agentConfig.(*ast.CompositeLit); !ok {
+		return nil, nil, "", errors.New("decision Config must be an inline agents.Config literal")
+	}
+	routesExpr, ok := fields["RoutesDir"]
+	if !ok {
+		return nil, nil, "", errors.New("decision config requires RoutesDir")
+	}
+	routesDir, err := staticString(routesExpr, "RoutesDir")
+	if err != nil {
+		return nil, nil, "", err
+	}
+	definitionExpr, ok := fields["Definition"]
+	if !ok {
+		return nil, nil, "", errors.New("decision config requires an inline frozen Definition literal")
+	}
+	definitionValue, err := staticDecisionValue(definitionExpr, reflect.TypeOf(decisionv1.Definition{}))
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("decision Definition: %w", err)
+	}
+	encoded, err := json.Marshal(definitionValue)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("encode decision Definition: %w", err)
+	}
+	var definition decisionv1.Definition
+	if err = json.Unmarshal(encoded, &definition); err != nil {
+		return nil, nil, "", fmt.Errorf("decode decision Definition: %w", err)
+	}
+	return agentConfig, &definition, routesDir, nil
+}
+
+// staticDecisionValue translates a Go composite literal into JSON-compatible
+// data without evaluating author code. The target contract type supplies the
+// field names, JSON names and scalar kinds.
+func staticDecisionValue(expression ast.Expr, target reflect.Type) (any, error) {
+	if target.Kind() == reflect.Pointer {
+		if identifier, ok := expression.(*ast.Ident); ok && identifier.Name == "nil" {
+			return nil, nil
+		}
+		if unary, ok := expression.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			value, err := staticDecisionValue(unary.X, target.Elem())
+			if err != nil {
+				return nil, err
+			}
+			return value, nil
+		}
+		return nil, fmt.Errorf("pointer %s must use an address or nil literal", target)
+	}
+	if parenthesized, ok := expression.(*ast.ParenExpr); ok {
+		return staticDecisionValue(parenthesized.X, target)
+	}
+	if call, ok := expression.(*ast.CallExpr); ok {
+		if len(call.Args) != 1 {
+			return nil, errors.New("decision contract values cannot call functions")
+		}
+		name := calledName(call.Fun)
+		typeName := target.Name()
+		if typeName == "" {
+			typeName = target.Kind().String()
+		}
+		if name != typeName {
+			return nil, fmt.Errorf("decision contract call %s is not a conversion to %s", name, target)
+		}
+		return staticDecisionValue(call.Args[0], target)
+	}
+	if literal, ok := expression.(*ast.CompositeLit); ok {
+		switch target.Kind() {
+		case reflect.Struct:
+			object := make(map[string]any, len(literal.Elts))
+			for _, element := range literal.Elts {
+				entry, ok := element.(*ast.KeyValueExpr)
+				if !ok {
+					return nil, errors.New("decision contract structs must use named fields")
+				}
+				key, ok := entry.Key.(*ast.Ident)
+				if !ok {
+					return nil, errors.New("decision contract struct field must be named")
+				}
+				field, ok := target.FieldByName(key.Name)
+				if !ok || !field.IsExported() {
+					return nil, fmt.Errorf("decision contract field %s is not supported", key.Name)
+				}
+				jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+				if jsonName == "-" {
+					continue
+				}
+				if jsonName == "" {
+					jsonName = key.Name
+				}
+				value, err := staticDecisionValue(entry.Value, field.Type)
+				if err != nil {
+					return nil, fmt.Errorf("field %s: %w", key.Name, err)
+				}
+				object[jsonName] = value
+			}
+			return object, nil
+		case reflect.Slice, reflect.Array:
+			values := make([]any, 0, len(literal.Elts))
+			for _, element := range literal.Elts {
+				value, err := staticDecisionValue(element, target.Elem())
+				if err != nil {
+					return nil, err
+				}
+				values = append(values, value)
+			}
+			return values, nil
+		case reflect.Map:
+			values := make(map[string]any, len(literal.Elts))
+			for _, element := range literal.Elts {
+				entry, ok := element.(*ast.KeyValueExpr)
+				if !ok {
+					return nil, errors.New("decision contract maps must use key/value entries")
+				}
+				key, err := staticDecisionValue(entry.Key, target.Key())
+				if err != nil {
+					return nil, fmt.Errorf("map key: %w", err)
+				}
+				keyString, ok := key.(string)
+				if !ok {
+					return nil, errors.New("decision contract map keys must be string literals")
+				}
+				if _, exists := values[keyString]; exists {
+					return nil, fmt.Errorf("decision contract map duplicates key %q", keyString)
+				}
+				value, err := staticDecisionValue(entry.Value, target.Elem())
+				if err != nil {
+					return nil, fmt.Errorf("map value for %q: %w", keyString, err)
+				}
+				values[keyString] = value
+			}
+			return values, nil
+		default:
+			return nil, fmt.Errorf("composite literal is not supported for %s", target)
+		}
+	}
+	if identifier, ok := expression.(*ast.Ident); ok {
+		switch identifier.Name {
+		case "nil":
+			return nil, nil
+		case "true":
+			if target.Kind() == reflect.Bool {
+				return true, nil
+			}
+		case "false":
+			if target.Kind() == reflect.Bool {
+				return false, nil
+			}
+		}
+		return nil, fmt.Errorf("decision contract values must be static literals, got %s", identifier.Name)
+	}
+	literal, ok := expression.(*ast.BasicLit)
+	if !ok {
+		return nil, fmt.Errorf("decision contract values must be static literals, got %T", expression)
+	}
+	switch target.Kind() {
+	case reflect.String:
+		if literal.Kind != token.STRING {
+			return nil, errors.New("decision contract string fields require string literals")
+		}
+		return strconv.Unquote(literal.Value)
+	case reflect.Bool:
+		if literal.Kind != token.INT {
+			return nil, errors.New("decision contract boolean fields require true or false literals")
+		}
+		return nil, errors.New("decision contract boolean fields require true or false literals")
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value, err := strconv.ParseInt(literal.Value, 0, target.Bits())
+		return value, err
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value, err := strconv.ParseUint(literal.Value, 0, target.Bits())
+		return value, err
+	case reflect.Float32, reflect.Float64:
+		value, err := strconv.ParseFloat(literal.Value, target.Bits())
+		return value, err
+	default:
+		return nil, fmt.Errorf("decision contract scalar %s is not supported", target)
+	}
 }
 
 func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable bool, durableSet bool, realtime bool, public bool, model string, liveModel string, toolModel string, voiceName string, maxSteps int, err error) {
@@ -390,7 +645,7 @@ func parseAgentConfig(config ast.Expr, kind string) (taskQueue string, durable b
 }
 
 func parseAgentTools(config ast.Expr, kind string, files map[string]*ast.File) ([]AgentToolDefinition, error) {
-	if kind != AgentKindAI {
+	if kind != AgentKindAI && kind != AgentKindDecision {
 		return nil, nil
 	}
 	composite, ok := config.(*ast.CompositeLit)
@@ -459,6 +714,15 @@ func parseAgentTools(config ast.Expr, kind string, files map[string]*ast.File) (
 		definition.VoiceControl, err = parseVoiceTool(id, voiceCall)
 		if err != nil {
 			return nil, fmt.Errorf("AI tool %q: %w", id, err)
+		}
+		if kind == AgentKindDecision {
+			if voiceCall == nil {
+				return nil, fmt.Errorf("decision tool %q must use a static agents.DefineTool declaration", id)
+			}
+			definition.SchemaSHA256, err = decisionToolInputSchemaSHA256(voiceCall)
+			if err != nil {
+				return nil, fmt.Errorf("decision tool %q: %w", id, err)
+			}
 		}
 		definitions = append(definitions, definition)
 	}

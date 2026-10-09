@@ -7,6 +7,12 @@ import (
 )
 
 func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
+	if definition.Kind == AgentKindDecision {
+		// Decision graphs are manifest-only in this compiler slice. Emit the
+		// generated package marker, but do not attach them to the one-shot,
+		// SIP, or Temporal runtime registries.
+		return []byte(generatedSourceMarker + "\npackage " + definition.PackageName + "\n"), nil
+	}
 	var source strings.Builder
 	source.WriteString(generatedSourceMarker)
 	source.WriteString("\npackage ")

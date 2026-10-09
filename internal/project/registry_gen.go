@@ -116,14 +116,15 @@ func generateSiteArtifacts(root, websiteImport string, routes []Route) (map[stri
 	if err != nil {
 		return nil, err
 	}
+	runtimeAgents := runtimeAgentDefinitions(agents)
 	hasDurableAgents := false
-	for _, definition := range agents {
+	for _, definition := range runtimeAgents {
 		if definition.Durable {
 			hasDurableAgents = true
 			break
 		}
 	}
-	siteMain, err := renderSiteMain(websiteImport, len(agents) > 0, hasDurableAgents)
+	siteMain, err := renderSiteMain(websiteImport, len(runtimeAgents) > 0, hasDurableAgents)
 	if err != nil {
 		return nil, err
 	}
@@ -454,6 +455,9 @@ func httpMethodFuncs(file string) ([]string, error) {
 }
 
 func renderRegistry(websiteImport string, pages []pageWire, apis []apiWire, actions []actionWire, agents []AgentDefinition, hasMiddleware bool) ([]byte, error) {
+	// Decision definitions are compiled into the agent manifest, but remain
+	// runtime-inert until their stateful adapter is implemented and qualified.
+	agents = runtimeAgentDefinitions(agents)
 	needsGB := true
 	for _, page := range pages {
 		if page.HasPage {
@@ -719,6 +723,16 @@ func Handler(opts Options) (http.Handler, func() error, error) {
 	}
 	b.WriteString("}\n\nvar _ = routes.BuildID\n")
 	return []byte(b.String()), nil
+}
+
+func runtimeAgentDefinitions(agents []AgentDefinition) []AgentDefinition {
+	runtimeAgents := make([]AgentDefinition, 0, len(agents))
+	for _, definition := range agents {
+		if definition.Kind != AgentKindDecision {
+			runtimeAgents = append(runtimeAgents, definition)
+		}
+	}
+	return runtimeAgents
 }
 
 func writePageCall(b *strings.Builder, page pageWire) {
