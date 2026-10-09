@@ -18,11 +18,14 @@ import (
 type decisionAdapterFake struct {
 	config     agents.Config
 	definition decisionv1.Definition
+	resource   *decisionTestResource
 	starts     []StartCall
 	responds   []RespondCall
 	cancels    []CancelCall
 	contexts   []context.Context
 }
+
+type decisionTestResource struct{ id int32 }
 
 func (adapter *decisionAdapterFake) Config() agents.Config { return adapter.config }
 
@@ -150,6 +153,42 @@ func TestRegisterDecisionRejectsUnresolvedAuthorityBeforeFactory(t *testing.T) {
 	}
 }
 
+func TestRegisterDecisionRejectsTypedNilAdapterBeforeConfig(t *testing.T) {
+	definition := decisionDefinitionFixture(t, true)
+	registry := NewRegistry()
+	var typedNil *decisionAdapterFake
+	factoryCalls := 0
+	err := RegisterDecision(registry, "operator", definition, func(agents.DecisionDefinition) (DecisionAdapter, error) {
+		factoryCalls++
+		return typedNil, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "adapter factory returned nil") {
+		t.Fatalf("RegisterDecision error = %v, want typed-nil adapter rejection", err)
+	}
+	if factoryCalls != 1 {
+		t.Fatalf("factory calls = %d, want 1", factoryCalls)
+	}
+	if _, ok := registry.Lookup("operator"); ok {
+		t.Fatal("typed-nil adapter was registered")
+	}
+}
+
+func TestRegisterDecisionRequiresReservationSupportBeforeFactory(t *testing.T) {
+	definition := decisionDefinitionFixture(t, true)
+	var registry plainRegisterer
+	factoryCalls := 0
+	err := RegisterDecision(registry, "operator", definition, func(agents.DecisionDefinition) (DecisionAdapter, error) {
+		factoryCalls++
+		return nil, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not support reserved decision registration") {
+		t.Fatalf("RegisterDecision error = %v, want reservation support error", err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("factory calls = %d, want 0 without reservation support", factoryCalls)
+	}
+}
+
 func TestRegisterDecisionRejectsPromptAndLocaleDrift(t *testing.T) {
 	base := decisionDefinitionFixture(t, true)
 	tests := []struct {
@@ -207,34 +246,63 @@ func TestRegisterDecisionConcurrentRegistrationIsSingleAndSafe(t *testing.T) {
 	definition := decisionDefinitionFixture(t, true)
 	registry := NewRegistry()
 	const attempts = 20
-	var successes atomic.Int32
-	var failures atomic.Int32
+	var factoryCalls atomic.Int32
+	var resourcesCreated atomic.Int32
+	factoryEntered := make(chan struct{})
+	releaseFactory := make(chan struct{})
+	firstDone := make(chan error, 1)
+	factory := func(got agents.DecisionDefinition) (DecisionAdapter, error) {
+		factoryCalls.Add(1)
+		resource := &decisionTestResource{id: resourcesCreated.Add(1)}
+		if resource.id == 1 {
+			close(factoryEntered)
+			<-releaseFactory
+		}
+		return &decisionAdapterFake{config: got.Config, definition: got.Decision.Definition, resource: resource}, nil
+	}
+	go func() {
+		firstDone <- RegisterDecision(registry, "operator", definition, factory)
+	}()
+	<-factoryEntered
+
 	var wait sync.WaitGroup
-	start := make(chan struct{})
-	for range attempts {
+	errorsFound := make(chan error, attempts-1)
+	for range attempts - 1 {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			<-start
-			err := RegisterDecision(registry, "operator", definition, func(got agents.DecisionDefinition) (DecisionAdapter, error) {
-				return &decisionAdapterFake{config: got.Config, definition: got.Decision.Definition}, nil
-			})
-			if err == nil {
-				successes.Add(1)
-			} else {
-				failures.Add(1)
-			}
+			errorsFound <- RegisterDecision(registry, "operator", definition, factory)
 		}()
 	}
-	close(start)
 	wait.Wait()
-	if successes.Load() != 1 || failures.Load() != attempts-1 {
-		t.Fatalf("concurrent registrations = %d successes, %d failures; want 1 and %d", successes.Load(), failures.Load(), attempts-1)
+	close(errorsFound)
+	for err := range errorsFound {
+		if err == nil {
+			t.Error("competing registration unexpectedly succeeded")
+		}
 	}
-	if _, ok := registry.Lookup("operator"); !ok {
+	if factoryCalls.Load() != 1 {
+		t.Fatalf("factory calls while first construction was reserved = %d, want 1", factoryCalls.Load())
+	}
+	if resourcesCreated.Load() != 1 {
+		t.Fatalf("constructed adapter resources = %d, want one owned by the winning registration", resourcesCreated.Load())
+	}
+	close(releaseFactory)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("reserved registration failed: %v", err)
+	}
+	registered, ok := registry.Lookup("operator")
+	if !ok {
 		t.Fatal("successful concurrent registration is missing")
 	}
+	if fake, ok := registered.(*decisionAdapterFake); !ok || fake.resource == nil || fake.resource.id != 1 {
+		t.Fatalf("registered adapter did not own the sole constructed resource: %#v", registered)
+	}
 }
+
+type plainRegisterer struct{}
+
+func (plainRegisterer) Register(string, Adapter) error { return nil }
 
 func decisionDefinitionFixture(t *testing.T, qualified bool) agents.DecisionDefinition {
 	t.Helper()

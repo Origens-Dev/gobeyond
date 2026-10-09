@@ -3,6 +3,7 @@ package httpruntime
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/Origens-Dev/gobeyond/agents"
@@ -17,10 +18,25 @@ type DecisionAdapter interface {
 	DecisionDefinition() decisionv1.Definition
 }
 
-// DecisionAdapterFactory constructs an adapter from the compiler-frozen agent
-// definition. It is called only after the definition passes activation-gate
-// validation.
+// DecisionAdapterFactory constructs a dormant adapter shell from the
+// compiler-frozen agent definition. It is called only after activation-gate
+// validation and an agent-ID reservation have succeeded. It must not start
+// goroutines, invoke providers, open external resources, or acquire mutation
+// authority. If it returns an error, it must release any temporary resources
+// before returning. Runtime resources belong to later lifecycle calls.
 type DecisionAdapterFactory func(agents.DecisionDefinition) (DecisionAdapter, error)
+
+// DecisionRegisterer atomically reserves a decision agent ID before invoking
+// its constructor, then installs the returned adapter on success. Conflicting
+// registrations must fail without invoking construct. Implementations must
+// not hold registry-wide locks while calling construct.
+//
+// The built-in MemoryRegistry implements this contract. RegisterDecision
+// rejects registries that only implement Registerer because they cannot
+// guarantee that concurrent duplicates avoid constructing losing adapters.
+type DecisionRegisterer interface {
+	RegisterDecisionAdapter(agentID string, construct func() (DecisionAdapter, error)) error
+}
 
 // RegisterDecision is an explicit opt-in registration seam for a decision
 // definition. Compiler-generated site registries intentionally do not call it.
@@ -29,7 +45,7 @@ type DecisionAdapterFactory func(agents.DecisionDefinition) (DecisionAdapter, er
 // graph release. It does not resolve external authority, create policy, or
 // implement reducer, speech, service, effect, or receipt behavior.
 func RegisterDecision(registry Registerer, agentID string, definition agents.DecisionDefinition, factory DecisionAdapterFactory) error {
-	if registry == nil {
+	if isNilInterfaceValue(registry) {
 		return errors.New("agent registry is required")
 	}
 	agentID = strings.TrimSpace(agentID)
@@ -38,6 +54,10 @@ func RegisterDecision(registry Registerer, agentID string, definition agents.Dec
 	}
 	if factory == nil {
 		return errors.New("decision adapter factory is required")
+	}
+	decisionRegistry, ok := registry.(DecisionRegisterer)
+	if !ok || isNilInterfaceValue(decisionRegistry) {
+		return errors.New("agent registry does not support reserved decision registration")
 	}
 	if definition.Decision.Config != definition.Config {
 		return fmt.Errorf("decision agent %q has mismatched definition config", agentID)
@@ -54,26 +74,41 @@ func RegisterDecision(registry Registerer, agentID string, definition agents.Dec
 	}
 	definition.Decision.Definition = frozen
 
-	adapter, err := factory(definition)
-	if err != nil {
-		return fmt.Errorf("decision agent %q: construct adapter: %w", agentID, err)
+	return decisionRegistry.RegisterDecisionAdapter(agentID, func() (DecisionAdapter, error) {
+		adapter, err := factory(definition)
+		if err != nil {
+			return nil, fmt.Errorf("decision agent %q: construct adapter: %w", agentID, err)
+		}
+		if isNilInterfaceValue(adapter) {
+			return nil, fmt.Errorf("decision agent %q: adapter factory returned nil", agentID)
+		}
+		if adapter.Config() != definition.Config {
+			return nil, fmt.Errorf("decision agent %q adapter config does not match its frozen definition", agentID)
+		}
+		adapterDefinition := adapter.DecisionDefinition()
+		if err := adapterDefinition.ValidateForReview(); err != nil {
+			return nil, fmt.Errorf("decision agent %q adapter has an invalid frozen definition: %w", agentID, err)
+		}
+		_, _, adapterRelease, err := agents.FreezeDecisionManifest(adapterDefinition)
+		if err != nil {
+			return nil, fmt.Errorf("decision agent %q: freeze adapter definition: %w", agentID, err)
+		}
+		if adapterRelease != release {
+			return nil, fmt.Errorf("decision agent %q adapter definition does not match the compiled release", agentID)
+		}
+		return adapter, nil
+	})
+}
+
+func isNilInterfaceValue(value any) bool {
+	if value == nil {
+		return true
 	}
-	if adapter == nil {
-		return fmt.Errorf("decision agent %q: adapter factory returned nil", agentID)
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
 	}
-	if adapter.Config() != definition.Config {
-		return fmt.Errorf("decision agent %q adapter config does not match its frozen definition", agentID)
-	}
-	adapterDefinition := adapter.DecisionDefinition()
-	if err := adapterDefinition.ValidateForReview(); err != nil {
-		return fmt.Errorf("decision agent %q adapter has an invalid frozen definition: %w", agentID, err)
-	}
-	_, _, adapterRelease, err := agents.FreezeDecisionManifest(adapterDefinition)
-	if err != nil {
-		return fmt.Errorf("decision agent %q: freeze adapter definition: %w", agentID, err)
-	}
-	if adapterRelease != release {
-		return fmt.Errorf("decision agent %q adapter definition does not match the compiled release", agentID)
-	}
-	return registry.Register(agentID, adapter)
 }

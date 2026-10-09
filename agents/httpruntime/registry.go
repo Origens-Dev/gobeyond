@@ -383,9 +383,12 @@ type Registerer interface {
 
 // MemoryRegistry is a concurrency-safe local registry.
 type MemoryRegistry struct {
-	mu       sync.RWMutex
-	adapters map[string]Adapter
+	mu                    sync.RWMutex
+	adapters              map[string]Adapter
+	decisionRegistrations map[string]struct{}
 }
+
+var _ DecisionRegisterer = (*MemoryRegistry)(nil)
 
 func NewRegistry() *MemoryRegistry {
 	return &MemoryRegistry{adapters: map[string]Adapter{}}
@@ -399,7 +402,7 @@ func (registry *MemoryRegistry) Register(agentID string, adapter Adapter) error 
 	if agentID == "" {
 		return errors.New("agent ID is required")
 	}
-	if adapter == nil {
+	if isNilInterfaceValue(adapter) {
 		return errors.New("agent adapter is required")
 	}
 	if aiRuntime, ok := adapter.(interface{ AIDefinition() agents.AIDefinition }); ok {
@@ -415,7 +418,68 @@ func (registry *MemoryRegistry) Register(agentID string, adapter Adapter) error 
 	if _, exists := registry.adapters[agentID]; exists {
 		return fmt.Errorf("agent %q is already registered", agentID)
 	}
+	if _, reserved := registry.decisionRegistrations[agentID]; reserved {
+		return fmt.Errorf("agent %q is reserved for decision registration", agentID)
+	}
 	registry.adapters[agentID] = adapter
+	return nil
+}
+
+// RegisterDecisionAdapter reserves agentID under the registry lock, invokes
+// construct without holding that lock, then atomically installs the adapter.
+// Competing decision or ordinary registrations fail before constructing a
+// second adapter. A failed constructor releases the reservation for retry.
+func (registry *MemoryRegistry) RegisterDecisionAdapter(agentID string, construct func() (DecisionAdapter, error)) error {
+	if registry == nil {
+		return errors.New("agent registry is required")
+	}
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return errors.New("agent ID is required")
+	}
+	if construct == nil {
+		return errors.New("decision adapter constructor is required")
+	}
+
+	registry.mu.Lock()
+	if registry.adapters == nil {
+		registry.adapters = map[string]Adapter{}
+	}
+	if registry.decisionRegistrations == nil {
+		registry.decisionRegistrations = map[string]struct{}{}
+	}
+	if _, exists := registry.adapters[agentID]; exists {
+		registry.mu.Unlock()
+		return fmt.Errorf("agent %q is already registered", agentID)
+	}
+	if _, reserved := registry.decisionRegistrations[agentID]; reserved {
+		registry.mu.Unlock()
+		return fmt.Errorf("agent %q is already reserved for decision registration", agentID)
+	}
+	registry.decisionRegistrations[agentID] = struct{}{}
+	registry.mu.Unlock()
+
+	defer func() {
+		registry.mu.Lock()
+		delete(registry.decisionRegistrations, agentID)
+		registry.mu.Unlock()
+	}()
+
+	adapter, err := construct()
+	if err != nil {
+		return err
+	}
+	if isNilInterfaceValue(adapter) {
+		return fmt.Errorf("decision agent %q: adapter constructor returned nil", agentID)
+	}
+
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if _, exists := registry.adapters[agentID]; exists {
+		return fmt.Errorf("agent %q is already registered", agentID)
+	}
+	registry.adapters[agentID] = adapter
+	delete(registry.decisionRegistrations, agentID)
 	return nil
 }
 
