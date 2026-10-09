@@ -1,6 +1,7 @@
 package project
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/format"
 	"strings"
@@ -8,10 +9,31 @@ import (
 
 func generatedAgentRegistration(definition AgentDefinition) ([]byte, error) {
 	if definition.Kind == AgentKindDecision {
-		// Decision graphs are manifest-only in this compiler slice. Emit the
-		// generated package marker, but do not attach them to the one-shot,
-		// SIP, or Temporal runtime registries.
-		return []byte(generatedSourceMarker + "\npackage " + definition.PackageName + "\n"), nil
+		if definition.Decision == nil {
+			return nil, fmt.Errorf("decision agent %s is missing its compiled definition", definition.ID)
+		}
+		manifest, err := json.Marshal(definition.Decision)
+		if err != nil {
+			return nil, fmt.Errorf("marshal frozen decision definition for %s: %w", definition.ID, err)
+		}
+		var source strings.Builder
+		source.WriteString(generatedSourceMarker)
+		source.WriteString("\npackage ")
+		source.WriteString(definition.PackageName)
+		source.WriteString("\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n")
+		source.WriteString("\thttpruntime \"github.com/Origens-Dev/gobeyond/agents/httpruntime\"\n)\n")
+		source.WriteString("\nfunc GobeyondRegisterDecision(registry httpruntime.Registerer, factory httpruntime.DecisionAdapterFactory) error {\n")
+		source.WriteString("\tdefinition := Agent\n")
+		source.WriteString(fmt.Sprintf("\tdefinition.Config.TaskQueue = %q\n", definition.TaskQueue))
+		source.WriteString(fmt.Sprintf("\tdefinition.Decision.Config.TaskQueue = %q\n", definition.TaskQueue))
+		source.WriteString(fmt.Sprintf("\tif err := json.Unmarshal([]byte(%q), &definition.Decision.Definition); err != nil {\n\t\treturn fmt.Errorf(\"decode frozen decision definition: %%w\", err)\n\t}\n", string(manifest)))
+		source.WriteString(fmt.Sprintf("\treturn httpruntime.RegisterDecision(registry, %q, definition, factory)\n", definition.ID))
+		source.WriteString("}\n")
+		formatted, err := format.Source([]byte(source.String()))
+		if err != nil {
+			return nil, fmt.Errorf("format generated decision registration for %s: %w\n%s", definition.ID, err, source.String())
+		}
+		return formatted, nil
 	}
 	var source strings.Builder
 	source.WriteString(generatedSourceMarker)
