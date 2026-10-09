@@ -407,7 +407,12 @@ func TestDecisionEffectCancelBetweenSubmissionAndCommitPreventsVoiceUpdate(t *te
 	input, effect, call, authority := fixture.input, fixture.effect, fixture.call, fixture.authority
 	authority.reconciliations = []DecisionEffectReconciliation{{State: DecisionEffectNotAttempted}}
 	authority.cancellation = DecisionSessionCancel{Identity: decisionSessionIdentity(input)}
-	fake := &fakeClient{}
+	pending := DecisionSessionPendingEffect{
+		Identity: decisionSessionIdentity(input), Effect: &effect, Submitted: true,
+		DispatchCommitted: false, Status: DecisionSessionCancelled,
+		Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionCancelled},
+	}
+	fake := &fakeClient{queryOutput: pending}
 	dispatcher := newDecisionEffectTestDispatcher(t, fake)
 	cancelAccepted := false
 	fake.updateFunc = func(_ context.Context, options client.UpdateWorkflowOptions) (interface{}, error) {
@@ -424,6 +429,8 @@ func TestDecisionEffectCancelBetweenSubmissionAndCommitPreventsVoiceUpdate(t *te
 				Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning,
 			}}, nil
 		case DecisionSessionCancelUpdate:
+			return DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionCancelled}, nil
+		case DecisionSessionAbandonEffectUpdate:
 			return DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionCancelled}, nil
 		case DecisionSessionDispatchCommitUpdate:
 			if !cancelAccepted {
@@ -448,8 +455,14 @@ func TestDecisionEffectCancelBetweenSubmissionAndCommitPreventsVoiceUpdate(t *te
 			t.Fatalf("provider update was sent after cancel won: %#v", update)
 		}
 	}
-	if len(fake.updateHistory) != 3 || fake.updateHistory[0].UpdateName != DecisionSessionSubmissionUpdate ||
-		fake.updateHistory[1].UpdateName != DecisionSessionCancelUpdate || fake.updateHistory[2].UpdateName != DecisionSessionDispatchCommitUpdate {
+	// The transition reconciles before submission, then Cancel performs its own
+	// reconciliation after observing the durable submitted state.
+	if authority.reconcileCalls != 2 || len(fake.queryHistory) != 1 || fake.queryHistory[0] != DecisionSessionPendingEffectQuery {
+		t.Fatalf("cancel did not reconcile the submitted effect: reconciliations=%d queries=%#v", authority.reconcileCalls, fake.queryHistory)
+	}
+	if len(fake.updateHistory) != 4 || fake.updateHistory[0].UpdateName != DecisionSessionSubmissionUpdate ||
+		fake.updateHistory[1].UpdateName != DecisionSessionCancelUpdate || fake.updateHistory[2].UpdateName != DecisionSessionAbandonEffectUpdate ||
+		fake.updateHistory[3].UpdateName != DecisionSessionDispatchCommitUpdate {
 		t.Fatalf("unexpected submission/cancel/commit ordering: %#v", fake.updateHistory)
 	}
 }

@@ -1096,12 +1096,12 @@ func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapte
 }
 
 // Cancel requests cancellation of the stable workflow execution for the run.
-func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, _ httpruntime.EventEmitter) error {
+func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, emit httpruntime.EventEmitter) error {
 	if err := dispatcher.ready(); err != nil {
 		return err
 	}
 	if _, ok := adapter.(httpruntime.DecisionAdapter); ok {
-		return dispatcher.cancelDecisionSession(ctx, adapter, call)
+		return dispatcher.cancelDecisionSession(ctx, adapter, call, emit)
 	}
 	workflowID, err := WorkflowID(call.Session.ID, call.Run.ID)
 	if err != nil {
@@ -1119,7 +1119,7 @@ func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Ad
 	return nil
 }
 
-func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall) error {
+func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, emit httpruntime.EventEmitter) error {
 	if dispatcher.hosted != nil {
 		return errors.New("hosted decision sessions are not registered by this dormant dispatcher seam")
 	}
@@ -1154,6 +1154,12 @@ func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter
 	var result DecisionSessionSnapshot
 	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionCancelUpdate, updateID, cancel, &result); err != nil {
 		return fmt.Errorf("cancel durable decision session: %w", err)
+	}
+	if authority, ok := durable.(DecisionEffectAdapter); ok {
+		respondCall := httpruntime.RespondCall{Session: call.Session, Run: call.Run, Actor: call.Actor}
+		if _, err := dispatcher.recoverPendingDecisionEffect(ctx, authority, respondCall, emit); err != nil {
+			return fmt.Errorf("reconcile decision effect after cancellation: %w", err)
+		}
 	}
 	return nil
 }

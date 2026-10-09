@@ -512,6 +512,123 @@ func TestDecisionSessionCancelledAfterSubmissionAcceptsLateReceiptAndOwnerCAS(t 
 	}
 }
 
+func TestDecisionSessionCancelledSubmittedNotAttemptedClosesWithoutRespond(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_cancel_not_attempted_closes", 120)
+	env, _ := decisionSessionTestEnvironment(input)
+	var intent decisions.Effect
+	var submission DecisionSessionAdvanceResult
+	var cancelSnapshot DecisionSessionSnapshot
+	var abandonSnapshot DecisionSessionSnapshot
+	var abandonErr error
+	route := decisionRouteByID(t, input.Definition, input.Definition.Graph.Entry)
+	candidateRef := decisionRef("snapshot_cancel_not_attempted", "directory-snapshot", "a", input, decisionSessionTestStart.Add(time.Hour))
+	candidateSet := decisionv1.CandidateSetSnapshot{CandidateIDs: []string{"candidate_cancel_not_attempted"}, ProtectedSnapshot: candidateRef}
+	candidateSet.SHA256 = candidateSet.CanonicalSHA256()
+
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		event := decisionv1.NormalizedEvent{
+			ID: "input_cancel_not_attempted", Kind: decisionv1.EventInputFinal, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			InputWindowID: snapshot.View.InputWindowID, Channel: decisionv1.ChannelVoice,
+			Modality: decisionv1.ModalitySpeechFinal, Locale: input.Pin.Locale,
+			ProtectedInput: decisionRef("transcript_cancel_not_attempted", "final-transcript", "b", input, decisionSessionTestStart.Add(time.Hour)),
+			SourceEventIDs: []string{"speech_cancel_not_attempted"}, ReceivedAt: decisionSessionTestStart.Add(time.Second),
+		}
+		sendDecisionSessionUpdate(env, "input_cancel_not_attempted", sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &event}), func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted {
+				t.Errorf("cancel-not-attempted input rejected: %#v", result)
+			}
+		})
+	}, time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		refresh := decisions.SnapshotRefresh{
+			ID: "snapshot_cancel_not_attempted", TenantID: input.Admission.TenantID, SessionID: input.Admission.SessionID,
+			Generation: input.Pin.Generation, RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			ReceivedAt: decisionSessionTestStart.Add(2 * time.Second),
+			Bound: decisions.BoundCandidateSnapshot{BindingID: route.Match.BindingID, RouteID: input.Definition.Graph.Entry,
+				RouteEntryID: snapshot.View.RouteEntryID, Snapshot: candidateSet},
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Snapshot: &refresh})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "snapshot_cancel_not_attempted", update, func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted {
+				t.Errorf("cancel-not-attempted snapshot rejected: %#v", result)
+			}
+		})
+	}, 2*time.Second)
+	env.RegisterDelayedCallback(func() {
+		snapshot := queryDecisionSession(t, env)
+		match := decisionv1.NormalizedEvent{
+			ID: "match_cancel_not_attempted", Kind: decisionv1.EventMatchCompleted, TenantID: input.Admission.TenantID,
+			SessionID: input.Admission.SessionID, Generation: input.Pin.Generation,
+			RouteID: input.Definition.Graph.Entry, RouteEntryID: snapshot.View.RouteEntryID,
+			Channel: decisionv1.ChannelVoice, ReceivedAt: decisionSessionTestStart.Add(3 * time.Second),
+			Match: &decisionv1.MatchResult{Outcome: decisionv1.OutcomeCandidate, CandidateID: "candidate_cancel_not_attempted",
+				SnapshotSHA256: candidateSet.SHA256, BindingID: route.Match.BindingID},
+		}
+		update := sessionUpdate(input, snapshot.View.RouteEntryID, decisions.Event{Normalized: &match, InputID: "input_cancel_not_attempted"})
+		update.AuthorizedReferences = []decisionv1.ProtectedReference{*candidateRef}
+		sendDecisionSessionUpdate(env, "match_cancel_not_attempted", update, func(result decisionSessionUpdateOutcome) {
+			if !result.advance.Accepted || len(result.advance.Effects) != 1 || result.advance.Effects[0].Kind != decisions.EffectDispatchIntent {
+				t.Errorf("cancel-not-attempted match did not produce one dispatch intent: %#v", result)
+				return
+			}
+			intent = cloneDecisionEffect(result.advance.Effects[0])
+		})
+	}, 3*time.Second)
+	env.RegisterDelayedCallback(func() {
+		if intent.Request == nil {
+			t.Fatal("missing reducer dispatch request before submission")
+		}
+		env.UpdateWorkflow(DecisionSessionSubmissionUpdate, "submit_cancel_not_attempted", &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { t.Errorf("cancel-not-attempted submission rejected: %v", err) },
+			OnComplete: func(value interface{}, err error) {
+				if err != nil {
+					t.Errorf("cancel-not-attempted submission failed: %v", err)
+					return
+				}
+				submission, _ = value.(DecisionSessionAdvanceResult)
+			},
+		}, DecisionSessionEffectSubmission{Identity: decisionSessionIdentity(input), Effect: intent})
+	}, 4*time.Second)
+	env.RegisterDelayedCallback(func() {
+		cancelDecisionSessionTest(env, input, "cancel_submitted_not_attempted", &cancelSnapshot, t)
+	}, 5*time.Second)
+	env.RegisterDelayedCallback(func() {
+		if intent.Request == nil || !submission.Accepted {
+			t.Fatal("missing submitted effect before authoritative no-attempt reconciliation")
+		}
+		// The host sends this only after its existing operation authority returns
+		// DecisionEffectNotAttempted. No Respond is sent after cancellation.
+		abandon := DecisionSessionAbandonEffect{Identity: decisionSessionIdentity(input), EffectID: intent.Request.Identity.ID}
+		env.UpdateWorkflow(DecisionSessionAbandonEffectUpdate, "abandon-"+intent.Request.Identity.ID, &testsuite.TestUpdateCallback{
+			OnReject: func(err error) { abandonErr = err },
+			OnComplete: func(value interface{}, err error) {
+				abandonErr = err
+				if err == nil {
+					abandonSnapshot, _ = value.(DecisionSessionSnapshot)
+				}
+			},
+		}, abandon)
+	}, 6*time.Second)
+
+	env.ExecuteWorkflow(DecisionSessionWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("cancelled workflow failed: %v", err)
+	}
+	var result DecisionSessionResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("workflow did not close after abandoning the authoritative no-attempt effect: %v", err)
+	}
+	if !submission.Accepted || cancelSnapshot.Status != DecisionSessionCancelled || abandonErr != nil ||
+		abandonSnapshot.Status != DecisionSessionCancelled || result.Snapshot.Status != DecisionSessionCancelled {
+		t.Fatalf("submission/cancel/abandon/final states = %#v / %#v / %#v err=%v / %#v", submission, cancelSnapshot, abandonSnapshot, abandonErr, result.Snapshot)
+	}
+}
+
 func TestDecisionApprovalFailureReceiptRequiresExactDurableChoice(t *testing.T) {
 	input, effect, _ := decisionEffectTestFixture(t, "ses_approval_failure_receipt", 17)
 	identity := decisionSessionIdentity(input)
