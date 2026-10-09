@@ -337,6 +337,97 @@ func TestInputAndMatchOutcomesFollowAuthoredEdges(t *testing.T) {
 	}
 }
 
+func TestInputErrorUsesAuthoredErrorEdge(t *testing.T) {
+	definition := traceDefinition(t)
+	admission := admissionEvent("entry-input-error-trace")
+	initial, _, err := Start(definition, admission, Policy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputError := inputErrorEvent(initial, "input-error-trace")
+	state, trace, err := RunTextTrace(definition, admission, Policy{}, Event{Normalized: &inputError})
+	if err != nil {
+		t.Fatalf("authored input error transition failed: %v", err)
+	}
+	if state.View().RouteID != "/help" || state.View().InputWindowOpen {
+		t.Fatalf("input error did not close the active window and follow /start input/error: %#v", state.View())
+	}
+	goldenText(t, "input-error-edge.trace", trace)
+}
+
+func TestInputErrorRejectsStaleIdentityAndClosedWindows(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, state *State, event *contract.NormalizedEvent)
+	}{
+		{
+			name: "tenant",
+			mutate: func(_ *testing.T, _ *State, event *contract.NormalizedEvent) {
+				event.TenantID = "tenant-other"
+			},
+		},
+		{
+			name: "session",
+			mutate: func(_ *testing.T, _ *State, event *contract.NormalizedEvent) {
+				event.SessionID = "session-other"
+			},
+		},
+		{
+			name: "generation",
+			mutate: func(_ *testing.T, _ *State, event *contract.NormalizedEvent) {
+				event.Generation--
+			},
+		},
+		{
+			name: "route",
+			mutate: func(_ *testing.T, _ *State, event *contract.NormalizedEvent) {
+				event.RouteID = "/clarify"
+			},
+		},
+		{
+			name: "route entry",
+			mutate: func(_ *testing.T, _ *State, event *contract.NormalizedEvent) {
+				event.RouteEntryID = "previous-route-entry"
+			},
+		},
+		{
+			name: "input window",
+			mutate: func(_ *testing.T, _ *State, event *contract.NormalizedEvent) {
+				event.InputWindowID = "previous-input-window"
+			},
+		},
+		{
+			name: "channel",
+			mutate: func(_ *testing.T, _ *State, event *contract.NormalizedEvent) {
+				event.Channel = contract.ChannelVoice
+			},
+		},
+		{
+			name: "closed window",
+			mutate: func(t *testing.T, state *State, event *contract.NormalizedEvent) {
+				*state, _ = acceptTextInput(t, *state, "input-error-closed-final", "payload-input-error-closed-final")
+				*event = inputErrorEvent(*state, "input-error-after-final")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, _, err := Start(traceDefinition(t), admissionEvent("entry-input-error-"+strings.ReplaceAll(tc.name, " ", "-")), Policy{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := inputErrorEvent(state, "input-error-rejected-"+strings.ReplaceAll(tc.name, " ", "-"))
+			tc.mutate(t, &state, &event)
+			unchanged, effects, err := Reduce(state, Event{Normalized: &event})
+			if err == nil || len(effects) != 0 {
+				t.Fatalf("input_error with stale or closed-window identity was accepted: %#v %#v", unchanged.View(), effects)
+			}
+			if unchanged.View().InputWindowOpen != state.View().InputWindowOpen || unchanged.View().RouteEntryID != state.View().RouteEntryID {
+				t.Fatalf("rejected input_error changed state: before=%#v after=%#v", state.View(), unchanged.View())
+			}
+		})
+	}
+}
+
 func TestControlOutcomesFollowAuthoredEdges(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1391,6 +1482,12 @@ func appendScenarioTrace(trace *strings.Builder, label string, effects []Effect)
 func normalizedFor(state State, id string, kind contract.EventKind) contract.NormalizedEvent {
 	view := state.View()
 	return contract.NormalizedEvent{ID: id, Kind: kind, TenantID: view.TenantID, SessionID: view.SessionID, Generation: view.Generation, RouteID: view.RouteID, RouteEntryID: view.RouteEntryID, Channel: contract.ChannelText, ReceivedAt: traceTime.Add(2 * time.Second)}
+}
+
+func inputErrorEvent(state State, id string) contract.NormalizedEvent {
+	event := normalizedFor(state, id, contract.EventInputError)
+	event.InputWindowID = state.View().InputWindowID
+	return event
 }
 
 func matchEvent(state State, id string, snapshot BoundCandidateSnapshot, outcome contract.Outcome, candidateID string) contract.NormalizedEvent {

@@ -204,6 +204,7 @@ type sessionScope struct {
 	tenantID   string
 	sessionID  string
 	generation uint64
+	channel    contract.ChannelKind
 	locale     string
 }
 
@@ -284,7 +285,7 @@ func Start(definition contract.Definition, admission contract.NormalizedEvent, p
 	}
 	data := &stateData{
 		definition:       frozen,
-		scope:            sessionScope{tenantID: admission.TenantID, sessionID: admission.SessionID, generation: admission.Generation, locale: admission.Locale},
+		scope:            sessionScope{tenantID: admission.TenantID, sessionID: admission.SessionID, generation: admission.Generation, channel: admission.Channel, locale: admission.Locale},
 		policy:           policy,
 		routeID:          frozen.Graph.Entry,
 		routeEntryID:     admission.RouteEntryID,
@@ -468,6 +469,21 @@ func reduceNormalized(data *stateData, event contract.NormalizedEvent, inputID s
 		}
 		data.inputWindowOpen = false
 		return routeOutcome(data, active, contract.SourceInput, contract.OutcomeNoInput, event.ID, "no_input", event.ReceivedAt)
+	case contract.EventInputError:
+		activeWindow := contract.InputWindowIdentity{
+			TenantID: data.scope.tenantID, SessionID: data.scope.sessionID,
+			Generation: data.scope.generation, RouteID: data.routeID,
+			RouteEntryID: data.routeEntryID, InputWindowID: data.inputWindowID,
+			Channel: data.scope.channel,
+		}
+		if err := event.ValidateForActiveInputWindow(activeWindow, event.ReceivedAt); err != nil {
+			return nil, fmt.Errorf("input error is not bound to the active window: %w", err)
+		}
+		if err := requireOpenWindow(data, event.InputWindowID); err != nil {
+			return nil, err
+		}
+		data.inputWindowOpen = false
+		return routeOutcome(data, active, contract.SourceInput, contract.OutcomeError, event.ID, "input_error", event.ReceivedAt)
 	case contract.EventUtteranceLimit:
 		if err := requireOpenWindow(data, event.InputWindowID); err != nil {
 			return nil, err
