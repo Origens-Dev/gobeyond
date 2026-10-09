@@ -269,8 +269,13 @@ func (runtime *Runtime) createRun(sessionID string, metadata map[string]string, 
 		return nil, agents.Session{}, agents.Run{}, errSessionNotFound
 	}
 	for _, priorID := range state.runOrder {
-		if prior := state.runs[priorID]; prior != nil && prior.run.Status == RunStatusRunning {
-			return nil, agents.Session{}, agents.Run{}, errRunActive
+		if prior := state.runs[priorID]; prior != nil {
+			if prior.cancelCleanupPending {
+				return nil, agents.Session{}, agents.Run{}, errCancelCleanupPending
+			}
+			if prior.run.Status == RunStatusRunning {
+				return nil, agents.Session{}, agents.Run{}, errRunActive
+			}
 		}
 	}
 	if metadata != nil {
@@ -656,9 +661,10 @@ func (emitter boundEmitter) Emit(ctx context.Context, eventType string, data any
 }
 
 var (
-	errSessionNotFound = errors.New("agent session not found")
-	errRunNotFound     = errors.New("agent run not found")
-	errRunActive       = errors.New("agent run is already active")
-	errRunNotActive    = errors.New("agent run is not active")
-	errActorForbidden  = errors.New("agent actor does not own this session")
+	errSessionNotFound      = errors.New("agent session not found")
+	errRunNotFound          = errors.New("agent run not found")
+	errRunActive            = errors.New("agent run is already active")
+	errCancelCleanupPending = errors.New("durable cancellation cleanup is still pending")
+	errRunNotActive         = errors.New("agent run is not active")
+	errActorForbidden       = errors.New("agent actor does not own this session")
 )

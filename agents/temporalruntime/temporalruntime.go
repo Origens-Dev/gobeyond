@@ -1119,10 +1119,10 @@ func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Ad
 	return nil
 }
 
-// RetryCancel retries only cleanup for a cancellation that the HTTP runtime
+// RetryCancel retries reconciliation for a cancellation that the HTTP runtime
 // has already committed locally. Decision effect recovery re-reads the
 // existing authority on every attempt and never treats an unknown outcome as
-// permission to submit another provider operation.
+// permission to submit another provider operation or reopen the run.
 func (dispatcher *Dispatcher) RetryCancel(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, emit httpruntime.EventEmitter) error {
 	return dispatcher.Cancel(ctx, adapter, call, emit)
 }

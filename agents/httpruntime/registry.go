@@ -72,7 +72,9 @@ type RespondCall struct {
 
 // CancelCall identifies a running cancellation candidate. The HTTP runtime
 // records its terminal cancellation only after the adapter or dispatcher
-// acknowledges this call.
+// acknowledges this call. A durable dispatcher can return
+// CancellationAcceptedError to report that cancellation committed while
+// follow-up recovery remains pending.
 type CancelCall struct {
 	Session agents.Session
 	Run     agents.Run

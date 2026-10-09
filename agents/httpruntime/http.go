@@ -167,6 +167,8 @@ func (runtime *Runtime) handleResume(prefix string) http.HandlerFunc {
 				writeError(writer, http.StatusNotFound, "session_not_found", "agent session not found")
 			case errors.Is(err, errRunActive):
 				writeError(writer, http.StatusConflict, "run_active", "agent session already has an active run")
+			case errors.Is(err, errCancelCleanupPending):
+				writeError(writer, http.StatusConflict, "cancel_cleanup_pending", "retry cancellation cleanup before starting another run")
 			default:
 				writeError(writer, http.StatusInternalServerError, "run_create_failed", "could not create agent run")
 			}

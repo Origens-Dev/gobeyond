@@ -99,6 +99,7 @@ func TestDecisionCancelHTTPKeepsAcceptedCancellationAndRetriesOwnerCAS(t *testin
 	if err := registry.Register("decision", authority); err != nil {
 		t.Fatal(err)
 	}
+	runIDsGenerated := 0
 	httpRuntime, err := httpruntime.New(httpruntime.Options{
 		Registry: registry, Dispatcher: dispatcher,
 		NewID: func(prefix string) (string, error) {
@@ -106,7 +107,11 @@ func TestDecisionCancelHTTPKeepsAcceptedCancellationAndRetriesOwnerCAS(t *testin
 				return sessionID, nil
 			}
 			if prefix == "run" {
-				return runID, nil
+				runIDsGenerated++
+				if runIDsGenerated == 1 {
+					return runID, nil
+				}
+				return runID + "_resume", nil
 			}
 			return "", errors.New("unexpected generated ID prefix")
 		},
@@ -160,6 +165,14 @@ func TestDecisionCancelHTTPKeepsAcceptedCancellationAndRetriesOwnerCAS(t *testin
 	// CancelUpdate commits before the authority fails. The HTTP runtime must
 	// publish cancellation and preserve cleanup state instead of aborting it.
 	assertResponse(postCancel(), true)
+	resume := httptest.NewRecorder()
+	resumeRequest := httptest.NewRequest(http.MethodPost, decisionCancelHTTPPrefix+"/sessions/"+sessionID+"/resume",
+		strings.NewReader(`{"input":null}`))
+	resumeRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(resume, resumeRequest)
+	if resume.Code != http.StatusConflict || !strings.Contains(resume.Body.String(), "cancel_cleanup_pending") {
+		t.Fatalf("resume during pending cancellation cleanup status=%d body=%s", resume.Code, resume.Body.String())
+	}
 	// The next request replays the same durable cancel update, reconciles the
 	// exact receipt, and attempts the idempotent existing owner CAS. Its failure
 	// still must not roll back the already-cancelled local run.
