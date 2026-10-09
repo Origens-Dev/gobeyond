@@ -1217,6 +1217,99 @@ func validateEventShape(event Event) error {
 	return nil
 }
 
+// ValidateEventStructure checks an event union and each variant's static
+// contract shape. It does not authorize the event against reducer state or
+// prove that otherwise valid identifiers contain no sensitive semantic data.
+func ValidateEventStructure(event Event, now time.Time) error {
+	if err := validateEventShape(event); err != nil {
+		return err
+	}
+	switch {
+	case event.Normalized != nil:
+		return event.Normalized.Validate(now)
+	case event.Snapshot != nil:
+		refresh := event.Snapshot
+		for _, field := range []struct{ name, value string }{
+			{"snapshot event ID", refresh.ID}, {"snapshot tenant ID", refresh.TenantID},
+			{"snapshot session ID", refresh.SessionID}, {"snapshot route-entry ID", refresh.RouteEntryID},
+			{"snapshot binding ID", refresh.Bound.BindingID}, {"bound snapshot route-entry ID", refresh.Bound.RouteEntryID},
+		} {
+			if err := contract.ValidateIdentifier(field.value); err != nil {
+				return fmt.Errorf("%s: %w", field.name, err)
+			}
+		}
+		if refresh.Generation == 0 {
+			return fmt.Errorf("snapshot generation must be positive")
+		}
+		if err := contract.ValidateRouteID(refresh.RouteID); err != nil {
+			return fmt.Errorf("snapshot route ID: %w", err)
+		}
+		if err := contract.ValidateRouteID(refresh.Bound.RouteID); err != nil {
+			return fmt.Errorf("bound snapshot route ID: %w", err)
+		}
+		if refresh.ReceivedAt.IsZero() {
+			return fmt.Errorf("candidate snapshot refresh receive time is required")
+		}
+		return refresh.Bound.Snapshot.ValidateFor(refresh.TenantID, refresh.SessionID, refresh.Generation, now)
+	case event.Control != nil:
+		result := event.Control
+		for _, field := range []struct{ name, value string }{
+			{"control event ID", result.ID}, {"control tenant ID", result.TenantID},
+			{"control session ID", result.SessionID}, {"control route-entry ID", result.RouteEntryID},
+			{"control input ID", result.InputID}, {"control binding ID", result.BindingID},
+		} {
+			if err := contract.ValidateIdentifier(field.value); err != nil {
+				return fmt.Errorf("%s: %w", field.name, err)
+			}
+		}
+		if result.Generation == 0 {
+			return fmt.Errorf("control generation must be positive")
+		}
+		if err := contract.ValidateRouteID(result.RouteID); err != nil {
+			return fmt.Errorf("control route ID: %w", err)
+		}
+		if err := contract.ValidateSHA256(result.SnapshotSHA256); err != nil {
+			return fmt.Errorf("control snapshot digest: %w", err)
+		}
+		if result.ReceivedAt.IsZero() {
+			return fmt.Errorf("control result receive time is required")
+		}
+		switch result.Command {
+		case ControlRepeat, ControlHelp, ControlCancel:
+			return nil
+		default:
+			return fmt.Errorf("unknown deterministic control command")
+		}
+	default:
+		result := event.Fallback
+		for _, field := range []struct{ name, value string }{
+			{"fallback event ID", result.ID}, {"fallback tenant ID", result.TenantID},
+			{"fallback session ID", result.SessionID}, {"fallback route-entry ID", result.RouteEntryID},
+			{"fallback input ID", result.InputID},
+		} {
+			if err := contract.ValidateIdentifier(field.value); err != nil {
+				return fmt.Errorf("%s: %w", field.name, err)
+			}
+		}
+		if result.Generation == 0 {
+			return fmt.Errorf("fallback generation must be positive")
+		}
+		if err := contract.ValidateRouteID(result.RouteID); err != nil {
+			return fmt.Errorf("fallback route ID: %w", err)
+		}
+		if result.ReceivedAt.IsZero() {
+			return fmt.Errorf("fallback result receive time is required")
+		}
+		switch result.Outcome {
+		case contract.OutcomeCompleted, contract.OutcomeNoMatch, contract.OutcomeAmbiguous,
+			contract.OutcomeRefusal, contract.OutcomeError, contract.OutcomeUnavailable, contract.OutcomeCancelled:
+			return nil
+		default:
+			return fmt.Errorf("unsupported full-agent outcome")
+		}
+	}
+}
+
 func eventIdentity(event Event) (id string, generation uint64, tenantID, sessionID string, receivedAt time.Time) {
 	switch {
 	case event.Normalized != nil:
@@ -1488,18 +1581,5 @@ func containsModality(accepted []contract.InputModality, modality contract.Input
 }
 
 func stableIdentifier(value string) bool {
-	if value == "" || !isAlphaNumeric(value[0]) {
-		return false
-	}
-	for i := 1; i < len(value); i++ {
-		c := value[i]
-		if !isAlphaNumeric(c) && c != '_' && c != '.' && c != ':' && c != '-' {
-			return false
-		}
-	}
-	return true
-}
-
-func isAlphaNumeric(value byte) bool {
-	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9'
+	return contract.ValidateIdentifier(value) == nil
 }

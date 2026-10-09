@@ -71,6 +71,40 @@ func (definition Definition) ValidateForReview() error {
 	return c.err()
 }
 
+// ValidateIdentifier checks the stable identifier syntax shared by decision
+// contract fields. A valid identifier is a syntax check only; callers must
+// still keep sensitive semantic data out of identifier values.
+func ValidateIdentifier(value string) error {
+	if !isIdentifier(value) {
+		return fmt.Errorf("value must be a stable identifier")
+	}
+	return nil
+}
+
+// ValidateRouteID checks the canonical absolute route-ID syntax.
+func ValidateRouteID(value RouteID) error {
+	if !isRouteID(value) {
+		return fmt.Errorf("value must be a stable absolute route ID")
+	}
+	return nil
+}
+
+// ValidateSHA256 checks for a lowercase hexadecimal SHA-256 digest.
+func ValidateSHA256(value string) error {
+	if !isSHA256(value) {
+		return fmt.Errorf("value must be a lowercase SHA-256 digest")
+	}
+	return nil
+}
+
+// ValidateLocale checks for the canonical locale syntax used by session pins.
+func ValidateLocale(value string) error {
+	if !isLocale(value) {
+		return fmt.Errorf("value must be a canonical locale")
+	}
+	return nil
+}
+
 // ValidateForActivation additionally fails closed while any policy or
 // qualification gate remains unresolved. It does not activate a runtime.
 func (definition Definition) ValidateForActivation() error {

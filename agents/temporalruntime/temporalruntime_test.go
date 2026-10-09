@@ -537,6 +537,10 @@ type fakeClient struct {
 	signalWorkflowID string
 	signalName       string
 	signalValue      interface{}
+	updateOptions    client.UpdateWorkflowOptions
+	updateCalls      int
+	updateOutput     interface{}
+	updateErr        error
 }
 
 func (fake *fakeClient) ExecuteWorkflow(_ context.Context, options client.StartWorkflowOptions, workflow interface{}, args ...interface{}) (client.WorkflowRun, error) {
@@ -569,10 +573,38 @@ func (*fakeClient) QueryWorkflow(context.Context, string, string, string, ...int
 	return nil, errors.New("no approval query in fake workflow")
 }
 
+func (fake *fakeClient) UpdateWorkflow(_ context.Context, options client.UpdateWorkflowOptions) (client.WorkflowUpdateHandle, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.updateOptions = options
+	fake.updateCalls++
+	if fake.updateErr != nil {
+		return nil, fake.updateErr
+	}
+	return &fakeUpdateHandle{workflowID: options.WorkflowID, updateID: options.UpdateID, output: fake.updateOutput}, nil
+}
+
 func (fake *fakeClient) Close() {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	fake.closeCalls++
+}
+
+type fakeUpdateHandle struct {
+	workflowID string
+	updateID   string
+	output     interface{}
+}
+
+func (handle *fakeUpdateHandle) WorkflowID() string { return handle.workflowID }
+func (*fakeUpdateHandle) RunID() string             { return "temporal-run-id" }
+func (handle *fakeUpdateHandle) UpdateID() string   { return handle.updateID }
+func (handle *fakeUpdateHandle) Get(_ context.Context, value interface{}) error {
+	encoded, err := json.Marshal(handle.output)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(encoded, value)
 }
 
 type fakeRun struct {
@@ -587,6 +619,8 @@ func (run *fakeRun) Get(_ context.Context, value interface{}) error {
 		output.Output = append(json.RawMessage(nil), run.output.(json.RawMessage)...)
 	case *temporalai.AgentResult:
 		*output = run.output.(temporalai.AgentResult)
+	case *DecisionSessionResult:
+		*output = run.output.(DecisionSessionResult)
 	default:
 		return errors.New("unexpected workflow result type")
 	}
