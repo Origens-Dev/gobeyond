@@ -52,20 +52,21 @@ const (
 // authorization token and must never be executed without current adapter
 // authorization.
 type Effect struct {
-	Kind            EffectKind
-	RouteID         contract.RouteID
-	RouteEntryID    string
-	InputWindowID   string
-	BindingID       string
-	InputID         string
-	ServiceID       string
-	ActionID        string
-	MessageFamilies []string
-	Accept          []contract.InputModality
-	Request         *contract.EffectRequest
-	Target          contract.Target
-	ReceiptID       string
-	Reason          string
+	Kind                EffectKind
+	RouteID             contract.RouteID
+	RouteEntryID        string
+	PlaybackOperationID string
+	InputWindowID       string
+	BindingID           string
+	InputID             string
+	ServiceID           string
+	ActionID            string
+	MessageFamilies     []string
+	Accept              []contract.InputModality
+	Request             *contract.EffectRequest
+	Target              contract.Target
+	ReceiptID           string
+	Reason              string
 }
 
 // BoundCandidateSnapshot adds the identity that the v1 wire snapshot itself
@@ -153,6 +154,22 @@ type RetryCount struct {
 	Counter contract.RetryCounter
 }
 
+// RetryTotals exposes reducer-owned session-wide counters. Group counters
+// remain separately available in View.RetryCounters.
+type RetryTotals struct {
+	Reprompts          uint64
+	NoInputReprompts   uint64
+	NoMatchReprompts   uint64
+	AmbiguousReprompts uint64
+}
+
+type routeBudgetUsage struct {
+	Visits         uint64
+	DecisionCalls  uint64
+	EffectAttempts uint64
+	Retries        RetryTotals
+}
+
 // View is a read-only copy of the reducer's semantic state. It deliberately
 // omits the frozen definition, action values, protected payloads, and candidate
 // descriptions.
@@ -171,6 +188,7 @@ type View struct {
 	EffectAttempts     uint64
 	FullAgentFallbacks uint64
 	RetryCounters      []RetryCount
+	SessionRetryTotals RetryTotals
 	Ownership          contract.GraphOwnership
 	GraphEnded         bool
 	SessionEnded       bool
@@ -204,6 +222,8 @@ type stateData struct {
 	effectAttempts            uint64
 	fullAgentFallbacks        uint64
 	retryCounters             map[string]contract.RetryCounter
+	sessionRetryTotals        RetryTotals
+	routeBudgetUsage          map[contract.RouteID]routeBudgetUsage
 	processedEvents           map[string]string
 	candidateSnapshot         *BoundCandidateSnapshot
 	pendingInput              *contract.NormalizedEvent
@@ -216,6 +236,8 @@ type stateData struct {
 	pendingActionID           string
 	pendingRequestRoute       contract.RouteID
 	pendingRequestEntry       string
+	pendingSayOperationID     string
+	saySequence               uint64
 	ownership                 contract.GraphOwnership
 	graphEnded                bool
 	sessionEnded              bool
@@ -261,24 +283,28 @@ func Start(definition contract.Definition, admission contract.NormalizedEvent, p
 		policy.FullAgentFallbackLimit = &limit
 	}
 	data := &stateData{
-		definition:      frozen,
-		scope:           sessionScope{tenantID: admission.TenantID, sessionID: admission.SessionID, generation: admission.Generation, locale: admission.Locale},
-		policy:          policy,
-		routeID:         frozen.Graph.Entry,
-		routeEntryID:    admission.RouteEntryID,
-		phase:           PhaseListening,
-		logicalTaskID:   admission.ID,
-		retryCounters:   map[string]contract.RetryCounter{},
-		processedEvents: map[string]string{},
-		ownership:       contract.GraphOwnership{State: contract.OwnershipOwned},
+		definition:       frozen,
+		scope:            sessionScope{tenantID: admission.TenantID, sessionID: admission.SessionID, generation: admission.Generation, locale: admission.Locale},
+		policy:           policy,
+		routeID:          frozen.Graph.Entry,
+		routeEntryID:     admission.RouteEntryID,
+		phase:            PhaseListening,
+		logicalTaskID:    admission.ID,
+		retryCounters:    map[string]contract.RetryCounter{},
+		routeBudgetUsage: map[contract.RouteID]routeBudgetUsage{},
+		processedEvents:  map[string]string{},
+		ownership:        contract.GraphOwnership{State: contract.OwnershipOwned},
 	}
 	data.processedEvents[admission.ID] = fingerprint(Event{Normalized: &admission})
 	state := State{data: data}
-	if !data.enteredWithinRouteBudget() {
+	if !data.enteredWithinRouteBudget(entryRoute.ID) {
 		data.phase = PhaseStopped
 		return state, []Effect{{Kind: EffectSafeStop, RouteID: data.routeID, RouteEntryID: data.routeEntryID, Reason: "route visit ceiling is unresolved or exhausted"}}, nil
 	}
 	data.routeVisits++
+	routeUsage := data.routeBudgetUsage[entryRoute.ID]
+	routeUsage.Visits++
+	data.routeBudgetUsage[entryRoute.ID] = routeUsage
 	effects := enterEffects(data, entryRoute)
 	return state, cloneEffects(effects), nil
 }
@@ -391,7 +417,8 @@ func (state State) View() View {
 		LogicalTaskID: d.logicalTaskID, RouteVisits: d.routeVisits,
 		DecisionCalls: d.decisionCalls, EffectAttempts: d.effectAttempts,
 		FullAgentFallbacks: d.fullAgentFallbacks, Ownership: d.ownership,
-		GraphEnded: d.graphEnded, SessionEnded: d.sessionEnded,
+		SessionRetryTotals: d.sessionRetryTotals,
+		GraphEnded:         d.graphEnded, SessionEnded: d.sessionEnded,
 	}
 	keys := make([]string, 0, len(d.retryCounters))
 	for id := range d.retryCounters {
@@ -549,6 +576,15 @@ func reduceNormalized(data *stateData, event contract.NormalizedEvent, inputID s
 		if event.Playback == nil {
 			return nil, fmt.Errorf("playback transition requires an adapter receipt")
 		}
+		if data.pendingSayOperationID == "" || event.Playback.OperationID != data.pendingSayOperationID {
+			return nil, fmt.Errorf("playback receipt does not match the active say")
+		}
+		data.pendingSayOperationID = ""
+		if data.pendingInput != nil || data.pendingMatch || data.pendingDecision || data.pendingFallback || data.pendingRequest != nil {
+			// Barge-in input is authoritative once accepted. A completion, clear,
+			// or failure for its prompt cannot reopen listening or replace it.
+			return nil, nil
+		}
 		outcome := event.Playback.Outcome
 		if outcome == contract.OutcomeCompleted {
 			if active.Listen != nil && !data.inputWindowOpen {
@@ -582,6 +618,10 @@ func reduceSnapshotRefresh(data *stateData, refresh SnapshotRefresh) ([]Effect, 
 	active, ok := findRoute(data.definition, data.routeID)
 	if !ok || active.Match == nil {
 		return nil, fmt.Errorf("candidate snapshot refresh has no active frozen matcher")
+	}
+	if data.pendingDecision || data.pendingFallback || data.pendingRequest != nil ||
+		(data.pendingMatch && data.candidateSnapshot != nil) || (data.pendingInput != nil && !data.pendingMatch) {
+		return nil, fmt.Errorf("candidate snapshot is pinned while matcher, decision, or effect work is pending")
 	}
 	if !stableIdentifier(refresh.ID) || refresh.ReceivedAt.IsZero() {
 		return nil, fmt.Errorf("candidate snapshot refresh requires stable event and receive-time fields")
@@ -652,11 +692,13 @@ func requestDecision(data *stateData, active contract.Route, causeID string, obs
 	if active.Decide == nil {
 		return routeOutcome(data, active, contract.SourceDecision, contract.OutcomeUnavailable, causeID, "", observedAt)
 	}
-	limit := data.definition.Graph.Authority.Budgets[contract.BudgetDecisionCalls].Value
-	if limit == nil || data.decisionCalls >= *limit {
+	routeUsage := data.routeBudgetUsage[data.routeID]
+	if !data.budgetHasRoom(data.routeID, contract.BudgetDecisionCalls, data.decisionCalls, routeUsage.DecisionCalls) {
 		return routeOutcome(data, active, contract.SourceDecision, contract.OutcomeUnavailable, causeID, "", observedAt)
 	}
 	data.decisionCalls++
+	routeUsage.DecisionCalls++
+	data.routeBudgetUsage[data.routeID] = routeUsage
 	data.pendingDecision = true
 	data.phase = PhaseDeciding
 	return []Effect{{Kind: EffectRunDecision, RouteID: data.routeID, RouteEntryID: data.routeEntryID, InputID: inputID(data), ServiceID: active.Decide.ServiceID, Reason: snapshotDigest(data)}}, nil
@@ -685,10 +727,10 @@ func dispatchCandidate(data *stateData, active contract.Route, candidateID strin
 	if len(actions) != 1 {
 		return nil, fmt.Errorf("candidate selection requires exactly one frozen target-bound action")
 	}
-	limit := data.definition.Graph.Authority.Budgets[contract.BudgetEffectAttempts].Value
-	if limit == nil || data.effectAttempts >= *limit {
+	routeUsage := data.routeBudgetUsage[data.routeID]
+	if !data.budgetHasRoom(data.routeID, contract.BudgetEffectAttempts, data.effectAttempts, routeUsage.EffectAttempts) {
 		data.phase = PhaseStopped
-		return []Effect{{Kind: EffectSafeStop, RouteID: data.routeID, RouteEntryID: data.routeEntryID, InputID: data.pendingInput.ID, Reason: "effect attempt ceiling is unresolved or exhausted"}}, nil
+		return []Effect{{Kind: EffectSafeStop, RouteID: data.routeID, RouteEntryID: data.routeEntryID, InputID: data.pendingInput.ID, Reason: "inherited or route effect attempt ceiling is unresolved or exhausted"}}, nil
 	}
 	action := actions[0]
 	identity := contract.EffectIdentity{
@@ -714,6 +756,8 @@ func dispatchCandidate(data *stateData, active contract.Route, candidateID strin
 		return nil, fmt.Errorf("frozen action intent: %w", err)
 	}
 	data.effectAttempts++
+	routeUsage.EffectAttempts++
+	data.routeBudgetUsage[data.routeID] = routeUsage
 	data.phase = PhaseActing
 	data.pendingRequest = cloneRequest(&request)
 	data.pendingRequestValidatedAt = observedAt
@@ -795,7 +839,7 @@ func followTarget(data *stateData, active contract.Route, target contract.Target
 			if active.Say == nil {
 				return nil, fmt.Errorf("frozen say phase has no say step")
 			}
-			return []Effect{{Kind: EffectSay, RouteID: data.routeID, RouteEntryID: data.routeEntryID, MessageFamilies: append([]string(nil), active.Say.Families...)}}, nil
+			return []Effect{sayEffect(data, active)}, nil
 		case contract.PhaseMatch:
 			if active.Match == nil || data.pendingInput == nil {
 				return nil, fmt.Errorf("frozen match phase has no active matcher input")
@@ -823,9 +867,15 @@ func admitRetry(data *stateData, route contract.Route, causeID, reason string) (
 			return true, contract.Target{}, nil
 		}
 	}
+	routeUsage := data.routeBudgetUsage[route.ID]
+	if !data.budgetHasRoom(route.ID, contract.BudgetReprompts, data.sessionRetryTotals.Reprompts, routeUsage.Retries.Reprompts) {
+		return false, group.Exhausted, nil
+	}
 	if group.MaxReprompts.Value == nil || counter.Reprompts >= *group.MaxReprompts.Value {
 		return false, group.Exhausted, nil
 	}
+	var sessionReasonUsed, routeReasonUsed uint64
+	var reasonDimension contract.BudgetDimension
 	if reason == "no_input" && (group.MaxNoInputReprompts.Value == nil || counter.NoInputReprompts >= *group.MaxNoInputReprompts.Value) {
 		return false, group.Exhausted, nil
 	}
@@ -835,15 +885,41 @@ func admitRetry(data *stateData, route contract.Route, causeID, reason string) (
 	if reason == "ambiguous" && (group.MaxAmbiguousReprompts.Value == nil || counter.AmbiguousReprompts >= *group.MaxAmbiguousReprompts.Value) {
 		return false, group.Exhausted, nil
 	}
+	switch reason {
+	case "no_input":
+		reasonDimension = contract.BudgetNoInputReprompts
+		sessionReasonUsed = data.sessionRetryTotals.NoInputReprompts
+		routeReasonUsed = routeUsage.Retries.NoInputReprompts
+	case "no_match":
+		reasonDimension = contract.BudgetNoMatchReprompts
+		sessionReasonUsed = data.sessionRetryTotals.NoMatchReprompts
+		routeReasonUsed = routeUsage.Retries.NoMatchReprompts
+	case "ambiguous":
+		reasonDimension = contract.BudgetAmbiguousReprompts
+		sessionReasonUsed = data.sessionRetryTotals.AmbiguousReprompts
+		routeReasonUsed = routeUsage.Retries.AmbiguousReprompts
+	}
+	if reasonDimension != "" && !data.budgetHasRoom(route.ID, reasonDimension, sessionReasonUsed, routeReasonUsed) {
+		return false, group.Exhausted, nil
+	}
 	counter.Reprompts++
+	data.sessionRetryTotals.Reprompts++
+	routeUsage.Retries.Reprompts++
 	switch reason {
 	case "no_input":
 		counter.NoInputReprompts++
+		data.sessionRetryTotals.NoInputReprompts++
+		routeUsage.Retries.NoInputReprompts++
 	case "no_match":
 		counter.NoMatchReprompts++
+		data.sessionRetryTotals.NoMatchReprompts++
+		routeUsage.Retries.NoMatchReprompts++
 	case "ambiguous":
 		counter.AmbiguousReprompts++
+		data.sessionRetryTotals.AmbiguousReprompts++
+		routeUsage.Retries.AmbiguousReprompts++
 	}
+	data.routeBudgetUsage[route.ID] = routeUsage
 	counter.CountedAdmissionEventIDs = append(counter.CountedAdmissionEventIDs, causeID)
 	if err := counter.ValidateFor(group); err != nil {
 		return false, contract.Target{}, fmt.Errorf("retry counter: %w", err)
@@ -853,16 +929,18 @@ func admitRetry(data *stateData, route contract.Route, causeID, reason string) (
 }
 
 func enterRoute(data *stateData, route contract.Route, causeID, reason string, observedAt time.Time) ([]Effect, error) {
-	limit := data.definition.Graph.Authority.Budgets[contract.BudgetRouteVisits].Value
-	if limit == nil || data.routeVisits >= *limit {
+	routeUsage := data.routeBudgetUsage[route.ID]
+	if !data.budgetHasRoom(route.ID, contract.BudgetRouteVisits, data.routeVisits, routeUsage.Visits) {
 		data.phase = PhaseStopped
 		data.inputWindowOpen = false
-		return []Effect{{Kind: EffectSafeStop, RouteID: data.routeID, RouteEntryID: data.routeEntryID, Reason: "route visit ceiling is unresolved or exhausted"}}, nil
+		return []Effect{{Kind: EffectSafeStop, RouteID: data.routeID, RouteEntryID: data.routeEntryID, Reason: "inherited or route visit ceiling is unresolved or exhausted"}}, nil
 	}
 	previousEntry := data.routeEntryID
 	data.routeID = route.ID
 	data.routeEntryID = nextRouteEntry(previousEntry, causeID, route.ID)
 	data.routeVisits++
+	routeUsage.Visits++
+	data.routeBudgetUsage[route.ID] = routeUsage
 	data.phase = PhaseListening
 	data.inputWindowID = ""
 	data.inputWindowOpen = false
@@ -877,6 +955,7 @@ func enterRoute(data *stateData, route contract.Route, causeID, reason string, o
 	data.pendingActionID = ""
 	data.pendingRequestRoute = ""
 	data.pendingRequestEntry = ""
+	data.pendingSayOperationID = ""
 	effects := enterEffects(data, route)
 	return effects, nil
 }
@@ -890,9 +969,24 @@ func enterEffects(data *stateData, route contract.Route) []Effect {
 		effects = append(effects, Effect{Kind: EffectListen, RouteID: route.ID, RouteEntryID: data.routeEntryID, InputWindowID: data.inputWindowID, Accept: append([]contract.InputModality(nil), route.Listen.Accept...)})
 	}
 	if route.Say != nil {
-		effects = append(effects, Effect{Kind: EffectSay, RouteID: route.ID, RouteEntryID: data.routeEntryID, MessageFamilies: append([]string(nil), route.Say.Families...)})
+		effects = append(effects, sayEffect(data, route))
 	}
 	return effects
+}
+
+func sayEffect(data *stateData, route contract.Route) Effect {
+	data.saySequence++
+	operationID := playbackOperationID(data.routeEntryID, data.saySequence)
+	data.pendingSayOperationID = operationID
+	return Effect{
+		Kind: EffectSay, RouteID: route.ID, RouteEntryID: data.routeEntryID,
+		PlaybackOperationID: operationID, MessageFamilies: append([]string(nil), route.Say.Families...),
+	}
+}
+
+func playbackOperationID(routeEntryID string, sequence uint64) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("playback\x00%s\x00%d", routeEntryID, sequence)))
+	return "playback-" + hex.EncodeToString(digest[:12])
 }
 
 func enterTerminal(data *stateData, target contract.Target, causeID, reason string) []Effect {
@@ -1138,6 +1232,10 @@ func cloneState(input *stateData) *stateData {
 		counter.CountedAdmissionEventIDs = append([]string(nil), counter.CountedAdmissionEventIDs...)
 		copy.retryCounters[id] = counter
 	}
+	copy.routeBudgetUsage = make(map[contract.RouteID]routeBudgetUsage, len(input.routeBudgetUsage))
+	for id, usage := range input.routeBudgetUsage {
+		copy.routeBudgetUsage[id] = usage
+	}
 	copy.processedEvents = make(map[string]string, len(input.processedEvents))
 	for id, fp := range input.processedEvents {
 		copy.processedEvents[id] = fp
@@ -1245,9 +1343,28 @@ func findRetryGroup(definition contract.Definition, id string) (contract.RetryGr
 	return contract.RetryGroup{}, false
 }
 
-func (data *stateData) enteredWithinRouteBudget() bool {
-	limit := data.definition.Graph.Authority.Budgets[contract.BudgetRouteVisits].Value
-	return limit != nil && *limit > 0
+func (data *stateData) enteredWithinRouteBudget(routeID contract.RouteID) bool {
+	usage := data.routeBudgetUsage[routeID]
+	return data.budgetHasRoom(routeID, contract.BudgetRouteVisits, data.routeVisits, usage.Visits)
+}
+
+// budgetHasRoom applies the inherited session ceiling and any narrower
+// per-route override to a reducer-owned counter. Other resource budgets need
+// metrics owned by their runtime adapters and are outside this reducer.
+func (data *stateData) budgetHasRoom(routeID contract.RouteID, dimension contract.BudgetDimension, sessionUsed, routeUsed uint64) bool {
+	inherited, ok := data.definition.Graph.Authority.Budgets[dimension]
+	if !ok || inherited.Value == nil || sessionUsed >= *inherited.Value {
+		return false
+	}
+	route, ok := findRoute(data.definition, routeID)
+	if !ok {
+		return false
+	}
+	override, ok := route.BudgetOverrides[dimension]
+	if !ok {
+		return true
+	}
+	return override.Value != nil && routeUsed < *override.Value
 }
 
 func (data *stateData) pendingAction() *contract.ActStep {
@@ -1315,6 +1432,9 @@ func (effect Effect) String() string {
 	}
 	if effect.RouteEntryID != "" {
 		parts = append(parts, "entry="+effect.RouteEntryID)
+	}
+	if effect.PlaybackOperationID != "" {
+		parts = append(parts, "playback="+effect.PlaybackOperationID)
 	}
 	if effect.BindingID != "" {
 		parts = append(parts, "binding="+effect.BindingID)

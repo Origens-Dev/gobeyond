@@ -15,6 +15,14 @@ or `ActStep` cannot select an action. `ValidateDispatchIntent` checks that an
 intent still matches the reducer's active frozen state; it is not an execution
 grant.
 
+Each emitted `say` effect includes a deterministic playback operation ID.
+Playback receipts must match the active say. If final input was accepted while
+that prompt was playing, its later completion/clear/failure cannot reopen the
+consumed window or replace the pending input. Candidate snapshots stay pinned
+while matcher, decision, fallback, or effect work is pending; one initial
+refresh may satisfy a matcher that has no snapshot yet, but subsequent
+refreshes are rejected until the operation resolves.
+
 Adapters remain responsible for the activation-ready definition check and
 current authorization. Call-control effects must keep using the existing
 server-created `voicecontract.Command` and operation identity, authoritative
@@ -24,19 +32,33 @@ not a second operation or receipt ledger. A graph receipt requests the
 existing adapter CAS and cannot perform it.
 
 Retry counters are held by logical task and survive route revisits, reducer
-replay, and candidate snapshot refresh. Duplicate event IDs are idempotent;
-the same ID with changed content is rejected. Retry, decision, route-visit,
-and effect-attempt ceilings come from the frozen contract. Full-agent
+replay, and candidate snapshot refresh. The reducer enforces session-wide
+`reprompts`, `no_input_reprompts`, `no_match_reprompts`, and
+`ambiguous_reprompts` ceilings across retry groups, as well as each group's
+own counters. It also applies route overrides as per-route ceilings for route
+visits, decision calls, effect attempts, and retry admissions; an override
+cannot widen its inherited session ceiling. Duplicate event IDs are
+idempotent; the same ID with changed content is rejected. Full-agent
 escalation is disabled unless an explicit session limit is supplied; there is
 no default threshold. Time checks use event timestamps supplied by the
 adapter.
+
+This reducer does not account for session/input duration, TTS characters,
+queued audio, artifact bytes, spend, latency, or protected-payload TTL. Those
+measurements need their runtime, transport, or accounting owners before
+integration. Individual protected-reference expiry is still validated by the
+v1 contract; only the aggregate TTL budget is outside this reducer. The
+repository had no retry-counter owner outside this reducer; the future
+stateful adapter must persist its session and route counters.
 
 `RunTextTrace` renders semantic effects as deterministic text. It does not
 invent playback completion, DTMF timing, or other transport acknowledgments.
 The executable traces derive from ORI-66's frozen review fixture. Their finite
 retry and session counters are test-only values; the checked-in review fixture
 and its unresolved activation gates are unchanged. The package is not wired to
-the compiler or runtime.
+the compiler or runtime. A playback operation ID is emitted for the future
+adapter to carry into an authoritative receipt; the text harness only consumes
+the explicit playback receipt supplied by a trace.
 
 ## Follow-up adapter contract gate
 
