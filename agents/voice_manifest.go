@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
 )
 
@@ -56,7 +57,8 @@ func VoiceControlPolicy(tool AITool) (VoiceToolPolicy, bool) {
 type voiceWriteMarker struct{}
 
 // VoiceWritePolicy identifies an authored app mutation selected for authenticated
-// voice dispatch. The typed marker can only be emitted by DefineTool.
+// voice dispatch. The typed marker can only be emitted by DefineTool. It does
+// not authorize Live execution; Maglev's host must BindVoiceDurableDispatcher.
 func VoiceWritePolicy(tool AITool) bool {
 	ns, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)
 	if !ok {
@@ -64,6 +66,48 @@ func VoiceWritePolicy(tool AITool) bool {
 	}
 	_, enabled := ns["voiceWrite"].(voiceWriteMarker)
 	return enabled
+}
+
+// voiceDurableWriteDispatcher is installed only by BindVoiceDurableDispatcher.
+// App ToolConfig.VoiceWrite cannot acquire Live execute-tool dispatch.
+type voiceDurableWriteDispatcher struct{}
+
+// VoiceDurableWriteDispatcher reports whether the SDK/host injected the
+// trusted execute-tool callback. Decoded provider/client metadata maps cannot
+// acquire this capability by setting a boolean or string.
+func VoiceDurableWriteDispatcher(tool AITool) bool {
+	ns, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, enabled := ns["voiceDurableWriteDispatcher"].(voiceDurableWriteDispatcher)
+	return enabled
+}
+
+// BindVoiceDurableDispatcher marks a VoiceWritePolicy tool as the host/SDK
+// durable /internal/workflows/voice-session/execute-tool callback. Maglev
+// attaches this when wrapping Execute; authored app tools cannot set it.
+func BindVoiceDurableDispatcher(tool AITool) (AITool, error) {
+	if !VoiceWritePolicy(tool) {
+		return AITool{}, errors.New("durable write dispatcher requires VoiceWritePolicy")
+	}
+	if tool.Execute == nil {
+		return AITool{}, errors.New("durable write dispatcher requires an execute handler")
+	}
+	out := tool
+	meta := ai.ProviderMetadata{}
+	for k, v := range tool.ToolMetadata {
+		meta[k] = v
+	}
+	ns, _ := meta[toolMetadataNamespace].(map[string]any)
+	copied := map[string]any{}
+	for k, v := range ns {
+		copied[k] = v
+	}
+	copied["voiceDurableWriteDispatcher"] = voiceDurableWriteDispatcher{}
+	meta[toolMetadataNamespace] = copied
+	out.ToolMetadata = meta
+	return out, nil
 }
 
 // CompileVoiceManifest freezes opt-in tools from the compiled definition. The

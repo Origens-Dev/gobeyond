@@ -29,7 +29,54 @@ func independentlyNamedVoiceWrite(t *testing.T, calls *atomic.Int32, result map[
 	if tool.Name == "leave_text_message" || !agents.VoiceWritePolicy(tool) {
 		t.Fatal("write dispatch must key off VoiceWritePolicy, not leave_text_message")
 	}
-	return tool
+	bound, err := agents.BindVoiceDurableDispatcher(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bound
+}
+
+func TestGeminiLiveOrdinaryVoiceWriteNeverInvokesHandler(t *testing.T) {
+	var calls atomic.Int32
+	schema, output := voiceWriteClosedSchemas()
+	tool := agents.DefineTool(agents.ToolConfig{
+		Name: "archive_desk_note", Description: "Archive a short desk note.",
+		VoiceWrite: true, InputSchema: schema, OutputSchema: output,
+	}, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls.Add(1)
+		return map[string]any{"ok": true}, nil
+	})
+	session := newFakeLiveSession()
+	h := &geminiLiveHandle{
+		session: session,
+		cfg:     hangUpBesideWrite(t),
+		tools:   map[string]ai.Tool{tool.Name: tool},
+	}
+	call := &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+		ID: "write-1", Name: "archive_desk_note", Args: map[string]any{"q": "x"},
+	}}}
+	if err := h.dispatchToolCall(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { h.toolWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Gemini ordinary write dispatch did not finish")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("ordinary VoiceWrite handler invoked calls=%d", calls.Load())
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.responses) != 1 || len(session.responses[0].FunctionResponses) != 1 {
+		t.Fatalf("Gemini FunctionResponse missing: %#v", session.responses)
+	}
+	got := session.responses[0].FunctionResponses[0]
+	if _, hadErr := got.Response["error"]; !hadErr {
+		t.Fatalf("ordinary VoiceWrite must be rejected: %#v", got.Response)
+	}
 }
 
 func hangUpBesideWrite(t *testing.T) voice.StartConfig {

@@ -17,7 +17,6 @@ import (
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
-	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 	"github.com/Origens-Dev/gobeyond/agents/voice"
 	"github.com/gorilla/websocket"
 )
@@ -592,7 +591,8 @@ func (h *openAILiveHandle) execute(ctx context.Context, calls []grokFunctionCall
 			err = errors.New("tool unavailable")
 		} else {
 			h.logControlStage("tool_started", c.Name, "")
-			result, err = executeVoiceAgentTool(toolCtx, selected, ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContext(h.cfg.Actor, h.cfg.SessionID)})
+			toolCall := ai.ToolCall{ToolCallID: c.CallID, ToolName: c.Name, Input: c.Arguments}
+			result, err = executeVoiceAgentTool(toolCtx, selected, toolCall, liveVoiceToolOptions(h.cfg, selected, toolCall))
 			if err == nil {
 				err = ai.ValidateToolOutput(selected, result)
 			}
