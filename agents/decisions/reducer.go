@@ -561,13 +561,9 @@ func reduceNormalized(data *stateData, event contract.NormalizedEvent, inputID s
 	case contract.EventEffectReceipt:
 		return reduceEffectReceipt(data, active, event, event.ReceivedAt)
 	case contract.EventCancelled:
-		data.sessionEnded = true
-		data.phase = PhaseTerminal
-		return []Effect{{Kind: EffectEndSession, RouteID: data.routeID, RouteEntryID: data.routeEntryID, Reason: "cancelled"}}, nil
+		return routeOutcome(data, active, contract.SourceControl, contract.OutcomeCancelled, event.ID, "cancelled", event.ReceivedAt)
 	case contract.EventDisconnected:
-		data.sessionEnded = true
-		data.phase = PhaseTerminal
-		return []Effect{{Kind: EffectEndSession, RouteID: data.routeID, RouteEntryID: data.routeEntryID, Reason: "disconnected"}}, nil
+		return routeOutcome(data, active, contract.SourceControl, contract.OutcomeDisconnected, event.ID, "disconnected", event.ReceivedAt)
 	case contract.EventPlaybackStarted:
 		// Playback is adapter-owned. A real receipt may be consumed below, but
 		// the reducer never fabricates a playback start/completion event.
@@ -586,7 +582,10 @@ func reduceNormalized(data *stateData, event contract.NormalizedEvent, inputID s
 			return nil, nil
 		}
 		outcome := event.Playback.Outcome
-		if outcome == contract.OutcomeCompleted {
+		if outcome == contract.OutcomeCompleted && targetFor(active, contract.SourcePlayback, outcome).Phase == contract.PhaseListen {
+			// The authored completed edge is the route transition. A say+listen
+			// route may already have opened its input window on entry; in that
+			// case the edge is satisfied without emitting a second Listen effect.
 			if active.Listen != nil && !data.inputWindowOpen {
 				data.inputWindowID = windowID(data.routeEntryID)
 				data.inputWindowOpen = true
@@ -654,9 +653,7 @@ func reduceControl(data *stateData, result ControlResult) ([]Effect, error) {
 	case ControlHelp:
 		return followTarget(data, active, contract.Target{Route: data.definition.Graph.Fallback}, result.ID, "help", result.ReceivedAt)
 	case ControlCancel:
-		data.sessionEnded = true
-		data.phase = PhaseTerminal
-		return []Effect{{Kind: EffectEndSession, RouteID: data.routeID, RouteEntryID: data.routeEntryID, InputID: result.InputID, Reason: "cancelled"}}, nil
+		return routeOutcome(data, active, contract.SourceControl, contract.OutcomeCancelled, result.ID, "cancelled", result.ReceivedAt)
 	default:
 		return nil, fmt.Errorf("unknown deterministic control command %q", result.Command)
 	}
@@ -680,9 +677,7 @@ func reduceFallback(data *stateData, result FullAgentResult) ([]Effect, error) {
 	case contract.OutcomeNoMatch, contract.OutcomeAmbiguous, contract.OutcomeRefusal, contract.OutcomeError, contract.OutcomeUnavailable:
 		return routeOutcome(data, active, contract.SourceDecision, result.Outcome, result.ID, retryReason(result.Outcome), result.ReceivedAt)
 	case contract.OutcomeCancelled:
-		data.sessionEnded = true
-		data.phase = PhaseTerminal
-		return []Effect{{Kind: EffectEndSession, RouteID: data.routeID, RouteEntryID: data.routeEntryID, InputID: result.InputID, Reason: "full_agent_cancelled"}}, nil
+		return routeOutcome(data, active, contract.SourceControl, contract.OutcomeCancelled, result.ID, "cancelled", result.ReceivedAt)
 	default:
 		return nil, fmt.Errorf("full-agent outcome %q is not supported by the reducer", result.Outcome)
 	}
@@ -1076,12 +1071,16 @@ func reduceEffectReceipt(data *stateData, active contract.Route, event contract.
 	if outcome == "" {
 		return nil, fmt.Errorf("unknown effect receipt status %q", receipt.Status)
 	}
-	if receipt.Status == contract.EffectUnknown || receipt.Status == contract.EffectAccepted || receipt.Status == contract.EffectSubmitted {
+	target := targetFor(active, contract.SourceEffect, outcome)
+	if target.Terminal == contract.TerminalAwaitReceipt {
+		// Preserve the reducer-emitted intent whenever the frozen edge requests
+		// reconciliation. Call-ownership actions are required by validation to
+		// use this edge for accepted/unknown receipts; non-release actions may
+		// also explicitly choose it.
 		data.phase = PhaseAwaitingReceipt
 		return []Effect{{Kind: EffectAwaitReceipt, RouteID: data.routeID, RouteEntryID: data.routeEntryID, InputID: data.pendingInput.ID, ActionID: data.pendingActionID, Request: cloneRequest(data.pendingRequest), ReceiptID: receipt.ReceiptID}}, nil
 	}
 	if receipt.Status == contract.EffectConfirmed && data.ownership.State == contract.OwnershipReleased {
-		target := targetFor(active, contract.SourceEffect, outcome)
 		if target.Terminal != contract.TerminalReleaseCallOwnership {
 			return nil, fmt.Errorf("frozen route does not map this confirmed receipt to ownership release")
 		}

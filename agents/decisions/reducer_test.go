@@ -205,6 +205,259 @@ func TestBargeInLatePlaybackCannotReplaceFirstInput(t *testing.T) {
 	goldenText(t, "prompt-barge-in-late-playback.trace", trace.String())
 }
 
+func TestPlaybackCompletedUsesTheAuthoredEdge(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		entry             contract.RouteID
+		outcome           contract.Outcome
+		completedTarget   contract.Target
+		wantRoute         contract.RouteID
+		wantTerminal      contract.TerminalAction
+		noDuplicateListen bool
+	}{
+		{
+			name:         "say-only terminal",
+			entry:        "/help",
+			outcome:      contract.OutcomeCompleted,
+			wantTerminal: contract.TerminalEndSession,
+		},
+		{
+			name:         "say-only cleared terminal",
+			entry:        "/help",
+			outcome:      contract.OutcomeCleared,
+			wantTerminal: contract.TerminalEndSession,
+		},
+		{
+			name:         "say-only failed terminal",
+			entry:        "/help",
+			outcome:      contract.OutcomeFailed,
+			wantTerminal: contract.TerminalEndSession,
+		},
+		{
+			name:              "say-and-listen route despite open window",
+			entry:             "/start",
+			outcome:           contract.OutcomeCompleted,
+			completedTarget:   contract.Target{Route: "/help"},
+			wantRoute:         "/help",
+			noDuplicateListen: true,
+		},
+		{
+			name:              "say-and-listen terminal despite open window",
+			entry:             "/start",
+			outcome:           contract.OutcomeCompleted,
+			completedTarget:   contract.Target{Terminal: contract.TerminalEndSession},
+			wantTerminal:      contract.TerminalEndSession,
+			noDuplicateListen: true,
+		},
+		{
+			name:              "authored listen phase does not duplicate open window",
+			entry:             "/start",
+			outcome:           contract.OutcomeCompleted,
+			wantRoute:         "/start",
+			noDuplicateListen: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			definition := traceDefinition(t)
+			definition.Graph.Entry = tc.entry
+			if tc.completedTarget.Route != "" || tc.completedTarget.Terminal != "" {
+				setTransitionTarget(t, &definition, "/start", contract.SourcePlayback, contract.OutcomeCompleted, tc.completedTarget)
+			}
+			redigestAndValidateTestDefinition(t, &definition)
+
+			state, effects, err := Start(definition, admissionEvent("entry-playback-edge"), Policy{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			say := effectOfKind(t, effects, EffectSay)
+			completed := playbackCompletedEvent(state, "playback-authored-edge", say.PlaybackOperationID, tc.outcome)
+			state, effects, err = Reduce(state, Event{Normalized: &completed})
+			if err != nil {
+				t.Fatalf("playback completion failed: %v", err)
+			}
+			if tc.wantRoute != "" && state.View().RouteID != tc.wantRoute {
+				t.Fatalf("completed edge did not enter authored route %q: %#v %#v", tc.wantRoute, state.View(), effects)
+			}
+			if tc.wantTerminal == contract.TerminalEndSession && (!state.View().SessionEnded || !hasEffect(effects, EffectEndSession)) {
+				t.Fatalf("completed edge did not end the session: %#v %#v", state.View(), effects)
+			}
+			if tc.noDuplicateListen && hasEffect(effects, EffectListen) {
+				t.Fatalf("playback completion duplicated an already-open input window: %#v", effects)
+			}
+		})
+	}
+}
+
+func TestInputAndMatchOutcomesFollowAuthoredEdges(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    contract.EventKind
+		outcome contract.Outcome
+		matcher bool
+	}{
+		{name: "initial silence", kind: contract.EventInitialSilence, outcome: contract.OutcomeNoInput},
+		{name: "utterance limit", kind: contract.EventUtteranceLimit, outcome: contract.OutcomeUtteranceLimit},
+		{name: "matcher ambiguous", kind: contract.EventMatchCompleted, outcome: contract.OutcomeAmbiguous, matcher: true},
+		{name: "matcher error", kind: contract.EventMatchCompleted, outcome: contract.OutcomeError, matcher: true},
+		{name: "no match configured to route", kind: contract.EventMatchCompleted, outcome: contract.OutcomeNoMatch, matcher: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			definition := traceDefinition(t)
+			if tc.outcome == contract.OutcomeNoMatch {
+				for i := range definition.Graph.Routes {
+					if definition.Graph.Routes[i].ID == "/start" {
+						definition.Graph.Routes[i].Match.OnNoMatch = contract.NoMatchToRoute
+						definition.Graph.Routes[i].Next = append(definition.Graph.Routes[i].Next, contract.OutcomeTransition{Source: contract.SourceMatch, Outcome: contract.OutcomeNoMatch, Target: contract.Target{Route: "/help"}})
+					}
+				}
+			} else {
+				if tc.matcher {
+					setTransitionTarget(t, &definition, "/start", contract.SourceMatch, tc.outcome, contract.Target{Route: "/help"})
+				} else {
+					setTransitionTarget(t, &definition, "/start", contract.SourceInput, tc.outcome, contract.Target{Route: "/help"})
+				}
+			}
+			redigestAndValidateTestDefinition(t, &definition)
+
+			state, _, snapshot := startWithSnapshot(t, definition, "entry-input-match-"+string(tc.outcome), []string{"opaque-a"})
+			var effects []Effect
+			if tc.matcher {
+				state, _ = acceptTextInput(t, state, "input-input-match-"+string(tc.outcome), "payload-input-match-"+string(tc.outcome))
+				match := matchEvent(state, "match-input-match-"+string(tc.outcome), snapshot, tc.outcome, "")
+				state, effects = reduceEvent(t, state, Event{Normalized: &match, InputID: "input-input-match-" + string(tc.outcome)})
+			} else {
+				event := normalizedFor(state, "event-input-match-"+string(tc.outcome), tc.kind)
+				event.InputWindowID = state.View().InputWindowID
+				state, effects = reduceEvent(t, state, Event{Normalized: &event})
+			}
+			if state.View().RouteID != "/help" || hasEffect(effects, EffectRunDecision) {
+				t.Fatalf("%s outcome was not dispatched through its authored edge: %#v %#v", tc.outcome, state.View(), effects)
+			}
+		})
+	}
+}
+
+func TestControlOutcomesFollowAuthoredEdges(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		run    func(t *testing.T, definition contract.Definition) (State, []Effect, error)
+		source contract.Outcome
+	}{
+		{
+			name:   "cancelled event",
+			source: contract.OutcomeCancelled,
+			run: func(t *testing.T, definition contract.Definition) (State, []Effect, error) {
+				state, _, err := Start(definition, admissionEvent("entry-control-cancelled"), Policy{})
+				if err != nil {
+					return state, nil, err
+				}
+				event := normalizedFor(state, "event-control-cancelled", contract.EventCancelled)
+				return Reduce(state, Event{Normalized: &event})
+			},
+		},
+		{
+			name:   "disconnected event",
+			source: contract.OutcomeDisconnected,
+			run: func(t *testing.T, definition contract.Definition) (State, []Effect, error) {
+				state, _, err := Start(definition, admissionEvent("entry-control-disconnected"), Policy{})
+				if err != nil {
+					return state, nil, err
+				}
+				event := normalizedFor(state, "event-control-disconnected", contract.EventDisconnected)
+				return Reduce(state, Event{Normalized: &event})
+			},
+		},
+		{
+			name:   "deterministic cancel command",
+			source: contract.OutcomeCancelled,
+			run: func(t *testing.T, definition contract.Definition) (State, []Effect, error) {
+				state, _, snapshot := startWithSnapshot(t, definition, "entry-control-command", []string{"opaque-a"})
+				state, _ = acceptTextInput(t, state, "input-control-command", "payload-control-command")
+				view := state.View()
+				control := ControlResult{ID: "control-cancel-command", TenantID: view.TenantID, SessionID: view.SessionID, Generation: view.Generation, RouteID: view.RouteID, RouteEntryID: view.RouteEntryID, InputID: "input-control-command", BindingID: snapshot.BindingID, SnapshotSHA256: snapshot.Snapshot.SHA256, Command: ControlCancel, ReceivedAt: traceTime.Add(3 * time.Second)}
+				return Reduce(state, Event{Control: &control})
+			},
+		},
+		{
+			name:   "bounded fallback cancellation",
+			source: contract.OutcomeCancelled,
+			run: func(t *testing.T, definition contract.Definition) (State, []Effect, error) {
+				limit := uint64(1)
+				state, _, snapshot := startWithSnapshotPolicy(t, definition, "entry-fallback-cancel", []string{"opaque-a"}, Policy{FullAgentFallbackLimit: &limit})
+				state, _ = acceptTextInput(t, state, "input-fallback-cancel", "payload-fallback-cancel")
+				match := matchEvent(state, "match-fallback-cancel", snapshot, contract.OutcomeNoMatch, "")
+				state, _, err := Reduce(state, Event{Normalized: &match, InputID: "input-fallback-cancel"})
+				if err != nil {
+					return state, nil, err
+				}
+				decision := decisionEvent(state, "decision-fallback-cancel", snapshot, contract.OutcomeUnavailable, "")
+				state, _, err = Reduce(state, Event{Normalized: &decision, InputID: "input-fallback-cancel"})
+				if err != nil {
+					return state, nil, err
+				}
+				view := state.View()
+				fallback := FullAgentResult{ID: "full-agent-cancel", TenantID: view.TenantID, SessionID: view.SessionID, Generation: view.Generation, RouteID: view.RouteID, RouteEntryID: view.RouteEntryID, InputID: "input-fallback-cancel", Outcome: contract.OutcomeCancelled, ReceivedAt: traceTime.Add(4 * time.Second)}
+				return Reduce(state, Event{Fallback: &fallback})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			definition := traceDefinition(t)
+			setTransitionTarget(t, &definition, "/start", contract.SourceControl, tc.source, contract.Target{Route: "/help"})
+			redigestAndValidateTestDefinition(t, &definition)
+			state, effects, err := tc.run(t, definition)
+			if err != nil {
+				t.Fatalf("control outcome failed: %v", err)
+			}
+			if state.View().RouteID != "/help" || state.View().SessionEnded || hasEffect(effects, EffectEndSession) {
+				t.Fatalf("control outcome bypassed the frozen authored edge: %#v %#v", state.View(), effects)
+			}
+		})
+	}
+}
+
+func TestNonOwnershipEffectReceiptsFollowAuthoredEdges(t *testing.T) {
+	for _, status := range []contract.EffectStatus{contract.EffectAccepted, contract.EffectConfirmed, contract.EffectFailed, contract.EffectUnknown} {
+		t.Run(string(status), func(t *testing.T) {
+			definition := traceDefinition(t)
+			for i := range definition.Graph.Routes {
+				route := &definition.Graph.Routes[i]
+				if route.ID != "/start" {
+					continue
+				}
+				route.Act[0].ReleasesCallOwnership = false
+			}
+			setTransitionTarget(t, &definition, "/start", contract.SourceEffect, contract.OutcomeAccepted, contract.Target{Route: "/help"})
+			setTransitionTarget(t, &definition, "/start", contract.SourceEffect, contract.OutcomeConfirmed, contract.Target{Route: "/help"})
+			setTransitionTarget(t, &definition, "/start", contract.SourceEffect, contract.OutcomeFailed, contract.Target{Route: "/help"})
+			setTransitionTarget(t, &definition, "/start", contract.SourceEffect, contract.OutcomeUnknown, contract.Target{Route: "/help"})
+			redigestAndValidateTestDefinition(t, &definition)
+
+			state, _, snapshot := startWithSnapshot(t, definition, "entry-nonrelease-"+string(status), []string{"opaque-a"})
+			state, _ = acceptTextInput(t, state, "input-nonrelease-"+string(status), "payload-nonrelease-"+string(status))
+			match := matchEvent(state, "match-nonrelease-"+string(status), snapshot, contract.OutcomeCandidate, "opaque-a")
+			state, effects := reduceEvent(t, state, Event{Normalized: &match, InputID: "input-nonrelease-" + string(status)})
+			intent := effectOfKind(t, effects, EffectDispatchIntent)
+			submitted := normalizedFor(state, "submitted-nonrelease-"+string(status), contract.EventEffectSubmitted)
+			submitted.EffectRequest = cloneRequest(intent.Request)
+			state, _ = reduceEvent(t, state, Event{Normalized: &submitted})
+
+			receiptID := "receipt-nonrelease-" + string(status)
+			if status == contract.EffectUnknown {
+				receiptID = ""
+			}
+			receipt := receiptEvent(state, "receipt-event-nonrelease-"+string(status), intent.Request, status, receiptID, "opaque-a")
+			if status == contract.EffectFailed {
+				receipt.Effect.FailureCode = "synthetic-failure"
+			}
+			state, effects = reduceEvent(t, state, Event{Normalized: &receipt})
+			if state.View().RouteID != "/help" || state.View().Phase == PhaseAwaitingReceipt || hasEffect(effects, EffectAwaitReceipt) {
+				t.Fatalf("non-ownership effect/%s did not follow its authored edge: %#v %#v", status, state.View(), effects)
+			}
+		})
+	}
+}
+
 func TestPartialSTTAndStaleGenerationOrEntryCannotCreateEffects(t *testing.T) {
 	definition := traceDefinition(t)
 	state, _, err := Start(definition, admissionEvent("entry-stale"), Policy{})
@@ -977,6 +1230,24 @@ func redigestAndValidateTestDefinition(t *testing.T, definition *contract.Defini
 	if err := definition.ValidateForReview(); err != nil {
 		t.Fatalf("synthetic reducer definition: %v", err)
 	}
+}
+
+func setTransitionTarget(t *testing.T, definition *contract.Definition, routeID contract.RouteID, source contract.ResultSource, outcome contract.Outcome, target contract.Target) {
+	t.Helper()
+	for i := range definition.Graph.Routes {
+		route := &definition.Graph.Routes[i]
+		if route.ID != routeID {
+			continue
+		}
+		for j := range route.Next {
+			transition := &route.Next[j]
+			if transition.Source == source && transition.Outcome == outcome {
+				transition.Target = target
+				return
+			}
+		}
+	}
+	t.Fatalf("test fixture has no %s/%s transition on route %q", source, outcome, routeID)
 }
 
 func admitRetryForCause(t *testing.T, state State, reason, prefix string) (State, []Effect) {
