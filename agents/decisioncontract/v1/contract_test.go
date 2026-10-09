@@ -63,6 +63,106 @@ func requireValidationError(t *testing.T, err error, contains string) {
 	}
 }
 
+func inputErrorFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestInputErrorEventRequiresActiveRouteEntryAndWindow(t *testing.T) {
+	event, err := DecodeNormalizedEvent(inputErrorFixture(t, "input-error-event.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 9, 12, 1, 0, 0, time.UTC)
+	if err := event.Validate(now); err != nil {
+		t.Fatalf("positive input_error fixture should validate: %v", err)
+	}
+	active := InputWindowIdentity{
+		TenantID: event.TenantID, SessionID: event.SessionID, Generation: event.Generation,
+		RouteID: event.RouteID, RouteEntryID: event.RouteEntryID,
+		InputWindowID: event.InputWindowID, Channel: event.Channel,
+	}
+	if err := event.ValidateForActiveInputWindow(active, now); err != nil {
+		t.Fatalf("input_error fixture should match its active input window: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		change func(*InputWindowIdentity)
+	}{
+		{name: "stale route", change: func(active *InputWindowIdentity) { active.RouteID = "/previous-route" }},
+		{name: "stale route entry", change: func(active *InputWindowIdentity) { active.RouteEntryID = "route-entry-previous" }},
+		{name: "stale input window", change: func(active *InputWindowIdentity) { active.InputWindowID = "input-window-previous" }},
+		{name: "stale generation", change: func(active *InputWindowIdentity) { active.Generation++ }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stale := active
+			test.change(&stale)
+			requireValidationError(t, event.ValidateForActiveInputWindow(stale, now), "does not match the active input window")
+		})
+	}
+}
+
+func TestInputErrorEventFixturesRejectMissingIdentityAndPayload(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 1, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name    string
+		message string
+	}{
+		{name: "input-error-event-missing-route-entry.json", message: "route, route-entry, and input-window identity"},
+		{name: "input-error-event-missing-window.json", message: "route, route-entry, and input-window identity"},
+		{name: "input-error-event-with-inline-input.json", message: "cannot carry user input"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			event, err := DecodeNormalizedEvent(inputErrorFixture(t, test.name))
+			if err != nil {
+				t.Fatalf("fixture should decode before semantic validation: %v", err)
+			}
+			requireValidationError(t, event.Validate(now), test.message)
+		})
+	}
+
+	if _, err := DecodeNormalizedEvent(inputErrorFixture(t, "input-error-event-with-raw-error.json")); err == nil || !strings.Contains(err.Error(), `unknown field "rawError"`) {
+		t.Fatalf("strict event decoding should reject raw error payload fields, got %v", err)
+	}
+}
+
+func TestInputErrorOutcomeRemainsRouteLocal(t *testing.T) {
+	definition := loadReviewDefinition(t)
+	found := false
+	for _, route := range definition.Graph.Routes {
+		for _, transition := range route.Next {
+			if transition.Source == SourceInput && transition.Outcome == OutcomeError {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("listen input errors must be routed by the route-local input/error mapping")
+	}
+
+	for routeIndex := range definition.Graph.Routes {
+		route := &definition.Graph.Routes[routeIndex]
+		if route.Listen == nil {
+			continue
+		}
+		for index, transition := range route.Next {
+			if transition.Source == SourceInput && transition.Outcome == OutcomeError {
+				route.Next = append(route.Next[:index], route.Next[index+1:]...)
+				refreshDefinitionDigestsForTest(t, &definition)
+				requireValidationError(t, definition.ValidateForReview(), "next is missing input/error")
+				return
+			}
+		}
+	}
+	t.Fatal("review fixture had no listen-route input/error transition to reject")
+}
+
 func TestReviewFixtureIsValidButCannotActivate(t *testing.T) {
 	definition := loadReviewDefinition(t)
 	if err := definition.ValidateForReview(); err != nil {

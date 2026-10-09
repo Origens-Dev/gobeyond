@@ -443,6 +443,7 @@ const (
 	EventRouteEntered      EventKind = "route_entered"
 	EventSpeechStarted     EventKind = "speech_started"
 	EventInputFinal        EventKind = "input_final"
+	EventInputError        EventKind = "input_error"
 	EventInitialSilence    EventKind = "initial_silence"
 	EventUtteranceLimit    EventKind = "utterance_limit"
 	EventRetryExhausted    EventKind = "retry_exhausted"
@@ -498,6 +499,18 @@ type NormalizedEvent struct {
 	EffectRequest  *EffectRequest      `json:"effectRequest,omitempty"`
 	Effect         *EffectReceipt      `json:"effect,omitempty"`
 	Playback       *PlaybackReceipt    `json:"playback,omitempty"`
+}
+
+// InputWindowIdentity is the active execution identity an input event must
+// match. It is validation context, not an event payload.
+type InputWindowIdentity struct {
+	TenantID      string
+	SessionID     string
+	Generation    uint64
+	RouteID       RouteID
+	RouteEntryID  string
+	InputWindowID string
+	Channel       ChannelKind
 }
 
 type ProtectedReference struct {

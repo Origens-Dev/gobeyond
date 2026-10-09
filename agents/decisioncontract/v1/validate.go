@@ -1,8 +1,10 @@
 package v1
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"regexp"
 	"sort"
@@ -23,6 +25,26 @@ type ValidationErrors []string
 
 func (errs ValidationErrors) Error() string {
 	return "decision contract invalid: " + strings.Join(errs, "; ")
+}
+
+// DecodeNormalizedEvent strictly decodes one event object. Unknown fields are
+// rejected so raw user or provider error data cannot be silently accepted as
+// part of the v1 event wire shape.
+func DecodeNormalizedEvent(data []byte) (NormalizedEvent, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var event NormalizedEvent
+	if err := decoder.Decode(&event); err != nil {
+		return NormalizedEvent{}, fmt.Errorf("decode normalized event: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return NormalizedEvent{}, fmt.Errorf("decode normalized event: expected exactly one JSON value")
+		}
+		return NormalizedEvent{}, fmt.Errorf("decode normalized event trailer: %w", err)
+	}
+	return event, nil
 }
 
 type collector struct{ issues []string }
@@ -1569,6 +1591,13 @@ func (event NormalizedEvent) Validate(now time.Time) error {
 		return fmt.Errorf("unknown event channel %q", event.Channel)
 	}
 	switch event.Kind {
+	case EventInputError:
+		if event.ProtectedInput != nil || event.Digits != "" || event.Modality != "" || event.Locale != "" || len(event.SourceEventIDs) != 0 || event.Match != nil || event.Decision != nil || event.EffectRequest != nil || event.Effect != nil || event.Playback != nil {
+			return fmt.Errorf("input_error event cannot carry user input, result, effect, or playback payload")
+		}
+		if !isRouteID(event.RouteID) || !isIdentifier(event.RouteEntryID) || !isIdentifier(event.InputWindowID) {
+			return fmt.Errorf("input_error requires route, route-entry, and input-window identity")
+		}
 	case EventInputFinal:
 		if event.Match != nil || event.Decision != nil || event.EffectRequest != nil || event.Effect != nil || event.Playback != nil {
 			return fmt.Errorf("input_final event cannot also carry a result, effect, or playback receipt")
@@ -1685,6 +1714,43 @@ func (event NormalizedEvent) Validate(now time.Time) error {
 		if identity.TenantID != event.TenantID || identity.SessionID != event.SessionID || identity.Generation != event.Generation {
 			return fmt.Errorf("effect receipt scope does not match the event")
 		}
+	}
+	return nil
+}
+
+func (identity InputWindowIdentity) Validate() error {
+	if !isIdentifier(identity.TenantID) || !isIdentifier(identity.SessionID) || !isIdentifier(identity.RouteEntryID) || !isIdentifier(identity.InputWindowID) {
+		return fmt.Errorf("active input window requires stable tenant, session, route-entry, and input-window IDs")
+	}
+	if identity.Generation == 0 {
+		return fmt.Errorf("active input window generation must be positive")
+	}
+	if !isRouteID(identity.RouteID) {
+		return fmt.Errorf("active input window requires a stable absolute route ID")
+	}
+	switch identity.Channel {
+	case ChannelVoice, ChannelText:
+	default:
+		return fmt.Errorf("active input window has unknown channel %q", identity.Channel)
+	}
+	return nil
+}
+
+// ValidateForActiveInputWindow validates an input_error event and binds it to
+// the exact currently active session generation, route entry, input window,
+// and channel. A delayed error from an earlier window is rejected.
+func (event NormalizedEvent) ValidateForActiveInputWindow(active InputWindowIdentity, now time.Time) error {
+	if event.Kind != EventInputError {
+		return fmt.Errorf("active input window validation requires an input_error event")
+	}
+	if err := active.Validate(); err != nil {
+		return err
+	}
+	if err := event.Validate(now); err != nil {
+		return err
+	}
+	if event.TenantID != active.TenantID || event.SessionID != active.SessionID || event.Generation != active.Generation || event.RouteID != active.RouteID || event.RouteEntryID != active.RouteEntryID || event.InputWindowID != active.InputWindowID || event.Channel != active.Channel {
+		return fmt.Errorf("input_error identity does not match the active input window")
 	}
 	return nil
 }

@@ -73,9 +73,19 @@ counter.
 ## Event, result, and effect rules
 
 Normalized event identity is server-derived and carries tenant, session,
-generation, route-entry, input-window, channel, modality, locale, source event
-IDs, and receive time. Final speech/text content uses a scoped, expiring
-protected reference; durable events do not carry transcript or audio bytes.
+generation, channel, and receive time. Route-local input events carry route,
+route-entry, and input-window identity; `input_final` also carries modality,
+locale, and source event IDs. Final speech/text content uses a scoped,
+expiring protected reference; durable events do not carry transcript or audio
+bytes.
+`EventInputError` is the typed `SourceInput/OutcomeError` signal for a
+route-local listen. It requires route, route-entry, and input-window IDs and
+has no input, protected-content, freeform error, or provider-specific error
+code field. The event kind is sufficient for v1 routing; it does not guess an
+error taxonomy. `DecodeNormalizedEvent` rejects unknown JSON fields, while
+`ValidateForActiveInputWindow` binds an input error to the active tenant,
+session generation, route, route entry, input window, and channel so a late
+event from an earlier window fails closed.
 Raw provider score fields, ASR confidence, option probability, and usage stay
 separately labeled. Missing cost remains missing rather than being estimated
 from an unrelated usage schema.
