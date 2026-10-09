@@ -1,0 +1,6 @@
+enter_route route=/start entry=entry-no-input
+listen route=/start entry=entry-no-input window=window-7e2368066c3b08a4c6d18b30
+say route=/start entry=entry-no-input messages=operator.prompt,operator.choice_count
+enter_route route=/clarify entry=entry-1ce9696ecbeb6e1428c2270f
+listen route=/clarify entry=entry-1ce9696ecbeb6e1428c2270f window=window-0f13fc89b4cc3baee689cb53
+say route=/clarify entry=entry-1ce9696ecbeb6e1428c2270f messages=operator.prompt,operator.choice_count

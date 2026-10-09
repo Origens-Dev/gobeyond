@@ -1,0 +1,13 @@
+enter_route route=/start entry=entry-full-agent
+listen route=/start entry=entry-full-agent window=window-1a897a25223f0e60e2c98ac6
+say route=/start entry=entry-full-agent messages=operator.prompt,operator.choice_count
+run_matcher route=/start entry=entry-full-agent binding=recipient_matcher input=input-full-agent-1 reason=2d30917f08a992033b4a8618c521fbfe3f7ccb0dbd00fad534cc62cbfa064625
+run_decision route=/start entry=entry-full-agent input=input-full-agent-1 service=jev reason=2d30917f08a992033b4a8618c521fbfe3f7ccb0dbd00fad534cc62cbfa064625
+full_agent_fallback route=/start entry=entry-full-agent input=input-full-agent-1 reason=unavailable
+enter_route route=/clarify entry=entry-b006f590246d56b85606b1d5
+listen route=/clarify entry=entry-b006f590246d56b85606b1d5 window=window-a3d017298a7c47888bcf11fe
+say route=/clarify entry=entry-b006f590246d56b85606b1d5 messages=operator.prompt,operator.choice_count
+run_matcher route=/clarify entry=entry-b006f590246d56b85606b1d5 binding=recipient_matcher input=input-full-agent-2 reason=2d30917f08a992033b4a8618c521fbfe3f7ccb0dbd00fad534cc62cbfa064625
+run_decision route=/clarify entry=entry-b006f590246d56b85606b1d5 input=input-full-agent-2 service=jev reason=2d30917f08a992033b4a8618c521fbfe3f7ccb0dbd00fad534cc62cbfa064625
+enter_route route=/help entry=entry-2aa2d9366fa3578cd8f79e3d
+say route=/help entry=entry-2aa2d9366fa3578cd8f79e3d messages=operator.help
