@@ -15,7 +15,6 @@ import (
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
-	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 	"github.com/Origens-Dev/gobeyond/agents/voice"
 	"github.com/gorilla/websocket"
 )
@@ -389,9 +388,8 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 				outputs[i] = map[string]any{"call_id": call.CallID, "output": map[string]any{"error": fmt.Sprintf("unknown tool %q", call.Name)}}
 				return
 			}
-			result, err := executeVoiceAgentTool(toolCtx, tool, ai.ToolCall{ToolCallID: call.CallID, ToolName: call.Name, Input: call.Arguments}, ai.ToolExecutionOptions{
-				Context: toolsession.ExecutionContext(h.cfg.Actor, h.cfg.SessionID),
-			})
+			toolCall := ai.ToolCall{ToolCallID: call.CallID, ToolName: call.Name, Input: call.Arguments}
+			result, err := executeVoiceAgentTool(toolCtx, tool, toolCall, liveVoiceToolOptions(h.cfg, tool, toolCall))
 			output := map[string]any{"result": result}
 			if err != nil {
 				output = map[string]any{"error": liveToolErrorMessage(err, remoteReads)}

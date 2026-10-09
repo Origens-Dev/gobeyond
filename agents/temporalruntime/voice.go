@@ -14,7 +14,6 @@ import (
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
-	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 	"github.com/Origens-Dev/gobeyond/agents/voice"
 	"google.golang.org/genai"
 )
@@ -503,9 +502,8 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 						Response: map[string]any{"error": fmt.Sprintf("unknown tool %q", name)}}
 					return
 				}
-				result, err := executeVoiceAgentTool(callCtx, tool, ai.ToolCall{
-					ToolCallID: functionCall.ID, ToolName: name, Input: functionCall.Args,
-				}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContext(handle.cfg.Actor, handle.cfg.SessionID)})
+				call := ai.ToolCall{ToolCallID: functionCall.ID, ToolName: name, Input: functionCall.Args}
+				result, err := executeVoiceAgentTool(callCtx, tool, call, liveVoiceToolOptions(handle.cfg, tool, call))
 				response := map[string]any{"result": result}
 				if err != nil {
 					log.Printf("gemini live tool execute name=%s err=%v", name, err)

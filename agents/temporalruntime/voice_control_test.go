@@ -284,6 +284,63 @@ func TestCallControlLiveToolsDeclareDialAndRead(t *testing.T) {
 	}
 }
 
+func TestCallControlKeepsEnabledVoiceWriteForGeminiLive(t *testing.T) {
+	write := agents.DefineToolWithCall(agents.ToolConfig{
+		Name: "leave_text_message", Description: "Offer, draft, confirm, or decline a short text voicemail.",
+		VoiceWrite: true,
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"action": map[string]any{"type": "string", "enum": []string{"offer", "draft", "confirm", "decline"}},
+			},
+			"required": []string{"action"},
+		},
+		OutputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"ok":                map[string]any{"type": "boolean"},
+				"mailbox_available": map[string]any{"type": "boolean"},
+			},
+			"required": []string{"ok", "mailbox_available"},
+		},
+	}, func(context.Context, agents.Actor, ai.ToolCall, map[string]any) (any, error) {
+		return map[string]any{"ok": true, "mailbox_available": true}, nil
+	})
+	def := agents.DefineAI(agents.AIConfig{
+		Tools: map[string]agents.AITool{"leave-text-message": write},
+	})
+	selected, err := controlTools(def, voice.StartConfig{
+		EnabledToolIDs:   []string{"leave-text-message"},
+		OnPlayoutBarrier: func(context.Context, uint64) error { return nil },
+		CallControl: &voice.CallControlConfig{
+			MaxAssistantTurns: 4,
+			ToolNames:         []string{"hang_up"},
+			Execute:           func(context.Context, ai.ToolCall) (any, error) { return nil, nil },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := selected["hang_up"]; !ok {
+		t.Fatal("hang_up missing from control selection")
+	}
+	if _, ok := selected["leave_text_message"]; !ok {
+		t.Fatalf("leave_text_message dropped under hang_up CallControl")
+	}
+	live := liveToolsFromSelected(selected)
+	names := map[string]bool{}
+	for _, tool := range live {
+		for _, declaration := range tool.FunctionDeclarations {
+			names[declaration.Name] = true
+		}
+	}
+	if !names["hang_up"] || !names["leave_text_message"] {
+		t.Fatalf("Gemini Live declarations=%v", names)
+	}
+}
+
 func TestCallControlKeepsEnabledWebSearchForGeminiLive(t *testing.T) {
 	search := agents.DefineToolWithCall(agents.ToolConfig{
 		Name: "web-search", Description: "Search current public-web facts.",
