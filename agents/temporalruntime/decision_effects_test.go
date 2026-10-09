@@ -21,22 +21,31 @@ import (
 type fakeDecisionEffectAdapter struct {
 	*decisionSessionAdapterFake
 	reconciliations []DecisionEffectReconciliation
+	reconcileErrors []error
 	reconcileCalls  int
+	reconciledIDs   []string
 	prepareErr      error
 	authorization   DecisionEffectAuthorization
 	prepareCalls    int
 	ceilingCalls    int
 	verifyCalls     int
 	casCalls        int
+	casReceiptIDs   []string
 	casErr          error
 }
 
-func (adapter *fakeDecisionEffectAdapter) ReconcileDecisionEffect(context.Context, httpruntime.RespondCall, decisions.Effect) (DecisionEffectReconciliation, error) {
+func (adapter *fakeDecisionEffectAdapter) ReconcileDecisionEffect(_ context.Context, _ httpruntime.RespondCall, effect decisions.Effect) (DecisionEffectReconciliation, error) {
 	adapter.reconcileCalls++
+	if effect.Request != nil {
+		adapter.reconciledIDs = append(adapter.reconciledIDs, effect.Request.Identity.ID)
+	}
+	index := adapter.reconcileCalls - 1
+	if index >= 0 && index < len(adapter.reconcileErrors) && adapter.reconcileErrors[index] != nil {
+		return DecisionEffectReconciliation{}, adapter.reconcileErrors[index]
+	}
 	if len(adapter.reconciliations) == 0 {
 		return DecisionEffectReconciliation{State: DecisionEffectNotAttempted}, nil
 	}
-	index := adapter.reconcileCalls - 1
 	if index >= len(adapter.reconciliations) {
 		index = len(adapter.reconciliations) - 1
 	}
@@ -60,6 +69,7 @@ func (adapter *fakeDecisionEffectAdapter) VerifyDecisionEffectReceipt(_ context.
 
 func (adapter *fakeDecisionEffectAdapter) ApplyDecisionOwnershipCAS(_ context.Context, _ httpruntime.RespondCall, request decisionv1.EffectRequest, receipt decisionv1.EffectReceipt) error {
 	adapter.casCalls++
+	adapter.casReceiptIDs = append(adapter.casReceiptIDs, receipt.ReceiptID)
 	if adapter.casErr != nil {
 		return adapter.casErr
 	}

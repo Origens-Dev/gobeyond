@@ -1119,6 +1119,14 @@ func (dispatcher *Dispatcher) Cancel(ctx context.Context, adapter httpruntime.Ad
 	return nil
 }
 
+// RetryCancel retries only cleanup for a cancellation that the HTTP runtime
+// has already committed locally. Decision effect recovery re-reads the
+// existing authority on every attempt and never treats an unknown outcome as
+// permission to submit another provider operation.
+func (dispatcher *Dispatcher) RetryCancel(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, emit httpruntime.EventEmitter) error {
+	return dispatcher.Cancel(ctx, adapter, call, emit)
+}
+
 func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter httpruntime.Adapter, call httpruntime.CancelCall, emit httpruntime.EventEmitter) error {
 	if dispatcher.hosted != nil {
 		return errors.New("hosted decision sessions are not registered by this dormant dispatcher seam")
@@ -1155,10 +1163,17 @@ func (dispatcher *Dispatcher) cancelDecisionSession(ctx context.Context, adapter
 	if err := decisionSessionUpdate(ctx, dispatcher.client, workflowID, DecisionSessionCancelUpdate, updateID, cancel, &result); err != nil {
 		return fmt.Errorf("cancel durable decision session: %w", err)
 	}
+	if result.Identity != cancel.Identity || result.Status != DecisionSessionCancelled {
+		return &httpruntime.CancellationAcceptedError{Cause: errors.New("durable cancellation update completed without its expected cancelled snapshot")}
+	}
 	if authority, ok := durable.(DecisionEffectAdapter); ok {
 		respondCall := httpruntime.RespondCall{Session: call.Session, Run: call.Run, Actor: call.Actor}
-		if _, err := dispatcher.recoverPendingDecisionEffect(ctx, authority, respondCall, emit); err != nil {
-			return fmt.Errorf("reconcile decision effect after cancellation: %w", err)
+		pending, err := dispatcher.recoverPendingDecisionEffect(ctx, authority, respondCall, emit)
+		if err != nil {
+			return &httpruntime.CancellationAcceptedError{Cause: fmt.Errorf("reconcile decision effect after cancellation: %w", err)}
+		}
+		if pending {
+			return &httpruntime.CancellationAcceptedError{Cause: ErrDecisionEffectOutcomeUnknown}
 		}
 	}
 	return nil

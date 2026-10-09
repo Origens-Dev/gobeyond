@@ -25,6 +25,28 @@ var (
 	ErrUnauthenticated = errors.New("agent actor is not authenticated")
 )
 
+// CancellationAcceptedError reports that a durable cancellation was committed
+// even though follow-up effect or ownership cleanup is still pending. HTTP
+// runtimes must publish the cancelled state instead of rolling back a
+// cancellation that the durable backend already accepted.
+type CancellationAcceptedError struct {
+	Cause error
+}
+
+func (err *CancellationAcceptedError) Error() string {
+	if err == nil || err.Cause == nil {
+		return "cancellation was accepted; cleanup is pending"
+	}
+	return "cancellation was accepted; cleanup is pending: " + err.Cause.Error()
+}
+
+func (err *CancellationAcceptedError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.Cause
+}
+
 // EventEmitter appends an ordered event to a session. Event types must contain
 // only lowercase letters, digits, dots, underscores, and hyphens.
 type EventEmitter interface {
@@ -315,6 +337,14 @@ type Dispatcher interface {
 	Start(context.Context, Adapter, StartCall, EventEmitter) error
 	Respond(context.Context, Adapter, RespondCall, EventEmitter) error
 	Cancel(context.Context, Adapter, CancelCall, EventEmitter) error
+}
+
+// CancelRecoveryDispatcher may retry cleanup for a durable run whose cancel
+// request was already accepted but whose effect reconciliation or ownership
+// CAS is still pending. Implementations must reconcile the durable outcome
+// before retrying any operation and must not reopen the cancelled run.
+type CancelRecoveryDispatcher interface {
+	RetryCancel(context.Context, Adapter, CancelCall, EventEmitter) error
 }
 
 // Registry is the lookup contract consumed by Runtime.
