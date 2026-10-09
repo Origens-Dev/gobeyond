@@ -491,7 +491,7 @@ func GroupWorkerQueues(definitions []WorkflowDefinition, agents []AgentDefinitio
 	}
 	agentsByQueue := make(map[string]map[string]AgentDefinition)
 	for _, definition := range agents {
-		if !definition.Durable {
+		if definition.Kind == AgentKindDecision || !definition.Durable {
 			continue
 		}
 		queues := []string{definition.TaskQueue}
