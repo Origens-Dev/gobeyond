@@ -73,12 +73,13 @@ type AgentDefinition struct {
 // DefineAI tool. Variable is retained only for source validation; manifests
 // expose the stable map key and resolved logical queue.
 type AgentToolDefinition struct {
-	VoiceControl *voicecontract.Tool `json:"-"`
-	SchemaSHA256 string              `json:"-"`
-	ID           string              `json:"id"`
-	Variable     string              `json:"-"`
-	TaskQueue    string              `json:"taskQueue,omitempty"`
-	TaskQueueSet bool                `json:"-"`
+	VoiceControl     *voicecontract.Tool `json:"-"`
+	SchemaSHA256     string              `json:"-"`
+	RequiresApproval bool                `json:"-"`
+	ID               string              `json:"id"`
+	Variable         string              `json:"-"`
+	TaskQueue        string              `json:"taskQueue,omitempty"`
+	TaskQueueSet     bool                `json:"-"`
 }
 
 // AgentSlots contains all author-visible extension references.
@@ -720,6 +721,10 @@ func parseAgentTools(config ast.Expr, kind string, files map[string]*ast.File) (
 				return nil, fmt.Errorf("decision tool %q must use a static agents.DefineTool declaration", id)
 			}
 			definition.SchemaSHA256, err = decisionToolInputSchemaSHA256(voiceCall)
+			if err != nil {
+				return nil, fmt.Errorf("decision tool %q: %w", id, err)
+			}
+			definition.RequiresApproval, err = decisionToolRequiresApproval(voiceCall)
 			if err != nil {
 				return nil, fmt.Errorf("decision tool %q: %w", id, err)
 			}

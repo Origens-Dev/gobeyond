@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	gbagents "github.com/Origens-Dev/gobeyond/agents"
 	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
@@ -42,6 +43,9 @@ func compileDecisionRoutes(root, agentDir, routesDir string, definition decision
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return decisionv1.Definition{}, errors.New("decision RoutesDir must be a real directory inside the agent package")
 	}
+	if err := validateDecisionPathWithinAgent(agentDir, routesRoot); err != nil {
+		return decisionv1.Definition{}, fmt.Errorf("decision RoutesDir: %w", err)
+	}
 	if len(definition.Graph.Routes) != 0 {
 		return decisionv1.Definition{}, errors.New("decision Graph.Routes must be empty; route.yaml files are the route source")
 	}
@@ -49,17 +53,17 @@ func compileDecisionRoutes(root, agentDir, routesDir string, definition decision
 	definition.DigestInputs = decisionv1.ReleaseDigestInputs{}
 	definition.ReleaseSHA256 = ""
 
-	messages := make(map[string]int, len(definition.Graph.Messages))
+	messageTemplates := make(map[string]decisionv1.MessageFamily, len(definition.Graph.Messages))
 	for i := range definition.Graph.Messages {
 		message := &definition.Graph.Messages[i]
-		if _, exists := messages[message.ID]; exists {
+		if _, exists := messageTemplates[message.ID]; exists {
 			return decisionv1.Definition{}, fmt.Errorf("decision graph duplicates message family %q", message.ID)
 		}
 		if len(message.Variants) != 0 {
 			return decisionv1.Definition{}, fmt.Errorf("decision message family %q must load prompt bytes from route-local Markdown files", message.ID)
 		}
 		message.Variants = nil
-		messages[message.ID] = i
+		messageTemplates[message.ID] = *message
 	}
 
 	var routeFiles []string
@@ -93,6 +97,12 @@ func compileDecisionRoutes(root, agentDir, routesDir string, definition decision
 	if err != nil {
 		return decisionv1.Definition{}, err
 	}
+	sources := append(append([]string(nil), routeFiles...), promptFiles...)
+	for _, source := range sources {
+		if err := validateDecisionPathWithinAgent(agentDir, source); err != nil {
+			return decisionv1.Definition{}, fmt.Errorf("decision route source %s: %w", authorPath(root, source), err)
+		}
+	}
 	sort.Strings(routeFiles)
 	sort.Strings(promptFiles)
 	if len(routeFiles) == 0 {
@@ -101,6 +111,7 @@ func compileDecisionRoutes(root, agentDir, routesDir string, definition decision
 
 	routes := make([]decisionv1.Route, 0, len(routeFiles))
 	seenRoutes := make(map[decisionv1.RouteID]string, len(routeFiles))
+	routeIDsByDirectory := make(map[string]decisionv1.RouteID, len(routeFiles))
 	for _, routeFile := range routeFiles {
 		relative, relErr := filepath.Rel(routesRoot, filepath.Dir(routeFile))
 		if relErr != nil || relative == "." {
@@ -145,6 +156,9 @@ func compileDecisionRoutes(root, agentDir, routesDir string, definition decision
 				decodeErr = jsonDecoder.Decode(&route)
 			}
 		}
+		if decodeErr != nil {
+			return decisionv1.Definition{}, fmt.Errorf("decode %s: %w", authorPath(root, routeFile), decodeErr)
+		}
 		if route.ID != "" && route.ID != routeID {
 			if previous, exists := seenRoutes[route.ID]; exists {
 				return decisionv1.Definition{}, fmt.Errorf("duplicate decision route path %q in %s and %s", route.ID, authorPath(root, previous), authorPath(root, routeFile))
@@ -155,39 +169,176 @@ func compileDecisionRoutes(root, agentDir, routesDir string, definition decision
 			return decisionv1.Definition{}, fmt.Errorf("duplicate decision route path %q in %s and %s", routeID, authorPath(root, previous), authorPath(root, routeFile))
 		}
 		seenRoutes[routeID] = routeFile
+		routeIDsByDirectory[filepath.Dir(routeFile)] = routeID
 		route.ID = routeID
 		routes = append(routes, route)
 	}
+	promptVariants := make(map[string]map[string]string, len(promptFiles))
 	for _, promptFile := range promptFiles {
-		if !routeDirectories[filepath.Dir(promptFile)] {
+		routeID, exists := routeIDsByDirectory[filepath.Dir(promptFile)]
+		if !exists || !routeDirectories[filepath.Dir(promptFile)] {
 			return decisionv1.Definition{}, fmt.Errorf("prompt file must live beside a route.yaml: %s", authorPath(root, promptFile))
 		}
-		familyID, locale, parseErr := decisionPromptIdentity(promptFile)
+		localFamilyID, locale, parseErr := decisionPromptIdentity(promptFile)
 		if parseErr != nil {
 			return decisionv1.Definition{}, fmt.Errorf("%s: %w", authorPath(root, promptFile), parseErr)
 		}
-		index, exists := messages[familyID]
-		if !exists {
-			return decisionv1.Definition{}, fmt.Errorf("prompt file %s names undeclared message family %q", authorPath(root, promptFile), familyID)
-		}
+		familyID := decisionPromptFamilyID(routeID, localFamilyID)
 		content, readErr := os.ReadFile(promptFile)
 		if readErr != nil {
 			return decisionv1.Definition{}, readErr
 		}
-		message := &definition.Graph.Messages[index]
-		if message.Variants == nil {
-			message.Variants = make(map[string]string)
+		if !utf8.Valid(content) {
+			return decisionv1.Definition{}, fmt.Errorf("prompt file %s must contain valid UTF-8", authorPath(root, promptFile))
 		}
-		if _, duplicate := message.Variants[locale]; duplicate {
-			return decisionv1.Definition{}, fmt.Errorf("duplicate prompt family/locale %q/%q", familyID, locale)
+		variants := promptVariants[familyID]
+		if variants == nil {
+			variants = make(map[string]string)
+			promptVariants[familyID] = variants
 		}
-		message.Variants[locale] = string(content)
+		if _, duplicate := variants[locale]; duplicate {
+			return decisionv1.Definition{}, fmt.Errorf("duplicate route-local prompt family/locale %q/%q", familyID, locale)
+		}
+		variants[locale] = string(content)
+	}
+	compiledMessages := make([]decisionv1.MessageFamily, 0, len(promptVariants))
+	compiledMessageIDs := make(map[string]int, len(promptVariants))
+	usedPromptFamilies := make(map[string]bool, len(promptVariants))
+	usedTemplateIDs := make(map[string]bool, len(messageTemplates))
+	for routeIndex := range routes {
+		route := &routes[routeIndex]
+		if route.Say == nil {
+			continue
+		}
+		for familyIndex, localFamilyID := range route.Say.Families {
+			isShared := strings.HasPrefix(localFamilyID, "shared:")
+			messageFamilyID := localFamilyID
+			if isShared {
+				messageFamilyID = strings.TrimPrefix(localFamilyID, "shared:")
+				if messageFamilyID == "" {
+					return decisionv1.Definition{}, fmt.Errorf("route %s has an empty shared message family reference", route.ID)
+				}
+			}
+			localPromptID := decisionPromptFamilyID(route.ID, messageFamilyID)
+			templateID := localPromptID
+			compiledFamilyID := localPromptID
+			if isShared {
+				templateID = messageFamilyID
+				compiledFamilyID = messageFamilyID
+			}
+			template, exists := messageTemplates[templateID]
+			if !exists {
+				if isShared {
+					return decisionv1.Definition{}, fmt.Errorf("route %s references undeclared shared message family %q", route.ID, messageFamilyID)
+				}
+				return decisionv1.Definition{}, fmt.Errorf("route %s references undeclared route-local message family %q; define metadata as %q", route.ID, messageFamilyID, localPromptID)
+			}
+			variants, exists := promptVariants[localPromptID]
+			if !exists {
+				return decisionv1.Definition{}, fmt.Errorf("route %s is missing route-local prompt family %q", route.ID, localFamilyID)
+			}
+			if isShared {
+				if previousIndex, shared := compiledMessageIDs[compiledFamilyID]; shared {
+					if !equalDecisionPromptVariants(compiledMessages[previousIndex].Variants, variants) {
+						return decisionv1.Definition{}, fmt.Errorf("shared prompt family %q has different route-local source bytes", compiledFamilyID)
+					}
+				} else {
+					message := template
+					message.ID = compiledFamilyID
+					message.Variants = variants
+					compiledMessages = append(compiledMessages, message)
+					compiledMessageIDs[compiledFamilyID] = len(compiledMessages) - 1
+				}
+			} else if _, exists := compiledMessageIDs[compiledFamilyID]; !exists {
+				message := template
+				message.ID = compiledFamilyID
+				message.Variants = variants
+				compiledMessages = append(compiledMessages, message)
+				compiledMessageIDs[compiledFamilyID] = len(compiledMessages) - 1
+			}
+			route.Say.Families[familyIndex] = compiledFamilyID
+			usedPromptFamilies[localPromptID] = true
+			usedTemplateIDs[templateID] = true
+		}
+	}
+	for familyID := range promptVariants {
+		if !usedPromptFamilies[familyID] {
+			return decisionv1.Definition{}, fmt.Errorf("route-local prompt family %q is not referenced by its route", familyID)
+		}
+	}
+	for templateID := range messageTemplates {
+		if !usedTemplateIDs[templateID] {
+			return decisionv1.Definition{}, fmt.Errorf("decision graph message family template %q is not referenced by a route", templateID)
+		}
 	}
 	definition.Graph.Routes = routes
+	definition.Graph.Messages = compiledMessages
 	if _, _, _, err = gbagents.FreezeDecisionManifest(decisionWithParentPlaceholder(definition)); err != nil {
 		return decisionv1.Definition{}, fmt.Errorf("decision definition: %w", err)
 	}
 	return definition, nil
+}
+
+// validateDecisionPathWithinAgent rejects symlinks in every component below
+// the decision agent directory. Checking only the final RoutesDir path misses
+// an ancestor such as routes-link/routes that resolves outside the package.
+func validateDecisionPathWithinAgent(agentDir, path string) error {
+	agentRoot, err := filepath.Abs(agentDir)
+	if err != nil {
+		return err
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(agentRoot, target)
+	if err != nil {
+		return err
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return errors.New("path must stay inside its agent directory")
+	}
+	rootInfo, err := os.Lstat(agentRoot)
+	if err != nil {
+		return err
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return errors.New("agent directory must be a real directory")
+	}
+	cursor := agentRoot
+	if relative == "." {
+		return nil
+	}
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		cursor = filepath.Join(cursor, part)
+		info, statErr := os.Lstat(cursor)
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %s cannot be a symlink", cursor)
+		}
+		if cursor != target && !info.IsDir() {
+			return fmt.Errorf("path component %s must be a directory", cursor)
+		}
+	}
+	return nil
+}
+
+func equalDecisionPromptVariants(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for locale, value := range left {
+		other, exists := right[locale]
+		if !exists || other != value {
+			return false
+		}
+	}
+	return true
 }
 
 func decisionPromptIdentity(path string) (familyID, locale string, err error) {
@@ -211,6 +362,13 @@ func decisionPromptIdentity(path string) (familyID, locale string, err error) {
 	return familyID, locale, nil
 }
 
+// decisionPromptFamilyID makes a route-local family globally unique in the
+// frozen graph while preserving the local name in route.yaml. Hex-encoding the
+// full route ID avoids collisions between nested paths and dotted route IDs.
+func decisionPromptFamilyID(routeID decisionv1.RouteID, localFamilyID string) string {
+	return "route." + hex.EncodeToString([]byte(routeID)) + "." + localFamilyID
+}
+
 func decisionWithParentPlaceholder(definition decisionv1.Definition) decisionv1.Definition {
 	if definition.Graph.Authority.ParentManifestSHA256 == "" {
 		definition.Graph.Authority.ParentManifestSHA256 = strings.Repeat("0", 64)
@@ -231,9 +389,45 @@ func validateDecisionDefinition(definition decisionv1.Definition, tools []AgentT
 		if grant.SchemaSHA256 != tool.SchemaSHA256 {
 			return fmt.Errorf("decision tool %q schema digest does not match its shared DefineTool input schema", grant.ID)
 		}
+		if (grant.ApprovalSHA256 != "") != tool.RequiresApproval {
+			return fmt.Errorf("decision tool %q approval policy does not match its shared DefineTool RequiresApproval setting", grant.ID)
+		}
 	}
 	if _, _, _, err := gbagents.FreezeDecisionManifest(decisionWithParentPlaceholder(definition)); err != nil {
 		return err
+	}
+	return validateDecisionCompilerAuthoritySnapshots(definition)
+}
+
+// The parent agent projection currently freezes tools and channels, but it
+// does not carry the service, binding, or budget policy needed to verify those
+// AuthorityEnvelope claims. Keep those claims as unresolved author snapshots
+// until a future adapter consumes and verifies the exact parent authority.
+func validateDecisionCompilerAuthoritySnapshots(definition decisionv1.Definition) error {
+	for _, kind := range []decisionv1.GateKind{
+		decisionv1.GateJevServicePath,
+		decisionv1.GateCallerAuthority,
+		decisionv1.GateSessionAdapter,
+	} {
+		found := false
+		for _, gate := range definition.PolicyGates {
+			if gate.Kind != kind {
+				continue
+			}
+			found = true
+			if gate.Status != decisionv1.GateUnresolved {
+				return fmt.Errorf("decision authority snapshot gate %q must remain unresolved until the frozen parent authority adapter is implemented", kind)
+			}
+		}
+		if !found {
+			return fmt.Errorf("decision authority snapshot requires unresolved %q gate", kind)
+		}
+	}
+	for _, dimension := range decisionv1.RequiredBudgetDimensions {
+		bound, exists := definition.Graph.Authority.Budgets[dimension]
+		if !exists || bound.Value != nil {
+			return fmt.Errorf("decision budget snapshot %q must remain unresolved until the frozen parent authority adapter is implemented", dimension)
+		}
 	}
 	return nil
 }
@@ -273,10 +467,40 @@ func decisionToolInputSchemaSHA256(call *ast.CallExpr) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
+func decisionToolRequiresApproval(call *ast.CallExpr) (bool, error) {
+	if call == nil || len(call.Args) == 0 {
+		return false, errors.New("DefineTool requires an inline ToolConfig")
+	}
+	config, ok := call.Args[0].(*ast.CompositeLit)
+	if !ok {
+		return false, errors.New("decision ToolConfig must be an inline literal")
+	}
+	for _, element := range config.Elts {
+		field, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			return false, errors.New("decision ToolConfig must use named fields")
+		}
+		key, ok := field.Key.(*ast.Ident)
+		if !ok || key.Name != "RequiresApproval" {
+			continue
+		}
+		value, ok := field.Value.(*ast.Ident)
+		if !ok || (value.Name != "true" && value.Name != "false") {
+			return false, errors.New("decision ToolConfig RequiresApproval must be a boolean literal")
+		}
+		return value.Name == "true", nil
+	}
+	return false, nil
+}
+
 // attachDecisionManifests freezes each graph inside the existing agent record.
-// The parent digest is SHA-256 over that same agent record with its Decision
-// field omitted, so the graph pins the authority it actually inherits without
-// creating a second manifest or ledger.
+// The parent digest is SHA-256 over that same projected agent record with its
+// Decision field omitted. It proves the projected agent identity, mode, task
+// queue, channels/slots, tool IDs/queues, and included voice-manifest fields
+// are stable; it does not prove service, binding, or budget policy. Generic
+// decision tool schemas and approval policy are checked against DefineTool
+// source separately. Those authority claims remain gated until an adapter
+// verifies the exact frozen parent authority without adding another ledger.
 func attachDecisionManifests(manifest *AgentsManifest, definitions []AgentDefinition) error {
 	for index := range definitions {
 		if definitions[index].Decision == nil {

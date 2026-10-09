@@ -29,8 +29,19 @@ func TestCompileDecisionRoutesMatchesFrozenManifestAndDigests(t *testing.T) {
 	if definition.Kind != AgentKindDecision || definition.Decision == nil || len(definition.Decision.Graph.Routes) != 3 {
 		t.Fatalf("decision discovery = %#v", definition)
 	}
-	if got := definition.Decision.Graph.Messages[0].Variants["en"]; got != "Hi {name}, who do you want to call?" {
+	if got := decisionMessage(t, definition.Decision, decisionPromptFamilyID("/start", "prompt")).Variants["en"]; got != "Hi {name}, who do you want to call?" {
 		t.Fatalf("compiler did not preserve exact prompt bytes: %q", got)
+	}
+	startPrompt := decisionMessage(t, definition.Decision, decisionPromptFamilyID("/start", "prompt"))
+	clarifyPrompt := decisionMessage(t, definition.Decision, decisionPromptFamilyID("/clarify", "prompt"))
+	if reflect.DeepEqual(startPrompt.Arguments, clarifyPrompt.Arguments) || startPrompt.Variants["en"] == clarifyPrompt.Variants["en"] {
+		t.Fatal("same-named route-local prompt families did not retain independent schemas and bytes")
+	}
+	if len(startPrompt.Arguments) != 1 || startPrompt.Arguments[0].Name != "name" || startPrompt.Arguments[0].Type != decisionv1.ArgumentString {
+		t.Fatalf("start prompt arguments = %#v", startPrompt.Arguments)
+	}
+	if len(clarifyPrompt.Arguments) != 1 || clarifyPrompt.Arguments[0].Name != "count" || clarifyPrompt.Arguments[0].Type != decisionv1.ArgumentNumber || !strings.Contains(clarifyPrompt.Variants["en"], "plural") {
+		t.Fatalf("clarify prompt arguments/ICU = %#v, %q", clarifyPrompt.Arguments, clarifyPrompt.Variants["en"])
 	}
 	if len(definition.Tools) != 2 || definition.Tools[0].ID != "connect" || definition.Tools[1].ID != "operator_context" {
 		t.Fatalf("shared DefineTool declarations were not retained: %#v", definition.Tools)
@@ -144,12 +155,77 @@ func TestCompileDecisionRoutesMatchesFrozenManifestAndDigests(t *testing.T) {
 	if !bytes.Equal(loadedDecisionBytes, compiledDecisionBytes) {
 		t.Fatal("loaded agent manifest does not preserve the compiler's frozen decision wire bytes")
 	}
+	if err := loaded.Agents[0].Decision.ValidateForActivation(); err == nil || !strings.Contains(err.Error(), "unresolved policy gate") {
+		t.Fatalf("compiler slice unexpectedly became activation-ready: %v", err)
+	}
 	_, loadedFrozenBytes, loadedDigest, err := gbagents.FreezeDecisionManifest(*loaded.Agents[0].Decision)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if loadedDigest != digest || !bytes.Equal(loadedFrozenBytes, frozenBytes) {
 		t.Fatal("loaded agent manifest differs from the shared frozen manifest serializer")
+	}
+	qualifiedAdapter := manifest
+	qualifiedAdapter.Agents = append([]AgentManifestDefinition(nil), manifest.Agents...)
+	qualifiedDefinition := *manifest.Agents[0].Decision
+	qualifiedDefinition.PolicyGates = append([]decisionv1.PolicyGate(nil), qualifiedDefinition.PolicyGates...)
+	for index := range qualifiedDefinition.PolicyGates {
+		if qualifiedDefinition.PolicyGates[index].Kind == decisionv1.GateSessionAdapter {
+			qualifiedDefinition.PolicyGates[index].Status = decisionv1.GateQualified
+			qualifiedDefinition.PolicyGates[index].Value = "claimed by fixture"
+			qualifiedDefinition.PolicyGates[index].EvidenceRef = "unverified"
+			qualifiedDefinition.PolicyGates[index].UnresolvedReason = ""
+		}
+	}
+	qualifiedDefinition, _, _, err = gbagents.FreezeDecisionManifest(qualifiedDefinition)
+	if err != nil {
+		t.Fatalf("freeze deliberately qualified adapter fixture: %v", err)
+	}
+	qualifiedAdapter.Agents[0].Decision = &qualifiedDefinition
+	qualifiedBytes, err := json.MarshalIndent(qualifiedAdapter, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(qualifiedBytes, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAgentsManifest(root); err == nil || !strings.Contains(err.Error(), "must remain unresolved") {
+		t.Fatalf("LoadAgentsManifest accepted a decision with a qualified adapter gate: %v", err)
+	}
+}
+
+func TestDecisionCompilerSupportsExplicitSharedPromptFamilies(t *testing.T) {
+	root := writeDecisionCompilerFixtureWithSharedPrompt(t)
+	definitions, err := DiscoverAgentDefinitions(root)
+	if err != nil || len(definitions) != 1 {
+		t.Fatalf("DiscoverAgentDefinitions = %#v, %v", definitions, err)
+	}
+	definition := definitions[0].Decision
+	shared := decisionMessage(t, definition, "prompt")
+	if shared.Variants["en"] != "Hi {name}, who do you want to call?" {
+		t.Fatalf("shared prompt bytes = %q", shared.Variants["en"])
+	}
+	for _, routeID := range []decisionv1.RouteID{"/start", "/clarify"} {
+		route := decisionRoute(t, definition, routeID)
+		if len(route.Say.Families) == 0 || route.Say.Families[0] != "prompt" {
+			t.Fatalf("route %s shared prompt reference = %#v", routeID, route.Say.Families)
+		}
+	}
+	for _, routeID := range []string{"/start", "/clarify"} {
+		if _, exists := findDecisionMessage(definition, decisionPromptFamilyID(decisionv1.RouteID(routeID), "prompt")); exists {
+			t.Fatalf("explicit shared family was silently compiled as route-local for %s", routeID)
+		}
+	}
+}
+
+func TestDecisionCompilerRejectsDifferentBytesForExplicitSharedPrompt(t *testing.T) {
+	root := writeDecisionCompilerFixtureWithSharedPrompt(t)
+	path := filepath.Join(decisionRouteDir(root, "/clarify"), "prompt.en.md")
+	if err := os.WriteFile(path, []byte("different shared prompt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DiscoverAgentDefinitions(root); err == nil || !strings.Contains(err.Error(), "different route-local source bytes") {
+		t.Fatalf("DiscoverAgentDefinitions error = %v, want shared-source mismatch", err)
 	}
 }
 
@@ -160,9 +236,67 @@ func TestDecisionCompilerRejectsUnsafeFixtures(t *testing.T) {
 		configure func(*decisionv1.Definition)
 		want      string
 	}{
-		{name: "missing route", mutate: func(t *testing.T, root string) { removeDecisionRoute(t, root, "/help") }, want: "missing"},
+		{name: "missing route", mutate: func(t *testing.T, root string) {
+			removeDecisionRoute(t, root, "/help")
+			removeDecisionPrompt(t, root, "prompt.help")
+		}, want: "not referenced"},
 		{name: "missing prompt", mutate: func(t *testing.T, root string) { removeDecisionPrompt(t, root, "prompt.help") }, want: "missing"},
 		{name: "missing base locale", mutate: func(t *testing.T, root string) { renameDecisionPrompt(t, root, "prompt.help", "fr") }, want: "base message"},
+		{name: "invalid UTF-8 prompt", mutate: func(t *testing.T, root string) {
+			path := filepath.Join(decisionRouteDir(root, "/start"), "prompt.en.md")
+			if err := os.WriteFile(path, []byte{0xff, 0xfe, 'x'}, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "valid UTF-8"},
+		{name: "ancestor symlink escapes agent directory", mutate: func(t *testing.T, root string) {
+			agentDir := filepath.Join(root, "agents", "operator")
+			outside := t.TempDir()
+			if err := os.Mkdir(filepath.Join(outside, "routes"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(agentDir, "routes-link")); err != nil {
+				t.Fatal(err)
+			}
+			rewriteDecisionRoutesDir(t, root, "routes-link/routes")
+		}, want: "symlink"},
+		{name: "direct RoutesDir symlink", mutate: func(t *testing.T, root string) {
+			agentDir := filepath.Join(root, "agents", "operator")
+			routes := filepath.Join(agentDir, "routes")
+			outside := t.TempDir()
+			if err := os.RemoveAll(routes); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, routes); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "real directory"},
+		{name: "route file symlink", mutate: func(t *testing.T, root string) {
+			path := filepath.Join(decisionRouteDir(root, "/start"), "route.yaml")
+			outside := filepath.Join(t.TempDir(), "route.yaml")
+			if err := os.WriteFile(outside, []byte("id: /start\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, path); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "symlinks"},
+		{name: "prompt file symlink", mutate: func(t *testing.T, root string) {
+			path := filepath.Join(decisionRouteDir(root, "/start"), "prompt.en.md")
+			outside := filepath.Join(t.TempDir(), "prompt.en.md")
+			if err := os.WriteFile(outside, []byte("safe"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, path); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "symlinks"},
+		{name: "RoutesDir traversal", mutate: func(t *testing.T, root string) { rewriteDecisionRoutesDir(t, root, "../outside") }, want: "inside its agent directory"},
 		{name: "duplicate route path alias", mutate: func(t *testing.T, root string) {
 			route := readDecisionRoute(t, root, "/start")
 			route.ID = "/help"
@@ -181,6 +315,13 @@ func TestDecisionCompilerRejectsUnsafeFixtures(t *testing.T) {
 		{name: "incompatible tool schema", configure: func(definition *decisionv1.Definition) {
 			definition.Graph.Authority.Tools[0].SchemaSHA256 = strings.Repeat("f", 64)
 		}, want: "schema digest does not match"},
+		{name: "approval policy mismatch", configure: func(definition *decisionv1.Definition) {
+			for index := range definition.Graph.Authority.Tools {
+				if definition.Graph.Authority.Tools[index].ID == "connect" {
+					definition.Graph.Authority.Tools[index].ApprovalSHA256 = ""
+				}
+			}
+		}, want: "approval policy does not match"},
 		{name: "unbounded retry cycle", mutate: func(t *testing.T, root string) {
 			route := readDecisionRoute(t, root, "/clarify")
 			route.RetryGroup = ""
@@ -210,6 +351,16 @@ func TestDecisionCompilerRejectsUnsafeFixtures(t *testing.T) {
 			}
 			writeDecisionRoute(t, root, "/start", route)
 		}, want: "widens"},
+		{name: "qualified adapter authority gate", configure: func(definition *decisionv1.Definition) {
+			for index := range definition.PolicyGates {
+				if definition.PolicyGates[index].Kind == decisionv1.GateSessionAdapter {
+					definition.PolicyGates[index].Status = decisionv1.GateQualified
+					definition.PolicyGates[index].Value = "claimed by fixture"
+					definition.PolicyGates[index].EvidenceRef = "unverified"
+					definition.PolicyGates[index].UnresolvedReason = ""
+				}
+			}
+		}, want: "must remain unresolved"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -263,6 +414,14 @@ var decisionToolInputSchema = map[string]any{
 }
 
 func writeDecisionCompilerFixture(t *testing.T, configure func(*decisionv1.Definition)) string {
+	return writeDecisionCompilerFixtureMode(t, configure, false)
+}
+
+func writeDecisionCompilerFixtureWithSharedPrompt(t *testing.T) string {
+	return writeDecisionCompilerFixtureMode(t, nil, true)
+}
+
+func writeDecisionCompilerFixtureMode(t *testing.T, configure func(*decisionv1.Definition), sharedPrompt bool) string {
 	t.Helper()
 	root := t.TempDir()
 	definitionBytes, err := os.ReadFile(filepath.Join("..", "..", "agents", "decisioncontract", "v1", "testdata", "review-contract.json"))
@@ -282,20 +441,46 @@ func writeDecisionCompilerFixture(t *testing.T, configure func(*decisionv1.Defin
 		"operator.choice_count": "prompt.choice_count",
 		"operator.help":         "prompt.help",
 	}
-	promptBytes := map[string]string{}
+	originalMessages := make(map[string]decisionv1.MessageFamily, len(definition.Graph.Messages))
 	for index := range definition.Graph.Messages {
-		message := &definition.Graph.Messages[index]
-		promptBytes[replacements[message.ID]] = message.Variants[message.BaseLocale]
-		message.ID = replacements[message.ID]
-		message.Variants = nil
+		message := definition.Graph.Messages[index]
+		originalMessages[replacements[message.ID]] = message
 	}
+	definition.Graph.Messages = nil
 	for routeIndex := range routes {
 		route := &routes[routeIndex]
 		if route.Say != nil {
 			for index, family := range route.Say.Families {
-				route.Say.Families[index] = replacements[family]
+				localFamily := replacements[family]
+				if sharedPrompt && localFamily == "prompt" {
+					route.Say.Families[index] = "shared:" + localFamily
+					continue
+				}
+				route.Say.Families[index] = localFamily
+				message := originalMessages[localFamily]
+				if route.ID == "/clarify" && localFamily == "prompt" {
+					message = originalMessages["prompt.choice_count"]
+				}
+				message.ID = decisionPromptFamilyID(route.ID, localFamily)
+				message.Variants = nil
+				definition.Graph.Messages = append(definition.Graph.Messages, message)
+			}
+			if route.ID == "/clarify" && !sharedPrompt {
+				bindings := route.Say.ArgumentBindings[:0]
+				for _, binding := range route.Say.ArgumentBindings {
+					if binding.Name != "name" {
+						bindings = append(bindings, binding)
+					}
+				}
+				route.Say.ArgumentBindings = bindings
 			}
 		}
+	}
+	if sharedPrompt {
+		message := originalMessages["prompt"]
+		message.ID = "prompt"
+		message.Variants = nil
+		definition.Graph.Messages = append(definition.Graph.Messages, message)
 	}
 	schemaBytes, err := json.Marshal(decisionToolInputSchema)
 	if err != nil {
@@ -311,11 +496,18 @@ func writeDecisionCompilerFixture(t *testing.T, configure func(*decisionv1.Defin
 
 	for _, route := range routes {
 		writeDecisionRoute(t, root, string(route.ID), route)
-	}
-	startDir := decisionRouteDir(root, "/start")
-	for family, prompt := range promptBytes {
-		filename := "prompt" + strings.TrimPrefix(family, "prompt") + ".en.md"
-		writeSourceTestFile(t, filepath.Join(startDir, filename), prompt)
+		if route.Say == nil {
+			continue
+		}
+		for _, reference := range route.Say.Families {
+			localFamily := strings.TrimPrefix(reference, "shared:")
+			prompt := originalMessages[localFamily].Variants[originalMessages[localFamily].BaseLocale]
+			if route.ID == "/clarify" && localFamily == "prompt" && !sharedPrompt {
+				prompt = "{count, plural, one {I found one matching person.} other {I found # matching people.}}"
+			}
+			filename := decisionPromptFilename(localFamily, "en")
+			writeSourceTestFile(t, filepath.Join(decisionRouteDir(root, string(route.ID)), filename), prompt)
+		}
 	}
 	writeDecisionCompilerAgent(t, root, definition)
 	return root
@@ -332,7 +524,7 @@ import (
 	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
 )
 
-var connectTool = gbagents.DefineTool(gbagents.ToolConfig{InputSchema: %s}, func(context.Context, gbagents.Actor, map[string]any) (string, error) { return "", nil })
+var connectTool = gbagents.DefineTool(gbagents.ToolConfig{InputSchema: %s, RequiresApproval: true}, func(context.Context, gbagents.Actor, map[string]any) (string, error) { return "", nil })
 var contextTool = gbagents.DefineTool(gbagents.ToolConfig{InputSchema: %s}, func(context.Context, gbagents.Actor, map[string]any) (string, error) { return "", nil })
 
 var Agent = gbagents.DefineDecision(gbagents.DecisionConfig{
@@ -458,6 +650,39 @@ func decisionRouteDir(root, routeID string) string {
 	return filepath.Join(root, "agents", "operator", "routes", filepath.FromSlash(strings.TrimPrefix(routeID, "/")))
 }
 
+func decisionPromptFilename(family, locale string) string {
+	return "prompt" + strings.TrimPrefix(family, "prompt") + "." + locale + ".md"
+}
+
+func decisionMessage(t *testing.T, definition *decisionv1.Definition, id string) decisionv1.MessageFamily {
+	t.Helper()
+	message, exists := findDecisionMessage(definition, id)
+	if !exists {
+		t.Fatalf("decision manifest is missing message family %q", id)
+	}
+	return message
+}
+
+func findDecisionMessage(definition *decisionv1.Definition, id string) (decisionv1.MessageFamily, bool) {
+	for _, message := range definition.Graph.Messages {
+		if message.ID == id {
+			return message, true
+		}
+	}
+	return decisionv1.MessageFamily{}, false
+}
+
+func decisionRoute(t *testing.T, definition *decisionv1.Definition, id decisionv1.RouteID) decisionv1.Route {
+	t.Helper()
+	for _, route := range definition.Graph.Routes {
+		if route.ID == id {
+			return route
+		}
+	}
+	t.Fatalf("decision manifest is missing route %q", id)
+	return decisionv1.Route{}
+}
+
 func readDecisionRoute(t *testing.T, root, routeID string) decisionv1.Route {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(decisionRouteDir(root, routeID), "route.yaml"))
@@ -488,7 +713,7 @@ func removeDecisionRoute(t *testing.T, root, routeID string) {
 
 func removeDecisionPrompt(t *testing.T, root, family string) {
 	t.Helper()
-	path := filepath.Join(decisionRouteDir(root, "/start"), "prompt"+strings.TrimPrefix(family, "prompt")+".en.md")
+	path := filepath.Join(decisionRouteDir(root, decisionPromptRoute(family)), decisionPromptFilename(family, "en"))
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -496,8 +721,31 @@ func removeDecisionPrompt(t *testing.T, root, family string) {
 
 func renameDecisionPrompt(t *testing.T, root, family, locale string) {
 	t.Helper()
-	path := filepath.Join(decisionRouteDir(root, "/start"), "prompt"+strings.TrimPrefix(family, "prompt")+".en.md")
-	if err := os.Rename(path, filepath.Join(filepath.Dir(path), "prompt"+strings.TrimPrefix(family, "prompt")+"."+locale+".md")); err != nil {
+	path := filepath.Join(decisionRouteDir(root, decisionPromptRoute(family)), decisionPromptFilename(family, "en"))
+	if err := os.Rename(path, filepath.Join(filepath.Dir(path), decisionPromptFilename(family, locale))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func decisionPromptRoute(family string) string {
+	if family == "prompt.help" {
+		return "/help"
+	}
+	return "/start"
+}
+
+func rewriteDecisionRoutesDir(t *testing.T, root, routesDir string) {
+	t.Helper()
+	path := filepath.Join(root, "agents", "operator", "agent.go")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(source), `RoutesDir: "routes"`, `RoutesDir: "`+routesDir+`"`, 1)
+	if updated == string(source) {
+		t.Fatal("could not find RoutesDir fixture literal")
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

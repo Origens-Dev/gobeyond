@@ -357,6 +357,9 @@ func LoadAgentsManifest(root string) (AgentsManifest, error) {
 		if agent.Decision.Graph.Authority.ParentManifestSHA256 != parentSHA {
 			return AgentsManifest{}, fmt.Errorf("agent %s decision parent digest does not match its frozen manifest record", agent.ID)
 		}
+		if err := validateDecisionCompilerAuthoritySnapshots(*agent.Decision); err != nil {
+			return AgentsManifest{}, fmt.Errorf("agent %s decision authority snapshots: %w", agent.ID, err)
+		}
 		frozen, _, _, err := gbagents.FreezeDecisionManifest(*agent.Decision)
 		if err != nil {
 			return AgentsManifest{}, fmt.Errorf("agent %s decision manifest: %w", agent.ID, err)

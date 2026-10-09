@@ -1,17 +1,40 @@
 # Proposed decision graph contract
 
-`v1` is a reviewable, versioned wire contract for the proposed
-`DefineDecision(Graph)` surface. It defines graph and route types, semantic
-events and results, canonical release digests, validation, and qualification
-gates. It does not register an agent, discover route files, compile a manifest,
-execute a reducer, or activate a voice/media path.
+`v1` is a reviewable, versioned wire contract for the existing
+`DefineDecision` declaration. It defines graph and route types, semantic events
+and results, canonical release digests, validation, and qualification gates.
+The compiler reads route-local YAML and Markdown, then freezes the resulting
+definition inside the existing agent record. Golden tests compare compiler
+output with the shared manifest canonicalizer and digest functions. This
+compiler slice does not register an agent, execute a reducer, or activate a
+voice/media path.
 
-The contract intentionally does not add a default `decision.yaml`. The
-architecture draft prefers keeping the existing agent directory and
-`agent.go` as the shared definition, discovering route-local files, and
-emitting one canonical frozen manifest later. `say`, `listen`, `match`, `act`,
-and `next` are route-local phases. The compiler and generated adapter remain
-separate integration work.
+The contract intentionally does not add a default `decision.yaml`. Authors
+keep the existing agent directory and `agent.go` as the shared definition;
+`RoutesDir` points to route-local `route.yaml` and prompt files. `say`,
+`listen`, `match`, `act`, and `next` are route-local phases. The compiler emits
+the decision definition into `.gobeyond/agents.json`, the existing frozen
+agent manifest. The generated session adapter remains separate integration
+work.
+
+## Route prompt identity
+
+By default, prompt filenames such as `prompt.en.md` and
+`prompt.choice_count.en.md` name route-local families. Their frozen IDs are
+`route.` followed by the lowercase hex encoding of the full route ID, then a
+dot and the local family name. For example, `/start` plus `prompt` becomes
+`route.2f7374617274.prompt`. The corresponding message metadata in
+`DecisionConfig.Definition.Graph.Messages` uses that frozen ID. This lets
+`routes/start/prompt.en.md` and `routes/clarify/prompt.en.md` keep independent
+schemas, named arguments, ICU messages, and locale variants even though their
+filenames match.
+
+Sharing is explicit: a route uses `shared:<family>` in `say.families`, and the
+definition declares one global message metadata entry whose ID is `<family>`.
+Each referencing route still has its own prompt file for that family. The
+compiler requires those route-local bytes and locale sets to match exactly
+before producing the single shared family. A local reference is never
+promoted to shared based on matching names or content.
 
 ## Canonical release and session pins
 
@@ -54,11 +77,26 @@ copied into a default. Review fixtures keep unknown thresholds as named
 unresolved gates with no numeric value.
 
 Route grants use stable IDs for inherited tools, services, and typed product
-bindings, and the authority envelope pins the parent manifest digest. A
-missing route selection inherits the parent set; an explicit empty list grants
-nothing. Route budget overrides must reference the inherited gate and have a
-finite value no greater than the qualified parent ceiling. An unresolved
-parent ceiling cannot be overridden.
+bindings, and the authority envelope pins a digest of the existing projected
+agent record. The digest covers the projection's agent identity and runtime
+configuration, revision, task queues, slots (including channels), tool IDs and
+queues, SIP handler names, and any embedded voice manifest and its digest. The
+projected `tools` carry IDs and task queues, not service grants, product
+bindings, or budgets. An optional voice manifest carries voice-tool details,
+but it is not a general schema or approval source for `DecisionConfig.Tools`.
+The compiler checks decision tool IDs and input-schema digests against their
+existing static `DefineTool` declarations and checks that presence of an
+approval digest agrees with `ToolConfig.RequiresApproval`. It does not verify
+the approval digest's provenance. Service, binding, and budget claims remain
+author snapshots behind unresolved Jev-service, caller-authority, and budget
+gates. The session-adapter gate must also remain unresolved, and manifest load
+rejects a decision definition that qualifies these snapshots or assigns
+numeric budget values. This keeps the draft reviewable and activation-blocked
+until an adapter can verify the exact parent authority. A missing route
+selection inherits the parent set; an explicit empty list grants nothing.
+Route budget overrides must reference the inherited gate and have a finite
+value no greater than the qualified parent ceiling. An unresolved parent
+ceiling cannot be overridden.
 
 Every route has a fallback, and the graph identifies a fallback route. Cycles
 require a retry group with logical-task counters, total and per-reason
@@ -134,17 +172,23 @@ No provider or credential is selected here.
 ## Adapter mapping and single authority
 
 The enclosing agent remains the authority and registry boundary. Authors
-continue to define `var Agent = agents.Define(...)` or `DefineAI(...)` in
-`agents/<id>/agent.go`; the compiler-owned `.gobeyond/agents.json` projection
-contains the agent ID/revision, `Slots.Channels`, and tool IDs/task queues.
-Voice-capable definitions derive their existing `voiceManifest` and
-`voiceManifestDigest` from those same tool declarations and the declared voice
-channel. The graph adapter resolves `AuthorityEnvelope` IDs against that
-frozen parent projection and reuses its current grant, schemas, channels,
-approval, and budget policy. It must not register a second agent, channel,
-tool, or grant ledger. The precise parent-manifest digest projection is part of
-the unresolved session-adapter gate; the adapter must hash the exact frozen
-agent/tool/channel inputs it consumes.
+continue to define `var Agent = agents.Define(...)`, `DefineAI(...)`, or
+`DefineDecision(...)` in `agents/<id>/agent.go`; the compiler-owned
+`.gobeyond/agents.json` projection contains the existing agent record and
+nested frozen decision definition. Voice-capable definitions derive their
+existing `voiceManifest` and `voiceManifestDigest` from those same tool
+declarations and the declared voice channel. No second agent, channel, tool,
+or grant ledger is introduced.
+
+This compiler slice has not implemented the graph adapter or its runtime
+authority seam. A later adapter acceptance item must resolve each
+`AuthorityEnvelope` ID against the exact frozen parent grant, schema, channel,
+approval, service, binding, and budget inputs it consumes; verify the precise
+parent projection and its provenance; and reuse the existing owner and
+operation authority. The current parent digest alone is insufficient for
+those checks. Runtime `Start/Respond/Cancel` mapping and runtime prompt-loader
+and ICU parity remain open acceptance items. A canonical compiler manifest is
+not evidence that those runtime seams are complete.
 
 The future `Start/Respond/Cancel` adapter maps the existing session command
 and result surface into normalized decision events while retaining the
