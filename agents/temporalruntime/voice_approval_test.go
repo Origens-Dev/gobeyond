@@ -94,6 +94,9 @@ func TestVoiceWriteOrdinaryHandlerRejectedWithoutDispatcher(t *testing.T) {
 	}
 }
 
+// TestVoiceWriteDurableDispatcherExecutes proves the trusted-host assertion
+// lets the existing Execute run. BindVoiceDurableDispatcher does not wrap
+// Maglev /execute-tool or make Execute durable.
 func TestVoiceWriteDurableDispatcherExecutes(t *testing.T) {
 	calls := 0
 	tool := independentlyNamedOrdinaryWrite(t, &calls)

@@ -22,10 +22,11 @@ var errVoiceWriteIdentityUnavailable = errors.New("voice write identity is unava
 // interaction, so any call requiring user approval is denied before Execute.
 //
 // VoiceWritePolicy selects app mutations generically (Candlestick owns
-// leave_text_message). The marker does not prove Maglev's host attached
-// Execute as /internal/workflows/voice-session/execute-tool. That path is the
-// typed VoiceDurableWriteDispatcher capability, which only BindVoiceDurableDispatcher
-// can install. Approval is always resolved before that dispatcher runs.
+// leave_text_message). VoiceWritePolicy is not a trusted-host assertion.
+// BindVoiceDurableDispatcher marks the existing Execute callback; it does
+// not make Execute durable. Maglev must bind it only on the real
+// /internal/workflows/voice-session/execute-tool wrapper. Approval is always
+// resolved before Execute.
 func executeVoiceAgentTool(ctx context.Context, tool ai.Tool, call ai.ToolCall, options ai.ToolExecutionOptions) (any, error) {
 	if tool.Execute == nil {
 		return nil, errors.New("voice tool execution handler is unavailable")

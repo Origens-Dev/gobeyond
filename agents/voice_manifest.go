@@ -58,7 +58,9 @@ type voiceWriteMarker struct{}
 
 // VoiceWritePolicy identifies an authored app mutation selected for authenticated
 // voice dispatch. The typed marker can only be emitted by DefineTool. It does
-// not authorize Live execution; Maglev's host must BindVoiceDurableDispatcher.
+// not authorize Live execution. Maglev must wrap Execute with
+// /internal/workflows/voice-session/execute-tool and then
+// BindVoiceDurableDispatcher (a trusted-host assertion on that wrapper).
 func VoiceWritePolicy(tool AITool) bool {
 	ns, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)
 	if !ok {
@@ -69,12 +71,13 @@ func VoiceWritePolicy(tool AITool) bool {
 }
 
 // voiceDurableWriteDispatcher is installed only by BindVoiceDurableDispatcher.
-// App ToolConfig.VoiceWrite cannot acquire Live execute-tool dispatch.
+// App ToolConfig.VoiceWrite cannot acquire this trusted-host assertion.
 type voiceDurableWriteDispatcher struct{}
 
-// VoiceDurableWriteDispatcher reports whether the SDK/host injected the
-// trusted execute-tool callback. Decoded provider/client metadata maps cannot
-// acquire this capability by setting a boolean or string.
+// VoiceDurableWriteDispatcher reports whether BindVoiceDurableDispatcher
+// marked this tool's existing Execute as a trusted-host assertion. That mark
+// does not make Execute durable. Decoded provider/client metadata maps cannot
+// acquire it by setting a boolean or string.
 func VoiceDurableWriteDispatcher(tool AITool) bool {
 	ns, ok := tool.ToolMetadata[toolMetadataNamespace].(map[string]any)
 	if !ok {
@@ -84,9 +87,10 @@ func VoiceDurableWriteDispatcher(tool AITool) bool {
 	return enabled
 }
 
-// BindVoiceDurableDispatcher marks a VoiceWritePolicy tool as the host/SDK
-// durable /internal/workflows/voice-session/execute-tool callback. Maglev
-// attaches this when wrapping Execute; authored app tools cannot set it.
+// BindVoiceDurableDispatcher is a trusted-host assertion: it marks the
+// existing Execute callback. It does not make Execute durable. Maglev must
+// bind this only on the real /internal/workflows/voice-session/execute-tool
+// wrapper. Authored app tools cannot set it.
 func BindVoiceDurableDispatcher(tool AITool) (AITool, error) {
 	if !VoiceWritePolicy(tool) {
 		return AITool{}, errors.New("durable write dispatcher requires VoiceWritePolicy")

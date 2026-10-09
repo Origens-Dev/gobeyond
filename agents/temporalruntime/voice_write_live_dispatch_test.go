@@ -16,6 +16,8 @@ import (
 
 // independentlyNamedVoiceWrite is an app mutation that is not leave_text_message.
 // Candlestick owns that name; Live filtering must stay on VoiceWritePolicy.
+// BindVoiceDurableDispatcher here is a trusted-host assertion on this test
+// Execute; it does not wrap Maglev /execute-tool or make Execute durable.
 func independentlyNamedVoiceWrite(t *testing.T, calls *atomic.Int32, result map[string]any) ai.Tool {
 	t.Helper()
 	schema, output := voiceWriteClosedSchemas()
@@ -96,7 +98,7 @@ func hangUpBesideWrite(t *testing.T) voice.StartConfig {
 	}
 }
 
-func TestGeminiLiveWriteInvocationReachesExecuteTool(t *testing.T) {
+func TestGeminiLiveWriteInvocationReachesBoundExecute(t *testing.T) {
 	var calls atomic.Int32
 	want := map[string]any{"ok": true}
 	tool := independentlyNamedVoiceWrite(t, &calls, want)
@@ -120,7 +122,7 @@ func TestGeminiLiveWriteInvocationReachesExecuteTool(t *testing.T) {
 		t.Fatal("Gemini write dispatch did not finish")
 	}
 	if calls.Load() != 1 {
-		t.Fatalf("Execute calls=%d want 1 (host execute-tool callback)", calls.Load())
+		t.Fatalf("Execute calls=%d want 1 (trusted-host assertion on existing Execute)", calls.Load())
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -132,7 +134,7 @@ func TestGeminiLiveWriteInvocationReachesExecuteTool(t *testing.T) {
 		t.Fatalf("response identity %#v", got)
 	}
 	if _, hadErr := got.Response["error"]; hadErr {
-		t.Fatalf("Gemini returned error instead of execute-tool result: %#v", got.Response)
+		t.Fatalf("Gemini returned error instead of Execute result: %#v", got.Response)
 	}
 	result, _ := got.Response["result"].(map[string]any)
 	if result["ok"] != true {
@@ -140,7 +142,7 @@ func TestGeminiLiveWriteInvocationReachesExecuteTool(t *testing.T) {
 	}
 }
 
-func TestGrokLiveWriteInvocationReachesExecuteTool(t *testing.T) {
+func TestGrokLiveWriteInvocationReachesBoundExecute(t *testing.T) {
 	var calls atomic.Int32
 	want := map[string]any{"ok": true}
 	tool := independentlyNamedVoiceWrite(t, &calls, want)
@@ -156,7 +158,7 @@ func TestGrokLiveWriteInvocationReachesExecuteTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	if calls.Load() != 1 {
-		t.Fatalf("Execute calls=%d want 1 (host execute-tool callback)", calls.Load())
+		t.Fatalf("Execute calls=%d want 1 (trusted-host assertion on existing Execute)", calls.Load())
 	}
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -172,14 +174,14 @@ func TestGrokLiveWriteInvocationReachesExecuteTool(t *testing.T) {
 		t.Fatalf("Grok function_call_output missing: %s", body)
 	}
 	if strings.Contains(body, `"error"`) {
-		t.Fatalf("Grok returned error instead of execute-tool result: %s", body)
+		t.Fatalf("Grok returned error instead of Execute result: %s", body)
 	}
 	if !strings.Contains(body, `"ok":true`) && !strings.Contains(body, `"ok\":true`) {
 		t.Fatalf("Grok result missing: %s", body)
 	}
 }
 
-func TestOpenAILiveWriteInvocationReachesExecuteTool(t *testing.T) {
+func TestOpenAILiveWriteInvocationReachesBoundExecute(t *testing.T) {
 	var calls atomic.Int32
 	want := map[string]any{"ok": true}
 	tool := independentlyNamedVoiceWrite(t, &calls, want)
@@ -192,7 +194,7 @@ func TestOpenAILiveWriteInvocationReachesExecuteTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	if calls.Load() != 1 {
-		t.Fatalf("Execute calls=%d want 1 (host execute-tool callback)", calls.Load())
+		t.Fatalf("Execute calls=%d want 1 (trusted-host assertion on existing Execute)", calls.Load())
 	}
 	var output string
 	deadline := time.After(2 * time.Second)
@@ -210,7 +212,7 @@ func TestOpenAILiveWriteInvocationReachesExecuteTool(t *testing.T) {
 		}
 	}
 	if strings.Contains(output, `"error"`) {
-		t.Fatalf("OpenAI returned error instead of execute-tool result: %s", output)
+		t.Fatalf("OpenAI returned error instead of Execute result: %s", output)
 	}
 	var parsed map[string]any
 	if json.Unmarshal([]byte(output), &parsed) != nil {
