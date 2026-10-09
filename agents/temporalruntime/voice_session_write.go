@@ -141,7 +141,7 @@ func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, toolID
 
 func (s *voiceWriteWorkflowState) finish(identity string, result VoiceSessionExecuteToolResult, err error) (VoiceSessionExecuteToolResult, error) {
 	s.pending[identity] = false
-	if err != nil {
+	if err != nil || voiceWriteResultUncertain(result) {
 		s.unknown[identity] = true
 		return VoiceSessionExecuteToolResult{}, errWriteOutcomeUnknown
 	}

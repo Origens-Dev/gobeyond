@@ -5,4 +5,4 @@ run_matcher route=/start entry=entry-receipt binding=recipient_matcher input=inp
 dispatch_intent route=/start entry=entry-receipt input=input-receipt action=connect-recipient target=opaque-a
 await_receipt route=/start entry=entry-receipt input=input-receipt action=connect-recipient target=opaque-a
 await_receipt route=/start entry=entry-receipt input=input-receipt action=connect-recipient target=opaque-a
-release_call_ownership route=/start entry=entry-receipt input=input-receipt action=connect-recipient reason=adapter must apply the existing owner compare-and-swap
+release_call_ownership route=/start entry=entry-receipt input=input-receipt action=connect-recipient target=opaque-a reason=adapter must apply the existing owner compare-and-swap

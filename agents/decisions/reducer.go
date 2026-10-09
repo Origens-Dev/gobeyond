@@ -1102,8 +1102,9 @@ func reduceEffectReceipt(data *stateData, active contract.Route, event contract.
 		}
 		data.phase = PhaseTerminal
 		data.graphEnded = true
+		request := cloneRequest(data.pendingRequest)
 		data.pendingRequest = nil
-		return []Effect{{Kind: EffectReleaseOwnership, RouteID: data.routeID, RouteEntryID: data.routeEntryID, InputID: data.pendingInput.ID, ActionID: data.pendingActionID, ReceiptID: receipt.ReceiptID, Reason: "adapter must apply the existing owner compare-and-swap"}}, nil
+		return []Effect{{Kind: EffectReleaseOwnership, RouteID: data.routeID, RouteEntryID: data.routeEntryID, InputID: data.pendingInput.ID, ActionID: data.pendingActionID, Request: request, ReceiptID: receipt.ReceiptID, Reason: "adapter must apply the existing owner compare-and-swap"}}, nil
 	}
 	data.pendingRequest = nil
 	data.pendingRequestValidatedAt = time.Time{}

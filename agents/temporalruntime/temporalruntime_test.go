@@ -541,6 +541,10 @@ type fakeClient struct {
 	updateCalls      int
 	updateOutput     interface{}
 	updateErr        error
+	updateFunc       func(context.Context, client.UpdateWorkflowOptions) (interface{}, error)
+	updateHistory    []client.UpdateWorkflowOptions
+	queryOutput      interface{}
+	queryErr         error
 }
 
 func (fake *fakeClient) ExecuteWorkflow(_ context.Context, options client.StartWorkflowOptions, workflow interface{}, args ...interface{}) (client.WorkflowRun, error) {
@@ -569,19 +573,49 @@ func (fake *fakeClient) SignalWorkflow(_ context.Context, workflowID, _ string, 
 	return nil
 }
 
-func (*fakeClient) QueryWorkflow(context.Context, string, string, string, ...interface{}) (converter.EncodedValue, error) {
-	return nil, errors.New("no approval query in fake workflow")
-}
-
-func (fake *fakeClient) UpdateWorkflow(_ context.Context, options client.UpdateWorkflowOptions) (client.WorkflowUpdateHandle, error) {
+func (fake *fakeClient) QueryWorkflow(context.Context, string, string, string, ...interface{}) (converter.EncodedValue, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	if fake.queryErr != nil {
+		return nil, fake.queryErr
+	}
+	if fake.queryOutput == nil {
+		return nil, errors.New("no approval query in fake workflow")
+	}
+	return fakeEncodedValue{value: fake.queryOutput}, nil
+}
+
+type fakeEncodedValue struct{ value interface{} }
+
+func (fake fakeEncodedValue) HasValue() bool { return fake.value != nil }
+func (fake fakeEncodedValue) Get(target interface{}) error {
+	raw, err := json.Marshal(fake.value)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, target)
+}
+
+func (fake *fakeClient) UpdateWorkflow(ctx context.Context, options client.UpdateWorkflowOptions) (client.WorkflowUpdateHandle, error) {
+	fake.mu.Lock()
 	fake.updateOptions = options
 	fake.updateCalls++
+	fake.updateHistory = append(fake.updateHistory, options)
 	if fake.updateErr != nil {
+		defer fake.mu.Unlock()
 		return nil, fake.updateErr
 	}
-	return &fakeUpdateHandle{workflowID: options.WorkflowID, updateID: options.UpdateID, output: fake.updateOutput}, nil
+	updateFunc := fake.updateFunc
+	output := fake.updateOutput
+	fake.mu.Unlock()
+	if updateFunc != nil {
+		var err error
+		output, err = updateFunc(ctx, options)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &fakeUpdateHandle{workflowID: options.WorkflowID, updateID: options.UpdateID, output: output}, nil
 }
 
 func (fake *fakeClient) Close() {

@@ -126,6 +126,19 @@ func TestVoiceWriteWorkflowLostResponseReconcilesOneMutation(t *testing.T) {
 	}
 }
 
+func TestVoiceWriteWorkflowPersistsReturnedErrorAsUnknownForReconciliation(t *testing.T) {
+	state := newVoiceWriteWorkflowState()
+	identity := voiceWriteIdentity("connect", "effect_1")
+	state.pending[identity] = true
+	result, err := state.finish(identity, VoiceSessionExecuteToolResult{Error: "provider outcome unavailable"}, nil)
+	if !errors.Is(err, errWriteOutcomeUnknown) || !state.unknown[identity] || state.pending[identity] {
+		t.Fatalf("uncertain write finish state = result %#v, err %v, unknown=%v pending=%v", result, err, state.unknown[identity], state.pending[identity])
+	}
+	if _, stored := state.results[identity]; stored {
+		t.Fatal("uncertain provider outcome was persisted as a completed write result")
+	}
+}
+
 func TestVoiceWriteEmptyCacheRetryAfterCommitIsOneMutation(t *testing.T) {
 	resetVoiceWriteLedgerWithDir(t.TempDir())
 	calls := 0
