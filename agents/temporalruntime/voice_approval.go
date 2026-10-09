@@ -14,12 +14,18 @@ var errVoiceApprovalUnavailable = errors.New("voice client approval interaction 
 // executeVoiceAgentTool applies the authored tool approval policy to Live
 // voice tool calls. Voice transports do not yet expose a user-bound approval
 // interaction, so any call requiring user approval is denied before Execute.
+//
+// VoiceWritePolicy tools are different: Maglev's host attaches Execute as the
+// durable /internal/workflows/voice-session/execute-tool callback. Filtering is
+// the typed VoiceWrite marker, not the tool name (Candlestick owns
+// leave_text_message). Rejecting writes here dropped Gemini/Grok/OpenAI
+// mailbox tools before that callback ran.
 func executeVoiceAgentTool(ctx context.Context, tool ai.Tool, call ai.ToolCall, options ai.ToolExecutionOptions) (any, error) {
 	if tool.Execute == nil {
 		return nil, errors.New("voice tool execution handler is unavailable")
 	}
 	if agents.VoiceWritePolicy(tool) {
-		return nil, errors.New("voice write requires durable session dispatch")
+		return tool.Execute(ctx, call, options)
 	}
 	if tool.RequiresApproval {
 		return nil, errVoiceApprovalUnavailable

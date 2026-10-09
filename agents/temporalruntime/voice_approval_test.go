@@ -3,11 +3,11 @@ package temporalruntime
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/Origens-Dev/go-ai/packages/ai"
 	"github.com/Origens-Dev/gobeyond/agents"
+	"github.com/Origens-Dev/gobeyond/agents/internal/toolsession"
 )
 
 func TestVoiceToolRequiresApprovalFailsClosedWithoutExecuting(t *testing.T) {
@@ -40,15 +40,24 @@ func TestVoiceToolDynamicApprovalPolicy(t *testing.T) {
 	}
 }
 
-func TestVoiceWriteRejectedOnLiveExecutePath(t *testing.T) {
+func TestVoiceWriteExecutesOnLivePath(t *testing.T) {
 	calls := 0
 	schema, output := voiceWriteClosedSchemas()
-	tool := agents.DefineTool(agents.ToolConfig{Name: "lookup", InputSchema: schema, OutputSchema: output, VoiceWrite: true}, func(context.Context, agents.Actor, map[string]any) (any, error) {
+	tool := agents.DefineTool(agents.ToolConfig{Name: "archive_desk_note", InputSchema: schema, OutputSchema: output, VoiceWrite: true}, func(context.Context, agents.Actor, map[string]any) (any, error) {
 		calls++
 		return map[string]any{"ok": true}, nil
 	})
-	_, err := executeVoiceAgentTool(context.Background(), tool, ai.ToolCall{ToolCallID: "call-1", ToolName: tool.Name, Input: map[string]any{"q": "x"}}, ai.ToolExecutionOptions{})
-	if err == nil || !strings.Contains(err.Error(), "durable session") || calls != 0 {
+	if !agents.VoiceWritePolicy(tool) {
+		t.Fatal("independently named tool must still be VoiceWritePolicy")
+	}
+	got, err := executeVoiceAgentTool(context.Background(), tool, ai.ToolCall{ToolCallID: "call-1", ToolName: tool.Name, Input: map[string]any{"q": "x"}}, ai.ToolExecutionOptions{
+		Context: toolsession.ExecutionContext(agents.Actor{ID: "user-1", Kind: "user"}, "sess-1"),
+	})
+	if err != nil || calls != 1 {
 		t.Fatalf("error=%v calls=%d", err, calls)
+	}
+	result, ok := got.(map[string]any)
+	if !ok || result["ok"] != true {
+		t.Fatalf("result=%#v", got)
 	}
 }
