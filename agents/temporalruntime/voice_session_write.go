@@ -24,10 +24,11 @@ var errWriteMissingBinding = errors.New("voice write requires a verified resourc
 var errWriteBindingMismatch = errors.New("resource binding does not match the verified session")
 
 // resourceBindingFromGrantScope is an INTERIM mapping of the verified grant
-// Scope onto the opaque SDK ResourceBinding. ResourceID is Scope.LineID and
-// AlternateID is Scope.DIDID. The SDK type has no mailbox/line/DID product
-// names; the application maps the binding onto its own resources. Callers
-// and model arguments cannot populate this projection.
+// Scope onto the opaque SDK ResourceBinding. Admitted shapes (Scope.Validate):
+// v2 agent copies LineID → ResourceID; legacy screener copies DIDID →
+// AlternateID. One grant never carries both. The SDK type has no
+// mailbox/line/DID product names; the application maps the binding onto its
+// own resources. Callers and model arguments cannot populate this projection.
 func resourceBindingFromGrantScope(scope voicecontract.Scope) agents.ResourceBinding {
 	return agents.ResourceBinding{
 		Kind:        strings.TrimSpace(scope.Kind),

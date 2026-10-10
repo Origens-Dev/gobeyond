@@ -77,7 +77,7 @@ func TestToolResourceBindingUsesRuntimeProjectionNotModelInput(t *testing.T) {
 		}
 		return binding.Kind + "/" + binding.ResourceID + "/" + binding.AlternateID, nil
 	})
-	want := ResourceBinding{Kind: "agent", ResourceID: "line-grant", AlternateID: "did-grant"}
+	want := ResourceBinding{Kind: "agent", ResourceID: "line_grant"}
 	raw, err := json.Marshal(ToolWriteContext(actor, "session-one", "write-key-one", want))
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestToolResourceBindingUsesRuntimeProjectionNotModelInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"resource_id": "model-forged", "mailbox_line_id": "model-mailbox"}}, ai.ToolExecutionOptions{Context: decoded})
-	if err != nil || result != "agent/line-grant/did-grant" {
+	if err != nil || result != "agent/line_grant/" {
 		t.Fatalf("binding result=%v err=%v", result, err)
 	}
 	result, err = tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"resource_id": "model-forged"}}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContext(actor, "session-one")})

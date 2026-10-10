@@ -7,10 +7,11 @@
   tool execution. Handlers read it with `ToolResourceBinding`; session and
   write identity stay on `ToolSessionID` / `ToolWriteID`. None of those
   values are placed on actor metadata. Interim mapping (documented
-  boundary, not a product contract): `ResourceID` is grant `Scope.LineID`
-  and `AlternateID` is grant `Scope.DIDID`. Missing or mismatched bindings
-  fail closed. Replay digests include the binding. The SDK does not name
-  mailbox product fields.
+  boundary, not a product contract): admitted v2 agent scopes copy
+  `LineID` → `ResourceID`; admitted legacy screener scopes copy `DIDID` →
+  `AlternateID`. One grant never carries both. Missing or mismatched
+  bindings fail closed. Replay digests include the binding. The SDK does
+  not name mailbox product fields.
 
 - Freeze authored playback/completion pairs under `VoiceBudgetPolicy:
   "generic_v1"` (`ManifestDeclaresPlayback`, session-wide tool consume

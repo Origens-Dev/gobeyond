@@ -11,9 +11,10 @@ import (
 // HTTP body, model arguments, or actor metadata.
 //
 // Interim grant mapping (documented boundary, not a product contract):
-// Kind is grant Scope.Kind, ResourceID is grant Scope.LineID, AlternateID
-// is grant Scope.DIDID. The SDK does not name mailbox, line, or DID
-// fields; the application maps this binding onto its own resources.
+// Kind is grant Scope.Kind. Admitted v2 agent scopes copy LineID →
+// ResourceID; admitted legacy screener scopes copy DIDID → AlternateID.
+// One grant never carries both. The SDK does not name mailbox, line, or
+// DID fields; the application maps this binding onto its own resources.
 type ResourceBinding = toolsession.ResourceBinding
 
 // ToolSessionID returns the conversation identity supplied by the framework

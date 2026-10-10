@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -679,28 +680,34 @@ func (s persistFailStore) Persist(identity string, rec VoiceWritePersistedRecord
 }
 
 func TestBindVoiceWriteRequestCopiesGrantScopeAndRejectsMismatch(t *testing.T) {
-	// Proves the workflow hop: the verified session Scope is copied onto the
-	// opaque ResourceBinding (interim ResourceID=LineID, AlternateID=DIDID).
-	// A caller-supplied binding that does not match the grant fails closed.
-	// An omitted binding is filled from the grant, never from the request body.
-	ctxn := voicecontract.Context{
-		ExecutionID: "execution-1", OrganizationID: "org-1", ProjectID: "project-1", EnvironmentID: "env-1", NetworkID: "network-1",
-		CallID: "call-write", SessionID: "session-write", ActorID: "user-1", ActorKind: "user", AgentID: "support", AgentRevision: "revision-1",
-		ManifestDigest: "digest", Generation: 1, Scope: voicecontract.Scope{Kind: "agent", LineID: "line-1", DIDID: "did-1"},
+	// Proves the workflow hop copies only admitted grant Scope shapes that the
+	// real validator accepts: v2 agent (LineID, no DID) and legacy screener
+	// (DIDID + revision, no LineID). A mixed agent+DID fixture is rejected by
+	// ValidateForVersion and is not used as a grant. An omitted binding is
+	// filled from the grant; a mismatched envelope fails closed.
+	agent := admittedAgentWriteContext()
+	if err := agent.ValidateForVersion(voicecontract.Version); err != nil {
+		t.Fatalf("admitted agent context rejected: %v", err)
 	}
-	in := VoiceSessionInput{Context: &ctxn, AgentID: ctxn.AgentID, CallID: ctxn.CallID, SessionID: ctxn.SessionID, ExecutionID: ctxn.ExecutionID}
+	mixed := agent
+	mixed.Scope.DIDID = "did_1"
+	if err := mixed.ValidateForVersion(voicecontract.Version); err == nil {
+		t.Fatal("validator admitted agent scope with a DID")
+	}
+
+	in := VoiceSessionInput{Context: &agent, AgentID: agent.AgentID, CallID: agent.CallID, SessionID: agent.SessionID, ExecutionID: agent.ExecutionID}
 	input, _ := json.Marshal(map[string]any{"q": "hello"})
 	base := VoiceSessionExecuteToolInput{
-		AgentID: ctxn.AgentID, ToolName: "lookup", ToolCallID: "call-1", Input: input,
-		ActorID: ctxn.ActorID, ActorKind: ctxn.ActorKind, NetworkID: ctxn.NetworkID,
+		AgentID: agent.AgentID, ToolName: "lookup", ToolCallID: "call-1", Input: input,
+		ActorID: agent.ActorID, ActorKind: agent.ActorKind, NetworkID: agent.NetworkID,
 	}
 	bound, _, replay, err := bindVoiceWriteRequest(in, base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := agents.ResourceBinding{Kind: "agent", ResourceID: "line-1", AlternateID: "did-1"}
-	if !bound.ResourceBinding.Equal(want) {
-		t.Fatalf("grant binding %#v want %#v", bound.ResourceBinding, want)
+	want := agents.ResourceBinding{Kind: "agent", ResourceID: agent.Scope.LineID}
+	if !bound.ResourceBinding.Equal(want) || bound.ResourceBinding.AlternateID != "" {
+		t.Fatalf("agent grant binding %#v want %#v", bound.ResourceBinding, want)
 	}
 	matched := base
 	matched.ResourceBinding = want
@@ -709,14 +716,55 @@ func TestBindVoiceWriteRequestCopiesGrantScopeAndRejectsMismatch(t *testing.T) {
 		t.Fatalf("matching envelope failed err=%v replay=%q/%q", err, replay, againReplay)
 	}
 	forged := base
-	forged.ResourceBinding = agents.ResourceBinding{Kind: "agent", ResourceID: "forged-line"}
+	forged.ResourceBinding = agents.ResourceBinding{Kind: "agent", ResourceID: "forged_line"}
 	if _, _, _, err = bindVoiceWriteRequest(in, forged); !errors.Is(err, errWriteBindingMismatch) {
 		t.Fatalf("forged binding err=%v", err)
 	}
-	emptyScope := ctxn
+
+	screener := admittedScreenerWriteContext()
+	if err := screener.ValidateForVersion(voicecontract.LegacyVersion); err != nil {
+		t.Fatalf("admitted screener context rejected: %v", err)
+	}
+	screenerIn := VoiceSessionInput{Context: &screener, AgentID: screener.AgentID, CallID: screener.CallID, SessionID: screener.SessionID, ExecutionID: screener.ExecutionID}
+	screenerBase := VoiceSessionExecuteToolInput{
+		AgentID: screener.AgentID, ToolName: "lookup", ToolCallID: "call-1", Input: input,
+		ActorID: screener.ActorID, ActorKind: screener.ActorKind, NetworkID: screener.NetworkID,
+	}
+	screenerBound, _, _, err := bindVoiceWriteRequest(screenerIn, screenerBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screenerWant := agents.ResourceBinding{Kind: "screener", AlternateID: screener.Scope.DIDID}
+	if !screenerBound.ResourceBinding.Equal(screenerWant) || screenerBound.ResourceBinding.ResourceID != "" {
+		t.Fatalf("screener grant binding %#v want %#v", screenerBound.ResourceBinding, screenerWant)
+	}
+
+	emptyScope := agent
 	emptyScope.Scope = voicecontract.Scope{Kind: "agent"}
-	if _, _, _, err = bindVoiceWriteRequest(VoiceSessionInput{Context: &emptyScope, AgentID: ctxn.AgentID, CallID: ctxn.CallID, SessionID: ctxn.SessionID, ExecutionID: ctxn.ExecutionID}, base); !errors.Is(err, errWriteMissingBinding) {
+	if err := emptyScope.Scope.Validate(); err == nil {
+		t.Fatal("empty agent scope passed validator")
+	}
+	if _, _, _, err = bindVoiceWriteRequest(VoiceSessionInput{Context: &emptyScope, AgentID: agent.AgentID, CallID: agent.CallID, SessionID: agent.SessionID, ExecutionID: agent.ExecutionID}, base); !errors.Is(err, errWriteMissingBinding) {
 		t.Fatalf("empty grant scope err=%v", err)
+	}
+}
+
+func admittedAgentWriteContext() voicecontract.Context {
+	return voicecontract.Context{
+		ExecutionID: "execution_2", OrganizationID: "org_1", ProjectID: "project_1", EnvironmentID: "env_1", NetworkID: "network_1",
+		CallID: "call_2", SessionID: "session_2", ActorID: "user_1", ActorKind: "user", AgentID: "support", AgentRevision: "revision_2",
+		ManifestDigest: "sha256:" + strings.Repeat("0", 64), Generation: 1,
+		TransportCallID: "transport_1", ParentCallID: "call_2", HopID: "hop_1", HopCount: 1,
+		Scope: voicecontract.Scope{Kind: "agent", LineID: "line_1"},
+	}
+}
+
+func admittedScreenerWriteContext() voicecontract.Context {
+	return voicecontract.Context{
+		ExecutionID: "execution_1", OrganizationID: "org_1", ProjectID: "project_1", EnvironmentID: "env_1", NetworkID: "network_1",
+		CallID: "call_1", SessionID: "session_1", ActorID: "caller_1", ActorKind: "external_call", AgentID: "call_screener", AgentRevision: "revision_1",
+		ManifestDigest: "sha256:" + strings.Repeat("a", 64), Generation: 1,
+		Scope: voicecontract.Scope{Kind: "screener", DIDID: "did_1", RecipientSetRevision: "1"},
 	}
 }
 
