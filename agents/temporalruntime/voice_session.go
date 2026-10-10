@@ -1,6 +1,7 @@
 package temporalruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -94,6 +95,22 @@ type VoiceSessionExecuteToolInput struct {
 	ApprovalConfirmed      bool                       `json:"approval_confirmed,omitempty"`
 	ApprovalExpiresAt      time.Time                  `json:"approval_expires_at,omitempty"`
 	DecisionEffectIdentity *decisionv1.EffectIdentity `json:"decision_effect_identity,omitempty"`
+}
+
+// UnmarshalJSON rejects unknown envelope keys. An old worker without this
+// method (and without ResourceBinding) would drop `resource_binding` via
+// encoding/json and write unbound; new workers fail closed instead of
+// silently ignoring unexpected fields.
+func (req *VoiceSessionExecuteToolInput) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	type envelope VoiceSessionExecuteToolInput
+	var parsed envelope
+	if err := dec.Decode(&parsed); err != nil {
+		return fmt.Errorf("voice execute-tool envelope rejected: %w", err)
+	}
+	*req = VoiceSessionExecuteToolInput(parsed)
+	return nil
 }
 
 type VoiceSessionToolApproval struct {
@@ -335,7 +352,7 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 			} else if response.DecisionEffectIdentity != nil {
 				return VoiceSessionExecuteToolResult{}, errors.New("decision effect identity supplied for a non-decision approval")
 			}
-			identity := voiceWriteIdentity(req.ToolName, req.ToolCallID)
+			identity := voiceWriteIdentity(req.ToolName, req.ToolCallID, req.CallID)
 			expired := !req.ApprovalExpiresAt.IsZero() && !workflow.Now(ctx).Before(req.ApprovalExpiresAt)
 			// Expired approval blocks a new mutation, but an authorized unknown
 			// outcome must still reconcile via receipt lookup.

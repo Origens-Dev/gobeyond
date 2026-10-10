@@ -1,6 +1,7 @@
 package temporalruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Origens-Dev/gobeyond/agents"
 	"github.com/Origens-Dev/gobeyond/agents/voicecontract"
@@ -120,7 +122,7 @@ func TestVoiceWriteWorkflowLostResponseReconcilesOneMutation(t *testing.T) {
 	if drop {
 		t.Fatal("lost-response wrapper never ran")
 	}
-	ledgerID := voiceWriteLedgerIdentity(in.SessionID, base.ToolName, base.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(in.SessionID, in.CallID, base.ToolName, base.ToolCallID)
 	complete, unknown, metered, result := voiceWriteLedgerState(ledgerID)
 	if !complete || unknown || !metered || len(result.Result) == 0 {
 		t.Fatalf("durable ledger complete=%v unknown=%v metered=%v result=%s", complete, unknown, metered, result.Result)
@@ -129,7 +131,7 @@ func TestVoiceWriteWorkflowLostResponseReconcilesOneMutation(t *testing.T) {
 
 func TestVoiceWriteWorkflowPersistsReturnedErrorAsUnknownForReconciliation(t *testing.T) {
 	state := newVoiceWriteWorkflowState()
-	identity := voiceWriteIdentity("connect", "effect_1")
+	identity := voiceWriteIdentity("connect", "effect_1", "call_1")
 	state.pending[identity] = true
 	result, err := state.finish(identity, VoiceSessionExecuteToolResult{Error: "provider outcome unavailable"}, nil)
 	if !errors.Is(err, errWriteOutcomeUnknown) || !state.unknown[identity] || state.pending[identity] {
@@ -156,7 +158,7 @@ func TestVoiceWriteEmptyCacheRetryAfterCommitIsOneMutation(t *testing.T) {
 	if err != nil || second.Error != "" || calls != 1 || string(second.Result) != string(first.Result) {
 		t.Fatalf("empty-cache retry first=%s second=%s err=%v calls=%d", first.Result, second.Result, err, calls)
 	}
-	complete, unknown, metered, result := voiceWriteLedgerState(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID))
+	complete, unknown, metered, result := voiceWriteLedgerState(voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID))
 	if !complete || unknown || !metered || string(result.Result) != string(first.Result) {
 		t.Fatalf("metering not retained complete=%v unknown=%v metered=%v result=%s", complete, unknown, metered, result.Result)
 	}
@@ -183,7 +185,7 @@ func TestVoiceWriteEmptyCacheUnknownDoesNotExecute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID), key, replay); err != nil {
+	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID), key, replay); err != nil {
 		t.Fatal(err)
 	}
 	reopenVoiceWriteLedger()
@@ -217,7 +219,7 @@ func TestVoiceWriteHostLossReconcilesFromAuthoritativeStore(t *testing.T) {
 	if err != nil || first.Error != "" || calls != 1 {
 		t.Fatalf("commit first=%#v err=%v calls=%d", first, err, calls)
 	}
-	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	// Authoritative mutation/result lives in the shared store — not only on host A.
 	auth, ok, loadErr := authority.Load(ledgerID)
 	if loadErr != nil || !ok || !auth.Complete || !auth.Metered || string(auth.Result.Result) != string(first.Result) {
@@ -269,7 +271,7 @@ func TestVoiceWriteRetainAuthorityFreshHostRecoversViaReceiptLookup(t *testing.T
 	if err != nil || first.Error != "" || calls != 1 {
 		t.Fatalf("commit first=%#v err=%v calls=%d", first, err, calls)
 	}
-	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	auth, ok, loadErr := receipts.Load(ledgerID)
 	if loadErr != nil || !ok || !auth.Complete || auth.Key == "" || string(auth.Result.Result) != string(first.Result) {
 		t.Fatalf("receipt authority before host loss: ok=%v complete=%v key=%q result=%s err=%v", ok, auth.Complete, auth.Key, auth.Result.Result, loadErr)
@@ -313,7 +315,7 @@ func TestVoiceWritePendingRefreshesWhenPeerCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	pending := VoiceWritePersistedRecord{Identity: ledgerID, Key: key, Digest: replay}
 	if err := authority.Reserve(ledgerID, pending); err != nil {
 		t.Fatal(err)
@@ -358,7 +360,7 @@ func TestVoiceWriteToolErrorIsUnknownNotCompletedFailure(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("tool error mutations=%d", calls)
 	}
-	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	complete, unknown, metered, cached := voiceWriteLedgerState(ledgerID)
 	if complete || !unknown || !metered || cached.Error != "" || len(cached.Result) != 0 {
 		t.Fatalf("tool error ledger complete=%v unknown=%v metered=%v result=%#v", complete, unknown, metered, cached)
@@ -388,7 +390,7 @@ func TestVoiceWriteToolErrorThenPeerCompleteRefreshes(t *testing.T) {
 	if !errors.Is(err, errWriteOutcomeUnknown) {
 		t.Fatalf("tool error err=%v", err)
 	}
-	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	auth, ok, loadErr := authority.Load(ledgerID)
 	if loadErr != nil || !ok || auth.Complete || !auth.Unknown {
 		t.Fatalf("authority after uncertain write: ok=%v complete=%v unknown=%v err=%v", ok, auth.Complete, auth.Unknown, loadErr)
@@ -430,7 +432,7 @@ func TestVoiceWriteLegacyCompletedFailureRefreshesFromAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	// Legacy sticky completed-failure row (Error under complete=true).
 	legacy := VoiceWritePersistedRecord{
 		Identity: ledgerID, Key: key, Digest: replay, Complete: true, Metered: true,
@@ -497,7 +499,7 @@ func TestVoiceWritePersistErrorFailsClosedWithoutReexecute(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("persist failure mutations=%d", calls)
 	}
-	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	auth, ok, loadErr := inner.Load(ledgerID)
 	if loadErr != nil || !ok || auth.Complete || !auth.Unknown || !auth.Metered {
 		t.Fatalf("authority after persist fail: ok=%v complete=%v unknown=%v metered=%v err=%v", ok, auth.Complete, auth.Unknown, auth.Metered, loadErr)
@@ -525,7 +527,7 @@ func TestVoiceWritePersistAlwaysFailLeavesReservationFailClosed(t *testing.T) {
 	if !errors.Is(err, errWriteOutcomeUnknown) || !errors.Is(err, errWriteLedgerPersist) {
 		t.Fatalf("persist failure err=%v", err)
 	}
-	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	ledgerID := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	auth, ok, loadErr := inner.Load(ledgerID)
 	// Exclusive reserve survived; complete mark did not. Pending is fail-closed.
 	if loadErr != nil || !ok || auth.Complete || auth.Unknown {
@@ -557,7 +559,7 @@ func TestVoiceWriteHostLocalPersistErrorFailsClosed(t *testing.T) {
 		t.Fatalf("host-local persist failure mutations=%d", calls)
 	}
 	reopen := openVoiceWriteLedger(localDir)
-	rec, ok, loadErr := reopen.loadDurableLocked(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID))
+	rec, ok, loadErr := reopen.loadDurableLocked(voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID))
 	if loadErr != nil || !ok || rec.complete || !rec.unknown || !rec.metered {
 		t.Fatalf("host-local after persist fail: ok=%v complete=%v unknown=%v metered=%v err=%v", ok, rec.complete, rec.unknown, rec.metered, loadErr)
 	}
@@ -640,7 +642,7 @@ func TestVoiceWriteWorkflowPersistErrorHostLossDoesNotReexecute(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("mutations=%d want 1", calls)
 	}
-	auth, ok, loadErr := inner.Load(voiceWriteLedgerIdentity(in.SessionID, base.ToolName, base.ToolCallID))
+	auth, ok, loadErr := inner.Load(voiceWriteLedgerIdentity(in.SessionID, in.CallID, base.ToolName, base.ToolCallID))
 	if loadErr != nil || !ok || auth.Complete || !auth.Unknown {
 		t.Fatalf("authority after workflow persist fail: ok=%v complete=%v unknown=%v err=%v", ok, auth.Complete, auth.Unknown, loadErr)
 	}
@@ -837,7 +839,7 @@ func TestVoiceWriteUncertainOutcomeReconcilesWithoutReexecute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID), key, replay); err != nil {
+	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID), key, replay); err != nil {
 		t.Fatal(err)
 	}
 	req.WriteReconcileOnly = true
@@ -936,4 +938,168 @@ func (s *receiptLookupAuthority) Persist(identity string, rec VoiceWritePersiste
 		s.byWriteID[rec.Key] = rec
 	}
 	return nil
+}
+
+func TestSameSessionChildCallsRetainDistinctWriteAndReplayIdentities(t *testing.T) {
+	// Two same-agent child calls share a session and tool_call_id but have
+	// different CallIDs. Write and replay identities must stay distinct so
+	// the second hop is not a false replay conflict, and each hop's replay
+	// coalesces only to itself.
+	resetVoiceWriteLedgerWithDir(t.TempDir())
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	agent := admittedAgentWriteContext()
+	agent.ManifestDigest = req.ManifestDigest
+	agent.AgentRevision = req.AgentRevision
+	agent.AgentID = req.AgentID
+	agent.SessionID = "session_shared"
+	if err := agent.ValidateForVersion(voicecontract.Version); err != nil {
+		t.Fatalf("admitted child context rejected: %v", err)
+	}
+	req.SessionID = agent.SessionID
+	req.ActorID = agent.ActorID
+	req.ActorKind = agent.ActorKind
+	req.NetworkID = agent.NetworkID
+
+	childA := req
+	childA.CallID = "child_call_a"
+	childA.ToolCallID = "shared-tool-call"
+	childA.ResourceBinding = agents.ResourceBinding{}
+	childB := req
+	childB.CallID = "child_call_b"
+	childB.ToolCallID = "shared-tool-call"
+	childB.ResourceBinding = agents.ResourceBinding{}
+
+	sessionA := VoiceSessionInput{Context: &agent, AgentID: agent.AgentID, CallID: childA.CallID, SessionID: agent.SessionID, ExecutionID: agent.ExecutionID}
+	sessionB := VoiceSessionInput{Context: &agent, AgentID: agent.AgentID, CallID: childB.CallID, SessionID: agent.SessionID, ExecutionID: agent.ExecutionID}
+	boundA, identityA, replayA, err := bindVoiceWriteRequest(sessionA, childA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundB, identityB, replayB, err := bindVoiceWriteRequest(sessionB, childB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identityA == identityB {
+		t.Fatalf("child calls aliased workflow identity %q", identityA)
+	}
+	if replayA == replayB {
+		t.Fatalf("child calls aliased replay digest %q", replayA)
+	}
+	ledgerA := voiceWriteLedgerIdentity(boundA.SessionID, boundA.CallID, boundA.ToolName, boundA.ToolCallID)
+	ledgerB := voiceWriteLedgerIdentity(boundB.SessionID, boundB.CallID, boundB.ToolName, boundB.ToolCallID)
+	if ledgerA == ledgerB {
+		t.Fatalf("child calls aliased ledger identity %q", ledgerA)
+	}
+	if boundA.IdempotencyKey == boundB.IdempotencyKey {
+		t.Fatalf("child calls aliased write key %q", boundA.IdempotencyKey)
+	}
+
+	firstA, err := VoiceSessionExecuteToolActivity(context.Background(), boundA)
+	if err != nil || firstA.Error != "" || calls != 1 {
+		t.Fatalf("child A write %#v err=%v calls=%d", firstA, err, calls)
+	}
+	firstB, err := VoiceSessionExecuteToolActivity(context.Background(), boundB)
+	if err != nil || firstB.Error != "" || calls != 2 {
+		t.Fatalf("child B write %#v err=%v calls=%d", firstB, err, calls)
+	}
+
+	replayWriteA, err := VoiceSessionExecuteToolActivity(context.Background(), boundA)
+	if err != nil || replayWriteA.Error != "" || calls != 2 || string(replayWriteA.Result) != string(firstA.Result) {
+		t.Fatalf("child A replay mutated first=%s replay=%s err=%v calls=%d", firstA.Result, replayWriteA.Result, err, calls)
+	}
+	replayWriteB, err := VoiceSessionExecuteToolActivity(context.Background(), boundB)
+	if err != nil || replayWriteB.Error != "" || calls != 2 || string(replayWriteB.Result) != string(firstB.Result) {
+		t.Fatalf("child B replay mutated first=%s replay=%s err=%v calls=%d", firstB.Result, replayWriteB.Result, err, calls)
+	}
+}
+
+// legacyVoiceWriteExecuteToolInput is the frozen pre-ResourceBinding Temporal
+// execute-tool envelope (workers at or before the alpha.120 pin). encoding/json
+// drops unknown keys, so a new `resource_binding` never reaches old execute.
+type legacyVoiceWriteExecuteToolInput struct {
+	SourcePlayback         json.RawMessage `json:"source_playback,omitempty"`
+	HiddenCompletion       json.RawMessage `json:"hidden_completion,omitempty"`
+	BudgetPolicy           string          `json:"budget_policy,omitempty"`
+	Grant                  string          `json:"grant,omitempty"`
+	RemoteRead             json.RawMessage `json:"remote_read,omitempty"`
+	CallControl            json.RawMessage `json:"call_control,omitempty"`
+	AgentID                string          `json:"agent_id"`
+	ToolName               string          `json:"tool_name"`
+	ToolCallID             string          `json:"tool_call_id,omitempty"`
+	Input                  json.RawMessage `json:"input,omitempty"`
+	ActorID                string          `json:"actor_id,omitempty"`
+	ActorKind              string          `json:"actor_kind,omitempty"`
+	NetworkID              string          `json:"network_id,omitempty"`
+	ManifestDigest         string          `json:"manifest_digest,omitempty"`
+	AgentRevision          string          `json:"agent_revision,omitempty"`
+	AllowedToolIDs         []string        `json:"allowed_tool_ids,omitempty"`
+	SessionID              string          `json:"session_id,omitempty"`
+	CallID                 string          `json:"call_id,omitempty"`
+	IdempotencyKey         string          `json:"idempotency_key,omitempty"`
+	WriteReconcileOnly     bool            `json:"write_reconcile_only,omitempty"`
+	ApprovalConfirmed      bool            `json:"approval_confirmed,omitempty"`
+	ApprovalExpiresAt      time.Time       `json:"approval_expires_at,omitempty"`
+	DecisionEffectIdentity json.RawMessage `json:"decision_effect_identity,omitempty"`
+}
+
+func TestOldSDKWorkerReceivingResourceBindingFailsClosed(t *testing.T) {
+	// Defined behavior: an old worker DTO silently drops resource_binding.
+	// That dropped payload must not write. Current workers reject unknown
+	// envelope keys and require Present() before the handler runs.
+	resetVoiceWriteLedgerWithDir(t.TempDir())
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"resource_binding"`)) {
+		t.Fatalf("new payload omitted resource_binding: %s", raw)
+	}
+
+	var legacy legacyVoiceWriteExecuteToolInput
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	dropped, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(dropped, []byte(`"resource_binding"`)) {
+		t.Fatal("old DTO retained resource_binding")
+	}
+
+	var unknown VoiceSessionExecuteToolInput
+	if err := json.Unmarshal([]byte(`{"agent_id":"support","tool_name":"lookup","unexpected_field":true}`), &unknown); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("new worker accepted unknown envelope field err=%v", err)
+	}
+
+	var kept VoiceSessionExecuteToolInput
+	if err := json.Unmarshal(raw, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if !kept.ResourceBinding.Present() || !kept.ResourceBinding.Equal(req.ResourceBinding) {
+		t.Fatalf("new decode dropped binding %#v", kept.ResourceBinding)
+	}
+
+	var reconstructed VoiceSessionExecuteToolInput
+	if err := json.Unmarshal(dropped, &reconstructed); err != nil {
+		t.Fatal(err)
+	}
+	if reconstructed.ResourceBinding.Present() {
+		t.Fatalf("reconstructed old payload kept binding %#v", reconstructed.ResourceBinding)
+	}
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), reconstructed); !errors.Is(err, errWriteMissingBinding) {
+		t.Fatalf("dropped binding err=%v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("old-worker drop executed handler calls=%d", calls)
+	}
 }

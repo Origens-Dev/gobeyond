@@ -49,12 +49,19 @@ func newVoiceWriteWorkflowState() *voiceWriteWorkflowState {
 	return &voiceWriteWorkflowState{digests: map[string]string{}, results: map[string]VoiceSessionExecuteToolResult{}, pending: map[string]bool{}, unknown: map[string]bool{}}
 }
 
-func voiceWriteIdentity(toolName, toolCallID string) string {
-	return toolName + "/" + toolCallID
+// voiceWriteIdentity keys workflow reservation for one write. CallID is
+// required so two same-agent child calls that share a session cannot alias
+// one another when a tool_call_id is reused across hops.
+func voiceWriteIdentity(toolName, toolCallID, callID string) string {
+	return toolName + "/" + toolCallID + "/" + callID
 }
 
-func voiceWriteLedgerIdentity(sessionID, toolID, toolCallID string) string {
-	return sessionID + "/" + toolID + "/" + toolCallID
+// voiceWriteLedgerIdentity keys the process/durable write ledger. CallID is
+// included so a shared SessionID with distinct child CallIDs cannot collide.
+// deriveVoiceWriteKey already includes call_id; colliding ledger identity with
+// distinct keys would surface as a false replay conflict.
+func voiceWriteLedgerIdentity(sessionID, callID, toolID, toolCallID string) string {
+	return sessionID + "/" + callID + "/" + toolID + "/" + toolCallID
 }
 
 func deriveVoiceWriteKey(sessionID, callID, toolID, toolCallID, inputDigest string) (string, error) {
@@ -73,8 +80,9 @@ func deriveVoiceWriteKey(sessionID, callID, toolID, toolCallID, inputDigest stri
 
 func voiceWriteReplayDigest(req VoiceSessionExecuteToolInput, inputDigest string) (string, error) {
 	raw, err := json.Marshal(map[string]string{
-		"actor_id": req.ActorID, "actor_kind": req.ActorKind, "agent_id": req.AgentID, "input_digest": inputDigest,
-		"manifest_digest": req.ManifestDigest, "network_id": req.NetworkID, "tool_call_id": req.ToolCallID, "tool_name": req.ToolName,
+		"actor_id": req.ActorID, "actor_kind": req.ActorKind, "agent_id": req.AgentID, "call_id": req.CallID,
+		"input_digest": inputDigest, "manifest_digest": req.ManifestDigest, "network_id": req.NetworkID,
+		"session_id": req.SessionID, "tool_call_id": req.ToolCallID, "tool_name": req.ToolName,
 		"binding_kind": req.ResourceBinding.Kind, "binding_resource_id": req.ResourceBinding.ResourceID,
 		"binding_alternate_id": req.ResourceBinding.AlternateID,
 	})
@@ -129,7 +137,7 @@ func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInpu
 	}
 	req.IdempotencyKey = key
 	req.WriteReconcileOnly = false
-	return req, voiceWriteIdentity(req.ToolName, req.ToolCallID), replay, nil
+	return req, voiceWriteIdentity(req.ToolName, req.ToolCallID, req.CallID), replay, nil
 }
 
 func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, toolID, toolCallID, replay string) (VoiceSessionExecuteToolResult, bool, error) {
@@ -299,7 +307,7 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 		}
 		return VoiceSessionExecuteToolResult{Approval: approval}, nil
 	}
-	identity := voiceWriteLedgerIdentity(sessionID, toolName, toolCallID)
+	identity := voiceWriteLedgerIdentity(sessionID, callID, toolName, toolCallID)
 	result, err := processWriteLedger.dispatch(identity, key, replay, req.WriteReconcileOnly, func() (VoiceSessionExecuteToolResult, error) {
 		execResult, execErr := tool.Execute(ctx, toolCall, ai.ToolExecutionOptions{
 			Context: toolsession.ExecutionContextWithWrite(actor, sessionID, key, req.ResourceBinding),

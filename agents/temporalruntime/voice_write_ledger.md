@@ -6,8 +6,19 @@ opaque grant-sourced `resource_binding` (interim: `resource_id` from
 `bindVoiceWriteRequest` overwrites the binding from the verified session
 Scope; HTTP bodies and model arguments cannot populate it. LocalActivity
 dispatch projects the binding through `ToolResourceBinding` and the write
-key through `ToolWriteID`. This note covers only where the write result
-store lives.
+key through `ToolWriteID`. Workflow reservation, ledger identity, and replay
+digest include CallID so two same-agent child calls sharing a SessionID
+cannot alias. New workers reject unknown envelope keys; an old worker that
+drops `resource_binding` must not be the receiving poller. This note covers
+only where the write result store lives.
+
+**Receiving worker.** `executeVoiceWriteActivity` runs as a LocalActivity on
+the customer Temporal worker that registered `RegisterVoiceSessionWorkflow`
+(generated `cmd/workflows/<queue>` poller). It does **not** run in Maglev,
+the API lambda, or gobeyond-internal `voice-worker` (RTP). Candlestick
+Origens task-queue deploys for `realtime-voice-mail`, `realtime-call-screener`,
+`realtime-portal-support`, and the other `realtime-*` queues that compile this
+SDK must be upgraded before the API emits `resource_binding`.
 
 **Layers**
 
