@@ -22,6 +22,7 @@ var errWriteConflict = errors.New("conflicting write replay")
 var errWriteForgedKey = errors.New("forged write idempotency key")
 var errWriteMissingBinding = errors.New("voice write requires a verified resource binding")
 var errWriteBindingMismatch = errors.New("resource binding does not match the verified session")
+var errWriteCallIDMismatch = errors.New("voice write call_id does not match the verified session")
 
 // resourceBindingFromGrantScope is an INTERIM mapping of the verified grant
 // Scope onto the opaque SDK ResourceBinding. Admitted shapes (Scope.Validate):
@@ -117,6 +118,14 @@ func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInpu
 	req.ManifestDigest = in.Context.ManifestDigest
 	req.AgentRevision = in.Context.AgentRevision
 	req.SessionID = in.SessionID
+	// The workflow CallID is the verified session's. A child Update that
+	// carries a different CallID used to be overwritten and could alias
+	// write/replay identity with the original call. Reject the mismatch
+	// instead of silently restamping. An omitted CallID is filled from
+	// the session (the API/Maglev path).
+	if supplied := strings.TrimSpace(req.CallID); supplied != "" && supplied != strings.TrimSpace(in.CallID) {
+		return req, "", "", errWriteCallIDMismatch
+	}
 	req.CallID = in.CallID
 	if strings.TrimSpace(req.ToolCallID) == "" {
 		return req, "", "", errWriteToolCallID

@@ -12,7 +12,9 @@
   `AlternateID`. One grant never carries both. Missing or mismatched
   bindings fail closed. Replay digests include the binding. Workflow
   reservation, ledger identity, and replay digest include CallID so two
-  same-agent child calls that share a session cannot alias writes. New
+  same-agent child calls that share a session cannot alias writes. A write
+  Update whose CallID is present and differs from the verified workflow
+  CallID is rejected (the binder no longer silently restamps it). New
   workers reject unknown execute-tool envelope keys (`DisallowUnknownFields`)
   and refuse a write after `resource_binding` is absent; old workers that
   drop the field must be upgraded before the API emits it. The SDK does

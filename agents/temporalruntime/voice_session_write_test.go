@@ -1017,6 +1017,87 @@ func TestSameSessionChildCallsRetainDistinctWriteAndReplayIdentities(t *testing.
 	}
 }
 
+func TestOneWorkflowChildCallIDMismatchIsRejected(t *testing.T) {
+	// Two child Updates against ONE VoiceSessionWorkflow. The binder used to
+	// restamp each payload CallID with the original session CallID, aliasing
+	// write/replay identity. A present mismatch is now rejected. Tested
+	// through bind + reserve on a single workflow, then write/replay of the
+	// session-matching update.
+	resetVoiceWriteLedgerWithDir(t.TempDir())
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	agent := admittedAgentWriteContext()
+	agent.ManifestDigest = req.ManifestDigest
+	agent.AgentRevision = req.AgentRevision
+	agent.AgentID = req.AgentID
+	agent.SessionID = "session_shared"
+	agent.CallID = "original_call"
+	if err := agent.ValidateForVersion(voicecontract.Version); err != nil {
+		t.Fatalf("admitted session context rejected: %v", err)
+	}
+	req.SessionID = agent.SessionID
+	req.ActorID = agent.ActorID
+	req.ActorKind = agent.ActorKind
+	req.NetworkID = agent.NetworkID
+	req.ResourceBinding = agents.ResourceBinding{}
+	in := VoiceSessionInput{Context: &agent, AgentID: agent.AgentID, CallID: agent.CallID, SessionID: agent.SessionID, ExecutionID: agent.ExecutionID}
+
+	childA := req
+	childA.CallID = "child_call_a"
+	childA.ToolCallID = "shared-tool-call"
+	childB := req
+	childB.CallID = "child_call_b"
+	childB.ToolCallID = "shared-tool-call"
+	if _, _, _, err := bindVoiceWriteRequest(in, childA); !errors.Is(err, errWriteCallIDMismatch) {
+		t.Fatalf("child A restamp err=%v", err)
+	}
+	if _, _, _, err := bindVoiceWriteRequest(in, childB); !errors.Is(err, errWriteCallIDMismatch) {
+		t.Fatalf("child B restamp err=%v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("rejected child CallID executed handler calls=%d", calls)
+	}
+
+	matched := req
+	matched.CallID = ""
+	matched.ToolCallID = "session-tool-call"
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivityWithOptions(VoiceSessionExecuteToolActivity, activity.RegisterOptions{Name: voiceSessionExecuteToolActivityName})
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		writes := newVoiceWriteWorkflowState()
+		bound, identity, replay, err := bindVoiceWriteRequest(in, matched)
+		if err != nil {
+			return err
+		}
+		if _, done, reserveErr := writes.reserve(ctx, identity, bound.ToolName, bound.ToolCallID, replay); reserveErr != nil || done {
+			return errors.New("first reserve")
+		}
+		result, execErr := executeVoiceWriteToolLocal(ctx, bound)
+		result, execErr = writes.finish(identity, result, execErr)
+		if execErr != nil || result.Error != "" {
+			return fmt.Errorf("session write: %#v %v", result, execErr)
+		}
+		cached, done, reserveErr := writes.reserve(ctx, identity, bound.ToolName, bound.ToolCallID, replay)
+		if reserveErr != nil || !done || string(cached.Result) != string(result.Result) {
+			return errors.New("session replay missing")
+		}
+		if _, _, _, mismatch := bindVoiceWriteRequest(in, childA); !errors.Is(mismatch, errWriteCallIDMismatch) {
+			return fmt.Errorf("workflow child restamp err=%v", mismatch)
+		}
+		return nil
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("session write mutations=%d want 1", calls)
+	}
+}
+
 // legacyVoiceWriteExecuteToolInput is the frozen pre-ResourceBinding Temporal
 // execute-tool envelope (workers at or before the alpha.120 pin). encoding/json
 // drops unknown keys, so a new `resource_binding` never reaches old execute.

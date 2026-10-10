@@ -4,13 +4,16 @@ The execute-tool envelope carries a platform-derived idempotency key and an
 opaque grant-sourced `resource_binding` (interim: `resource_id` from
 `Scope.LineID`, `alternate_id` from `Scope.DIDID`). Workflow
 `bindVoiceWriteRequest` overwrites the binding from the verified session
-Scope; HTTP bodies and model arguments cannot populate it. LocalActivity
-dispatch projects the binding through `ToolResourceBinding` and the write
-key through `ToolWriteID`. Workflow reservation, ledger identity, and replay
-digest include CallID so two same-agent child calls sharing a SessionID
-cannot alias. New workers reject unknown envelope keys; an old worker that
-drops `resource_binding` must not be the receiving poller. This note covers
-only where the write result store lives.
+Scope; HTTP bodies and model arguments cannot populate it. A present
+`call_id` that does not match the verified workflow CallID is rejected
+(the binder does not silently restamp a child hop onto the original call).
+LocalActivity dispatch projects the binding through `ToolResourceBinding`
+and the write key through `ToolWriteID`. Workflow reservation, ledger
+identity, and replay digest include CallID so two same-agent child calls
+that each have their own session workflow cannot alias. New workers reject
+unknown envelope keys; an old worker that drops `resource_binding` must not
+be the receiving poller. This note covers only where the write result store
+lives.
 
 **Receiving worker.** `executeVoiceWriteActivity` runs as a LocalActivity on
 the customer Temporal worker that registered `RegisterVoiceSessionWorkflow`
