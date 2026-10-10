@@ -1,0 +1,31 @@
+fallback:
+    terminal: safe_stop
+id: /help
+next:
+    - outcome: completed
+      source: playback
+      target:
+        terminal: end_session
+    - outcome: cleared
+      source: playback
+      target:
+        terminal: end_session
+    - outcome: failed
+      source: playback
+      target:
+        terminal: end_session
+    - outcome: cancelled
+      source: control
+      target:
+        terminal: end_session
+    - outcome: disconnected
+      source: control
+      target:
+        terminal: end_session
+say:
+    families:
+        - prompt.help
+    localeSource: session
+useBindings: []
+useServices: []
+useTools: []
