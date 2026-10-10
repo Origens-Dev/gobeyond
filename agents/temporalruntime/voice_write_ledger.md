@@ -1,8 +1,27 @@
 # VoiceWrite ledger: process cache vs host-local vs authority
 
-The execute-tool envelope is unchanged: platform-derived idempotency key,
-workflow reserve/coalesce/unknown, LocalActivity dispatch, handler
-`ToolWriteID`. This note covers only where the write result store lives.
+The execute-tool envelope carries a platform-derived idempotency key and an
+opaque grant-sourced `resource_binding` (interim: `resource_id` from
+`Scope.LineID`, `alternate_id` from `Scope.DIDID`). Workflow
+`bindVoiceWriteRequest` overwrites the binding from the verified session
+Scope; HTTP bodies and model arguments cannot populate it. A present
+`call_id` that does not match the verified workflow CallID is rejected
+(the binder does not silently restamp a child hop onto the original call).
+LocalActivity dispatch projects the binding through `ToolResourceBinding`
+and the write key through `ToolWriteID`. Workflow reservation, ledger
+identity, and replay digest include CallID so two same-agent child calls
+that each have their own session workflow cannot alias. New workers reject
+unknown envelope keys; an old worker that drops `resource_binding` must not
+be the receiving poller. This note covers only where the write result store
+lives.
+
+**Receiving worker.** `executeVoiceWriteActivity` runs as a LocalActivity on
+the customer Temporal worker that registered `RegisterVoiceSessionWorkflow`
+(generated `cmd/workflows/<queue>` poller). It does **not** run in Maglev,
+the API lambda, or the hosted RTP media worker. Customer task-queue pollers
+whose WorkerID is `realtime-` plus the compiled agent id (mailbox, screener,
+portal-support, and the other realtime queues that compile this SDK) must
+be upgraded before the API emits `resource_binding`.
 
 **Layers**
 

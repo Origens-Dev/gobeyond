@@ -64,7 +64,7 @@ func TestVoiceWriteOrdinaryHandlerCannotBypassApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(agents.Actor{ID: "user-1", Kind: "user"}, "sess-1", "sess-1/archive_desk_note/call-1")}
+	opts := ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(agents.Actor{ID: "user-1", Kind: "user"}, "sess-1", "sess-1/archive_desk_note/call-1", agents.ResourceBinding{})}
 	_, err = executeVoiceAgentTool(context.Background(), bound, ai.ToolCall{ToolCallID: "call-1", ToolName: bound.Name, Input: map[string]any{"q": "x"}}, opts)
 	if !errors.Is(err, errVoiceApprovalUnavailable) || calls != 0 {
 		t.Fatalf("approval bypassed error=%v calls=%d", err, calls)
@@ -87,7 +87,7 @@ func TestVoiceWriteOrdinaryHandlerRejectedWithoutIdentity(t *testing.T) {
 func TestVoiceWriteOrdinaryHandlerRejectedWithoutDispatcher(t *testing.T) {
 	calls := 0
 	tool := independentlyNamedOrdinaryWrite(t, &calls)
-	opts := ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(agents.Actor{ID: "user-1", Kind: "user"}, "sess-1", "sess-1/archive_desk_note/call-1")}
+	opts := ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(agents.Actor{ID: "user-1", Kind: "user"}, "sess-1", "sess-1/archive_desk_note/call-1", agents.ResourceBinding{})}
 	_, err := executeVoiceAgentTool(context.Background(), tool, ai.ToolCall{ToolCallID: "call-1", ToolName: tool.Name, Input: map[string]any{"q": "x"}}, opts)
 	if !errors.Is(err, errVoiceWriteRequiresDurableDispatcher) || calls != 0 {
 		t.Fatalf("error=%v calls=%d", err, calls)
@@ -105,7 +105,7 @@ func TestVoiceWriteDurableDispatcherExecutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := executeVoiceAgentTool(context.Background(), bound, ai.ToolCall{ToolCallID: "call-1", ToolName: bound.Name, Input: map[string]any{"q": "x"}}, ai.ToolExecutionOptions{
-		Context: toolsession.ExecutionContextWithWrite(agents.Actor{ID: "user-1", Kind: "user"}, "sess-1", "sess-1/archive_desk_note/call-1"),
+		Context: toolsession.ExecutionContextWithWrite(agents.Actor{ID: "user-1", Kind: "user"}, "sess-1", "sess-1/archive_desk_note/call-1", agents.ResourceBinding{}),
 	})
 	if err != nil || calls != 1 {
 		t.Fatalf("error=%v calls=%d", err, calls)

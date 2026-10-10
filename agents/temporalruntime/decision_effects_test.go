@@ -333,6 +333,7 @@ func newSyntheticDecisionWriteFixture(t *testing.T, sessionID string, generation
 			ToolCallID: identity.ID, Input: toolInput, ActorID: call.Actor.ID, ActorKind: call.Actor.Kind,
 			NetworkID: "synthetic-network", ManifestDigest: manifestDigest, AgentRevision: "synthetic-revision",
 			AllowedToolIDs: []string{toolSpec.ID},
+			ResourceBinding: agents.ResourceBinding{Kind: "agent", ResourceID: "line_approval"},
 		},
 	}
 	receipt := decisionv1.EffectReceipt{

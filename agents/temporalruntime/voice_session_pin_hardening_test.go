@@ -28,7 +28,7 @@ func TestVoiceWriteRecoveredSuccessValidatedWithoutRerun(t *testing.T) {
 	if err != nil || first.Error != "" || calls != 1 {
 		t.Fatalf("first write err=%v result=%#v calls=%d", err, first, calls)
 	}
-	identity := voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID)
+	identity := voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID)
 	rec, ok, loadErr := authority.Load(identity)
 	if loadErr != nil || !ok || !rec.Complete {
 		t.Fatalf("authority seed ok=%v err=%v", ok, loadErr)

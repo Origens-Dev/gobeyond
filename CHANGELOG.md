@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Copy an opaque grant-sourced `ResourceBinding` (`kind`, `resource_id`,
+  `alternate_id`) from the verified voice session Scope into VoiceWrite
+  tool execution. Handlers read it with `ToolResourceBinding`; session and
+  write identity stay on `ToolSessionID` / `ToolWriteID`. None of those
+  values are placed on actor metadata. Interim mapping (documented
+  boundary, not a product contract): admitted v2 agent scopes copy
+  `LineID` → `ResourceID`; admitted legacy screener scopes copy `DIDID` →
+  `AlternateID`. One grant never carries both. Missing or mismatched
+  bindings fail closed. Replay digests include the binding. Workflow
+  reservation, ledger identity, and replay digest include CallID so two
+  same-agent child calls that share a session cannot alias writes. A write
+  Update whose CallID is present and differs from the verified workflow
+  CallID is rejected (the binder no longer silently restamps it). Separate
+  same-session child workflows keep distinct ExecutionIDs. Callers bind
+  writes with `BindVoiceWriteRequest` (grant Scope fills ResourceBinding). New
+  workers reject unknown execute-tool envelope keys (`DisallowUnknownFields`)
+  and refuse a write after `resource_binding` is absent; old workers that
+  drop the field must be upgraded before the API emits it. The SDK does
+  not name mailbox product fields.
+
 - Freeze authored playback/completion pairs under `VoiceBudgetPolicy:
   "generic_v1"` (`ManifestDeclaresPlayback`, session-wide tool consume
   including writes). Any frozen agent/tool pair can execute; Operator

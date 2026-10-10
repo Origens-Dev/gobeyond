@@ -18,6 +18,10 @@ func voiceWriteClosedSchemas() (input any, output any) {
 	return input, output
 }
 
+func voiceWriteTestBinding() agents.ResourceBinding {
+	return agents.ResourceBinding{Kind: "agent", ResourceID: "line-1"}
+}
+
 func TestVoiceSessionExecuteToolActivityRegistryMiss(t *testing.T) {
 	RetainVoiceRegistry(nil)
 	out, err := VoiceSessionExecuteToolActivity(context.Background(), VoiceSessionExecuteToolInput{
@@ -36,9 +40,20 @@ func TestVoiceSessionExecuteToolActivityRunsTool(t *testing.T) {
 	reg := NewVoiceRegistry()
 	schema, output := voiceWriteClosedSchemas()
 	var gotWriteID string
+	var gotBinding agents.ResourceBinding
+	var gotBindingOK bool
+	var gotSessionID string
 	definition := agents.DefineAI(agents.AIConfig{Revision: "revision-1", Tools: map[string]agents.AITool{
 		"lookup": agents.DefineTool(agents.ToolConfig{Name: "lookup", Description: "Lookup", InputSchema: schema, OutputSchema: output, VoiceWrite: true}, func(ctx context.Context, actor agents.Actor, input map[string]any) (any, error) {
 			gotWriteID, _ = agents.ToolWriteID(ctx)
+			gotSessionID, _ = agents.ToolSessionID(ctx)
+			gotBinding, gotBindingOK = agents.ToolResourceBinding(ctx)
+			if _, mailbox := actor.Metadata["mailbox_line_id"]; mailbox {
+				t.Error("mailbox product field leaked onto actor metadata")
+			}
+			if _, session := actor.Metadata["session_id"]; session {
+				t.Error("session identity leaked onto actor metadata")
+			}
 			return map[string]any{"ok": true}, nil
 		}),
 	}})
@@ -58,7 +73,7 @@ func TestVoiceSessionExecuteToolActivityRunsTool(t *testing.T) {
 	req := VoiceSessionExecuteToolInput{
 		AgentID: "call-operator", ToolName: "lookup", ToolCallID: "call_1", Input: input,
 		ActorID: "user-1", ActorKind: "user", AllowedToolIDs: []string{"lookup"}, ManifestDigest: manifestDigest, AgentRevision: "revision-1",
-		SessionID: "session-1", CallID: "call-1",
+		SessionID: "session-1", CallID: "call-1", ResourceBinding: voiceWriteTestBinding(),
 	}
 	out, err := VoiceSessionExecuteToolActivity(context.Background(), req)
 	if err != nil {
@@ -76,6 +91,12 @@ func TestVoiceSessionExecuteToolActivityRunsTool(t *testing.T) {
 	}
 	if gotWriteID == "" {
 		t.Fatal("handler missing platform write id")
+	}
+	if gotSessionID != "session-1" {
+		t.Fatalf("session id %q", gotSessionID)
+	}
+	if !gotBindingOK || !gotBinding.Equal(voiceWriteTestBinding()) {
+		t.Fatalf("resource binding %#v ok=%v", gotBinding, gotBindingOK)
 	}
 	if _, key := voiceWriteTestKey(t, req); gotWriteID != key {
 		t.Fatalf("write id %s want %s", gotWriteID, key)
@@ -107,7 +128,7 @@ func TestVoiceSessionToolRequiresServerConfirmedApproval(t *testing.T) {
 	RetainVoiceRegistry(reg)
 	defer RetainVoiceRegistry(old)
 	input, _ := json.Marshal(map[string]any{"networkId": "net-1", "name": "New"})
-	req := VoiceSessionExecuteToolInput{AgentID: "support", ToolName: "rename_network", ToolCallID: "call-1", Input: input, ActorID: "user-1", ActorKind: "user", NetworkID: "net-1", AllowedToolIDs: []string{"rename_network"}, ManifestDigest: manifestDigest, AgentRevision: "revision-1", SessionID: "session-1", CallID: "call-1"}
+	req := VoiceSessionExecuteToolInput{AgentID: "support", ToolName: "rename_network", ToolCallID: "call-1", Input: input, ActorID: "user-1", ActorKind: "user", NetworkID: "net-1", AllowedToolIDs: []string{"rename_network"}, ManifestDigest: manifestDigest, AgentRevision: "revision-1", SessionID: "session-1", CallID: "call-1", ResourceBinding: voiceWriteTestBinding()}
 	result, err := VoiceSessionExecuteToolActivity(context.Background(), req)
 	if err != nil || result.Approval == nil || result.Approval.InteractionID == "" || result.Approval.InputHash == "" || result.Approval.ToolCallID != "call-1" || calls != 0 {
 		t.Fatalf("approval=%#v err=%v calls=%d", result.Approval, err, calls)
@@ -145,7 +166,7 @@ func TestVoiceWriteActivityCommitThenLookupIsOneMutation(t *testing.T) {
 	RetainVoiceRegistry(reg)
 	t.Cleanup(func() { RetainVoiceRegistry(nil) })
 	input, _ := json.Marshal(map[string]any{"q": "hello"})
-	req := VoiceSessionExecuteToolInput{AgentID: "support", ToolName: "lookup", ToolCallID: "call-1", Input: input, ActorID: "user-1", ActorKind: "user", AllowedToolIDs: []string{"lookup"}, ManifestDigest: manifestDigest, AgentRevision: "revision-1", SessionID: "session-write", CallID: "call-write"}
+	req := VoiceSessionExecuteToolInput{AgentID: "support", ToolName: "lookup", ToolCallID: "call-1", Input: input, ActorID: "user-1", ActorKind: "user", AllowedToolIDs: []string{"lookup"}, ManifestDigest: manifestDigest, AgentRevision: "revision-1", SessionID: "session-write", CallID: "call-write", ResourceBinding: voiceWriteTestBinding()}
 	first, err := VoiceSessionExecuteToolActivity(context.Background(), req)
 	if err != nil || first.Error != "" || calls != 1 {
 		t.Fatalf("first=%#v err=%v calls=%d", first, err, calls)
@@ -199,7 +220,7 @@ func TestVoiceWriteActivityCoalescesInFlightAndUnknownDoesNotRetry(t *testing.T)
 	RetainVoiceRegistry(reg)
 	t.Cleanup(func() { RetainVoiceRegistry(nil) })
 	input, _ := json.Marshal(map[string]any{"q": "hello"})
-	req := VoiceSessionExecuteToolInput{AgentID: "support", ToolName: "lookup", ToolCallID: "inflight-1", Input: input, ActorID: "user-1", ActorKind: "user", AllowedToolIDs: []string{"lookup"}, ManifestDigest: manifestDigest, AgentRevision: "revision-1", SessionID: "session-write", CallID: "call-write"}
+	req := VoiceSessionExecuteToolInput{AgentID: "support", ToolName: "lookup", ToolCallID: "inflight-1", Input: input, ActorID: "user-1", ActorKind: "user", AllowedToolIDs: []string{"lookup"}, ManifestDigest: manifestDigest, AgentRevision: "revision-1", SessionID: "session-write", CallID: "call-write", ResourceBinding: voiceWriteTestBinding()}
 	done := make(chan VoiceSessionExecuteToolResult, 1)
 	go func() {
 		out, activityErr := VoiceSessionExecuteToolActivity(context.Background(), req)
@@ -244,7 +265,7 @@ func TestVoiceWriteActivityCoalescesInFlightAndUnknownDoesNotRetry(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID), key, replay); err != nil {
+	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.CallID, req.ToolName, req.ToolCallID), key, replay); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {

@@ -323,6 +323,13 @@ func replaceHostVoiceWriteLedger(dir string) {
 	processWriteLedger = openVoiceWriteLedgerWithAuthority(dir, shared)
 }
 
+// ReplaceHostVoiceWriteLedger is the exported fresh-host restart for product
+// proofs: empty host-local directory, process cache dropped, shared
+// VoiceWriteStore (RetainVoiceWriteAuthority) retained.
+func ReplaceHostVoiceWriteLedger(dir string) {
+	replaceHostVoiceWriteLedger(dir)
+}
+
 func voiceWriteAuthorityStore() VoiceWriteStore {
 	return ProcessVoiceWriteAuthority()
 }

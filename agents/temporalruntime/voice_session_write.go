@@ -20,6 +20,23 @@ var errWriteOutcomeUnknown = errors.New("write outcome unknown; reconcile only")
 var errWriteToolCallID = errors.New("tool_call_id required")
 var errWriteConflict = errors.New("conflicting write replay")
 var errWriteForgedKey = errors.New("forged write idempotency key")
+var errWriteMissingBinding = errors.New("voice write requires a verified resource binding")
+var errWriteBindingMismatch = errors.New("resource binding does not match the verified session")
+var errWriteCallIDMismatch = errors.New("voice write call_id does not match the verified session")
+
+// resourceBindingFromGrantScope is an INTERIM mapping of the verified grant
+// Scope onto the opaque SDK ResourceBinding. Admitted shapes (Scope.Validate):
+// v2 agent copies LineID → ResourceID; legacy screener copies DIDID →
+// AlternateID. One grant never carries both. The SDK type has no
+// mailbox/line/DID product names; the application maps the binding onto its
+// own resources. Callers and model arguments cannot populate this projection.
+func resourceBindingFromGrantScope(scope voicecontract.Scope) agents.ResourceBinding {
+	return agents.ResourceBinding{
+		Kind:        strings.TrimSpace(scope.Kind),
+		ResourceID:  strings.TrimSpace(scope.LineID),
+		AlternateID: strings.TrimSpace(scope.DIDID),
+	}
+}
 
 type voiceWriteWorkflowState struct {
 	budget  *voiceToolBudget
@@ -33,12 +50,19 @@ func newVoiceWriteWorkflowState() *voiceWriteWorkflowState {
 	return &voiceWriteWorkflowState{digests: map[string]string{}, results: map[string]VoiceSessionExecuteToolResult{}, pending: map[string]bool{}, unknown: map[string]bool{}}
 }
 
-func voiceWriteIdentity(toolName, toolCallID string) string {
-	return toolName + "/" + toolCallID
+// voiceWriteIdentity keys workflow reservation for one write. CallID is
+// required so two same-agent child calls that share a session cannot alias
+// one another when a tool_call_id is reused across hops.
+func voiceWriteIdentity(toolName, toolCallID, callID string) string {
+	return toolName + "/" + toolCallID + "/" + callID
 }
 
-func voiceWriteLedgerIdentity(sessionID, toolID, toolCallID string) string {
-	return sessionID + "/" + toolID + "/" + toolCallID
+// voiceWriteLedgerIdentity keys the process/durable write ledger. CallID is
+// included so a shared SessionID with distinct child CallIDs cannot collide.
+// deriveVoiceWriteKey already includes call_id; colliding ledger identity with
+// distinct keys would surface as a false replay conflict.
+func voiceWriteLedgerIdentity(sessionID, callID, toolID, toolCallID string) string {
+	return sessionID + "/" + callID + "/" + toolID + "/" + toolCallID
 }
 
 func deriveVoiceWriteKey(sessionID, callID, toolID, toolCallID, inputDigest string) (string, error) {
@@ -57,8 +81,11 @@ func deriveVoiceWriteKey(sessionID, callID, toolID, toolCallID, inputDigest stri
 
 func voiceWriteReplayDigest(req VoiceSessionExecuteToolInput, inputDigest string) (string, error) {
 	raw, err := json.Marshal(map[string]string{
-		"actor_id": req.ActorID, "actor_kind": req.ActorKind, "agent_id": req.AgentID, "input_digest": inputDigest,
-		"manifest_digest": req.ManifestDigest, "network_id": req.NetworkID, "tool_call_id": req.ToolCallID, "tool_name": req.ToolName,
+		"actor_id": req.ActorID, "actor_kind": req.ActorKind, "agent_id": req.AgentID, "call_id": req.CallID,
+		"input_digest": inputDigest, "manifest_digest": req.ManifestDigest, "network_id": req.NetworkID,
+		"session_id": req.SessionID, "tool_call_id": req.ToolCallID, "tool_name": req.ToolName,
+		"binding_kind": req.ResourceBinding.Kind, "binding_resource_id": req.ResourceBinding.ResourceID,
+		"binding_alternate_id": req.ResourceBinding.AlternateID,
 	})
 	if err != nil {
 		return "", err
@@ -68,6 +95,13 @@ func voiceWriteReplayDigest(req VoiceSessionExecuteToolInput, inputDigest string
 		return "", err
 	}
 	return voicecontract.Digest(canonical), nil
+}
+
+// BindVoiceWriteRequest applies the verified session grant Scope onto a write
+// Update. Callers must not populate ResourceBinding; an omitted binding is
+// filled from the grant. A present mismatch is rejected.
+func BindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolInput, string, string, error) {
+	return bindVoiceWriteRequest(in, req)
 }
 
 func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolInput, string, string, error) {
@@ -80,9 +114,25 @@ func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInpu
 	if req.ActorID != in.Context.ActorID || req.ActorKind != in.Context.ActorKind || req.AgentID != in.Context.AgentID || req.NetworkID != in.Context.NetworkID {
 		return req, "", "", errors.New("voice tool actor or scope does not match the verified session")
 	}
+	verified := resourceBindingFromGrantScope(in.Context.Scope)
+	if !verified.Present() {
+		return req, "", "", errWriteMissingBinding
+	}
+	if req.ResourceBinding.Present() && !req.ResourceBinding.Equal(verified) {
+		return req, "", "", errWriteBindingMismatch
+	}
+	req.ResourceBinding = verified
 	req.ManifestDigest = in.Context.ManifestDigest
 	req.AgentRevision = in.Context.AgentRevision
 	req.SessionID = in.SessionID
+	// The workflow CallID is the verified session's. A child Update that
+	// carries a different CallID used to be overwritten and could alias
+	// write/replay identity with the original call. Reject the mismatch
+	// instead of silently restamping. An omitted CallID is filled from
+	// the session (the API/Maglev path).
+	if supplied := strings.TrimSpace(req.CallID); supplied != "" && supplied != strings.TrimSpace(in.CallID) {
+		return req, "", "", errWriteCallIDMismatch
+	}
 	req.CallID = in.CallID
 	if strings.TrimSpace(req.ToolCallID) == "" {
 		return req, "", "", errWriteToolCallID
@@ -103,7 +153,7 @@ func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInpu
 	}
 	req.IdempotencyKey = key
 	req.WriteReconcileOnly = false
-	return req, voiceWriteIdentity(req.ToolName, req.ToolCallID), replay, nil
+	return req, voiceWriteIdentity(req.ToolName, req.ToolCallID, req.CallID), replay, nil
 }
 
 func (s *voiceWriteWorkflowState) reserve(ctx workflow.Context, identity, toolID, toolCallID, replay string) (VoiceSessionExecuteToolResult, bool, error) {
@@ -222,6 +272,9 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 	if strings.TrimSpace(req.IdempotencyKey) != "" && req.IdempotencyKey != key {
 		return VoiceSessionExecuteToolResult{}, errWriteForgedKey
 	}
+	if !req.ResourceBinding.Present() {
+		return VoiceSessionExecuteToolResult{}, errWriteMissingBinding
+	}
 	req.IdempotencyKey = key
 	req.Input = canonicalInput
 	replay, err := voiceWriteReplayDigest(req, inputDigest)
@@ -270,10 +323,10 @@ func executeVoiceWriteActivity(ctx context.Context, req VoiceSessionExecuteToolI
 		}
 		return VoiceSessionExecuteToolResult{Approval: approval}, nil
 	}
-	identity := voiceWriteLedgerIdentity(sessionID, toolName, toolCallID)
+	identity := voiceWriteLedgerIdentity(sessionID, callID, toolName, toolCallID)
 	result, err := processWriteLedger.dispatch(identity, key, replay, req.WriteReconcileOnly, func() (VoiceSessionExecuteToolResult, error) {
 		execResult, execErr := tool.Execute(ctx, toolCall, ai.ToolExecutionOptions{
-			Context: toolsession.ExecutionContextWithWrite(actor, sessionID, key),
+			Context: toolsession.ExecutionContextWithWrite(actor, sessionID, key, req.ResourceBinding),
 		})
 		if execErr != nil {
 			return VoiceSessionExecuteToolResult{Error: execErr.Error()}, nil

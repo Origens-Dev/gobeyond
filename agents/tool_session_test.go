@@ -58,12 +58,40 @@ func TestToolWriteIDUsesRuntimeProjectionNotModelInput(t *testing.T) {
 		}
 		return id, nil
 	})
-	result, err := tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"gobeyondWriteID": "model-forged"}}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(actor, "session-one", "write-key-one")})
+	result, err := tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"gobeyondWriteID": "model-forged"}}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(actor, "session-one", "write-key-one", ResourceBinding{})})
 	if err != nil || result != "write-key-one" {
 		t.Fatalf("write id result=%v err=%v", result, err)
 	}
 	result, err = tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"gobeyondWriteID": "model-forged"}}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContext(actor, "session-one")})
 	if err != nil || result != "" {
 		t.Fatalf("missing write projection result=%v err=%v", result, err)
+	}
+}
+
+func TestToolResourceBindingUsesRuntimeProjectionNotModelInput(t *testing.T) {
+	actor := Actor{ID: "same-user", Kind: "user", Metadata: map[string]string{"resource_id": "forged-actor", "mailbox_line_id": "forged-mailbox"}}
+	tool := DefineTool(ToolConfig{}, func(ctx context.Context, _ Actor, _ map[string]any) (string, error) {
+		binding, ok := ToolResourceBinding(ctx)
+		if !ok {
+			return "", nil
+		}
+		return binding.Kind + "/" + binding.ResourceID + "/" + binding.AlternateID, nil
+	})
+	want := ResourceBinding{Kind: "agent", ResourceID: "line_grant"}
+	raw, err := json.Marshal(ToolWriteContext(actor, "session-one", "write-key-one", want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded any
+	if err = json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	result, err := tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"resource_id": "model-forged", "mailbox_line_id": "model-mailbox"}}, ai.ToolExecutionOptions{Context: decoded})
+	if err != nil || result != "agent/line_grant/" {
+		t.Fatalf("binding result=%v err=%v", result, err)
+	}
+	result, err = tool.Execute(context.Background(), ai.ToolCall{Input: map[string]any{"resource_id": "model-forged"}}, ai.ToolExecutionOptions{Context: toolsession.ExecutionContext(actor, "session-one")})
+	if err != nil || result != "" {
+		t.Fatalf("missing binding result=%v err=%v", result, err)
 	}
 }
