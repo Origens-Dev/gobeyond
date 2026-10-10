@@ -15,10 +15,10 @@ only where the write result store lives.
 **Receiving worker.** `executeVoiceWriteActivity` runs as a LocalActivity on
 the customer Temporal worker that registered `RegisterVoiceSessionWorkflow`
 (generated `cmd/workflows/<queue>` poller). It does **not** run in Maglev,
-the API lambda, or gobeyond-internal `voice-worker` (RTP). Candlestick
-Origens task-queue deploys for `realtime-voice-mail`, `realtime-call-screener`,
-`realtime-portal-support`, and the other `realtime-*` queues that compile this
-SDK must be upgraded before the API emits `resource_binding`.
+the API lambda, or the hosted RTP media worker. Customer task-queue pollers
+whose WorkerID is `realtime-` plus the compiled agent id (mailbox, screener,
+portal-support, and the other realtime queues that compile this SDK) must
+be upgraded before the API emits `resource_binding`.
 
 **Layers**
 
