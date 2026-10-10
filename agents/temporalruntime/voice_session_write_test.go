@@ -678,6 +678,129 @@ func (s persistFailStore) Persist(identity string, rec VoiceWritePersistedRecord
 	return errWriteLedgerPersist
 }
 
+func TestBindVoiceWriteRequestCopiesGrantScopeAndRejectsMismatch(t *testing.T) {
+	// Proves the workflow hop: the verified session Scope is copied onto the
+	// opaque ResourceBinding (interim ResourceID=LineID, AlternateID=DIDID).
+	// A caller-supplied binding that does not match the grant fails closed.
+	// An omitted binding is filled from the grant, never from the request body.
+	ctxn := voicecontract.Context{
+		ExecutionID: "execution-1", OrganizationID: "org-1", ProjectID: "project-1", EnvironmentID: "env-1", NetworkID: "network-1",
+		CallID: "call-write", SessionID: "session-write", ActorID: "user-1", ActorKind: "user", AgentID: "support", AgentRevision: "revision-1",
+		ManifestDigest: "digest", Generation: 1, Scope: voicecontract.Scope{Kind: "agent", LineID: "line-1", DIDID: "did-1"},
+	}
+	in := VoiceSessionInput{Context: &ctxn, AgentID: ctxn.AgentID, CallID: ctxn.CallID, SessionID: ctxn.SessionID, ExecutionID: ctxn.ExecutionID}
+	input, _ := json.Marshal(map[string]any{"q": "hello"})
+	base := VoiceSessionExecuteToolInput{
+		AgentID: ctxn.AgentID, ToolName: "lookup", ToolCallID: "call-1", Input: input,
+		ActorID: ctxn.ActorID, ActorKind: ctxn.ActorKind, NetworkID: ctxn.NetworkID,
+	}
+	bound, _, replay, err := bindVoiceWriteRequest(in, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := agents.ResourceBinding{Kind: "agent", ResourceID: "line-1", AlternateID: "did-1"}
+	if !bound.ResourceBinding.Equal(want) {
+		t.Fatalf("grant binding %#v want %#v", bound.ResourceBinding, want)
+	}
+	matched := base
+	matched.ResourceBinding = want
+	again, _, againReplay, err := bindVoiceWriteRequest(in, matched)
+	if err != nil || againReplay != replay || !again.ResourceBinding.Equal(want) {
+		t.Fatalf("matching envelope failed err=%v replay=%q/%q", err, replay, againReplay)
+	}
+	forged := base
+	forged.ResourceBinding = agents.ResourceBinding{Kind: "agent", ResourceID: "forged-line"}
+	if _, _, _, err = bindVoiceWriteRequest(in, forged); !errors.Is(err, errWriteBindingMismatch) {
+		t.Fatalf("forged binding err=%v", err)
+	}
+	emptyScope := ctxn
+	emptyScope.Scope = voicecontract.Scope{Kind: "agent"}
+	if _, _, _, err = bindVoiceWriteRequest(VoiceSessionInput{Context: &emptyScope, AgentID: ctxn.AgentID, CallID: ctxn.CallID, SessionID: ctxn.SessionID, ExecutionID: ctxn.ExecutionID}, base); !errors.Is(err, errWriteMissingBinding) {
+		t.Fatalf("empty grant scope err=%v", err)
+	}
+}
+
+func TestVoiceWriteActivityMissingBindingFailsClosed(t *testing.T) {
+	// Proves a direct activity (or a payload that skipped bind) cannot execute
+	// a write without a Present() resource binding. The handler is not invoked.
+	resetVoiceWriteLedgerWithDir(t.TempDir())
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	req.ResourceBinding = agents.ResourceBinding{}
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteMissingBinding) {
+		t.Fatalf("missing binding err=%v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("missing binding executed handler calls=%d", calls)
+	}
+}
+
+func TestVoiceWriteReplayPreservesBindingAndIdempotency(t *testing.T) {
+	// Proves a second activity dispatch with the same grant binding and input
+	// coalesces to one mutation, and a binding change is a replay conflict.
+	resetVoiceWriteLedgerWithDir(t.TempDir())
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	first, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || first.Error != "" || calls != 1 {
+		t.Fatalf("first=%#v err=%v calls=%d", first, err, calls)
+	}
+	second, err := VoiceSessionExecuteToolActivity(context.Background(), req)
+	if err != nil || second.Error != "" || calls != 1 || string(second.Result) != string(first.Result) {
+		t.Fatalf("replay mutated first=%s second=%s err=%v calls=%d", first.Result, second.Result, err, calls)
+	}
+	changed := req
+	changed.ResourceBinding = agents.ResourceBinding{Kind: "agent", ResourceID: "other-line"}
+	if _, err = VoiceSessionExecuteToolActivity(context.Background(), changed); err == nil {
+		t.Fatal("binding change reused tool_call_id")
+	}
+	if calls != 1 {
+		t.Fatalf("binding conflict executed handler calls=%d", calls)
+	}
+}
+
+func TestVoiceWriteUncertainOutcomeReconcilesWithoutReexecute(t *testing.T) {
+	// Proves an unknown write stays reconcile-only: the handler ran once, a
+	// later WriteReconcileOnly dispatch does not execute again. Timing is the
+	// real activity/ledger path, not a boolean mailbox shortcut.
+	resetVoiceWriteLedgerWithDir(t.TempDir())
+	calls := 0
+	req := retainVoiceWriteLookup(t, func(context.Context, agents.Actor, map[string]any) (any, error) {
+		calls++
+		return map[string]any{"ok": true}, nil
+	})
+	canonical, err := voicecontract.CanonicalJSON(req.Input, voicecontract.MaxSchemaBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Input = canonical
+	digest := voicecontract.Digest(canonical)
+	key, err := deriveVoiceWriteKey(req.SessionID, req.CallID, req.ToolName, req.ToolCallID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := voiceWriteReplayDigest(req, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seedVoiceWriteUnknown(voiceWriteLedgerIdentity(req.SessionID, req.ToolName, req.ToolCallID), key, replay); err != nil {
+		t.Fatal(err)
+	}
+	req.WriteReconcileOnly = true
+	if _, err := VoiceSessionExecuteToolActivity(context.Background(), req); !errors.Is(err, errWriteOutcomeUnknown) {
+		t.Fatalf("uncertain reconcile err=%v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("uncertain write re-executed calls=%d", calls)
+	}
+}
+
 func retainVoiceWriteLookup(t *testing.T, handler func(context.Context, agents.Actor, map[string]any) (any, error)) VoiceSessionExecuteToolInput {
 	t.Helper()
 	schema, output := voiceWriteClosedSchemas()
@@ -705,6 +828,7 @@ func retainVoiceWriteLookup(t *testing.T, handler func(context.Context, agents.A
 		ActorID: "user-1", ActorKind: "user", AllowedToolIDs: []string{"lookup"},
 		ManifestDigest: manifestDigest, AgentRevision: "revision-1",
 		SessionID: "session-write", CallID: "call-write",
+		ResourceBinding: voiceWriteTestBinding(),
 	}
 }
 

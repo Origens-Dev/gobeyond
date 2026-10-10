@@ -100,7 +100,7 @@ func liveVoiceToolOptions(cfg voice.StartConfig, tool ai.Tool, call ai.ToolCall)
 	if !agents.VoiceWritePolicy(tool) {
 		return ai.ToolExecutionOptions{Context: toolsession.ExecutionContext(cfg.Actor, cfg.SessionID)}
 	}
-	return ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(cfg.Actor, cfg.SessionID, liveVoiceWriteIdentity(cfg.SessionID, call.ToolName, call.ToolCallID))}
+	return ai.ToolExecutionOptions{Context: toolsession.ExecutionContextWithWrite(cfg.Actor, cfg.SessionID, liveVoiceWriteIdentity(cfg.SessionID, call.ToolName, call.ToolCallID), agents.ResourceBinding{})}
 }
 
 func liveVoiceWriteIdentity(sessionID, toolName, toolCallID string) string {

@@ -1,8 +1,13 @@
 # VoiceWrite ledger: process cache vs host-local vs authority
 
-The execute-tool envelope is unchanged: platform-derived idempotency key,
-workflow reserve/coalesce/unknown, LocalActivity dispatch, handler
-`ToolWriteID`. This note covers only where the write result store lives.
+The execute-tool envelope carries a platform-derived idempotency key and an
+opaque grant-sourced `resource_binding` (interim: `resource_id` from
+`Scope.LineID`, `alternate_id` from `Scope.DIDID`). Workflow
+`bindVoiceWriteRequest` overwrites the binding from the verified session
+Scope; HTTP bodies and model arguments cannot populate it. LocalActivity
+dispatch projects the binding through `ToolResourceBinding` and the write
+key through `ToolWriteID`. This note covers only where the write result
+store lives.
 
 **Layers**
 

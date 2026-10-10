@@ -76,6 +76,12 @@ type VoiceSessionExecuteToolInput struct {
 	AllowedToolIDs []string `json:"allowed_tool_ids,omitempty"`
 	SessionID      string   `json:"session_id,omitempty"`
 	CallID         string   `json:"call_id,omitempty"`
+	// ResourceBinding is an opaque grant-sourced application resource
+	// projection. The workflow overwrites it from the verified session Scope
+	// (interim: ResourceID=Scope.LineID, AlternateID=Scope.DIDID). HTTP
+	// bodies and model arguments cannot populate it; a mismatch with the
+	// session Scope fails closed. The SDK does not name mailbox product fields.
+	ResourceBinding agents.ResourceBinding `json:"resource_binding,omitempty"`
 	// IdempotencyKey is platform-derived by the voice session workflow. Callers
 	// cannot select it; the activity re-derives and rejects a mismatch.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
