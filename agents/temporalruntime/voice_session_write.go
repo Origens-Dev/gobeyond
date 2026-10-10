@@ -97,6 +97,13 @@ func voiceWriteReplayDigest(req VoiceSessionExecuteToolInput, inputDigest string
 	return voicecontract.Digest(canonical), nil
 }
 
+// BindVoiceWriteRequest applies the verified session grant Scope onto a write
+// Update. Callers must not populate ResourceBinding; an omitted binding is
+// filled from the grant. A present mismatch is rejected.
+func BindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolInput, string, string, error) {
+	return bindVoiceWriteRequest(in, req)
+}
+
 func bindVoiceWriteRequest(in VoiceSessionInput, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolInput, string, string, error) {
 	if in.Context == nil {
 		return req, "", "", errors.New("voice write requires a verified session context")

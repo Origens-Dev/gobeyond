@@ -973,8 +973,17 @@ func TestSameSessionChildCallsRetainDistinctWriteAndReplayIdentities(t *testing.
 	childB.ToolCallID = "shared-tool-call"
 	childB.ResourceBinding = agents.ResourceBinding{}
 
-	sessionA := VoiceSessionInput{Context: &agent, AgentID: agent.AgentID, CallID: childA.CallID, SessionID: agent.SessionID, ExecutionID: agent.ExecutionID}
-	sessionB := VoiceSessionInput{Context: &agent, AgentID: agent.AgentID, CallID: childB.CallID, SessionID: agent.SessionID, ExecutionID: agent.ExecutionID}
+	agentA := agent
+	agentA.ExecutionID = "execution_child_a"
+	agentA.CallID = childA.CallID
+	agentB := agent
+	agentB.ExecutionID = "execution_child_b"
+	agentB.CallID = childB.CallID
+	sessionA := VoiceSessionInput{Context: &agentA, AgentID: agentA.AgentID, CallID: childA.CallID, SessionID: agentA.SessionID, ExecutionID: agentA.ExecutionID}
+	sessionB := VoiceSessionInput{Context: &agentB, AgentID: agentB.AgentID, CallID: childB.CallID, SessionID: agentB.SessionID, ExecutionID: agentB.ExecutionID}
+	if sessionA.ExecutionID == sessionB.ExecutionID {
+		t.Fatal("separate workflows must use distinct execution IDs")
+	}
 	boundA, identityA, replayA, err := bindVoiceWriteRequest(sessionA, childA)
 	if err != nil {
 		t.Fatal(err)
