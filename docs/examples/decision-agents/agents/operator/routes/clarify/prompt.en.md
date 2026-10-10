@@ -1,0 +1,1 @@
+{count, plural, one {I found one matching person.} other {I found # matching people.}}

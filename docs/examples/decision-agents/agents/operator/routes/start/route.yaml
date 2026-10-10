@@ -1,0 +1,120 @@
+act:
+    - id: connect-recipient
+      kind: connect
+      reauthorizeAtExecution: true
+      releasesCallOwnership: true
+      targetBinding: selected_candidate_id
+      toolId: connect
+decide:
+    resultPolicy: recipient_selection
+    serviceId: jev
+fallback:
+    route: /help
+id: /start
+listen:
+    accept:
+        - speech_final
+        - dtmf_complete
+        - text
+    bargeIn: true
+match:
+    bindingId: recipient_matcher
+    onNoMatch: decide
+next:
+    - outcome: completed
+      source: playback
+      target:
+        phase: listen
+    - outcome: cleared
+      source: playback
+      target:
+        route: /help
+    - outcome: failed
+      source: playback
+      target:
+        route: /help
+    - outcome: no_input
+      source: input
+      target:
+        route: /clarify
+    - outcome: utterance_limit
+      source: input
+      target:
+        route: /clarify
+    - outcome: error
+      source: input
+      target:
+        route: /help
+    - outcome: candidate
+      source: match
+      target:
+        phase: act
+    - outcome: ambiguous
+      source: match
+      target:
+        route: /clarify
+    - outcome: error
+      source: match
+      target:
+        route: /help
+    - outcome: candidate
+      source: decision
+      target:
+        phase: act
+    - outcome: no_match
+      source: decision
+      target:
+        route: /clarify
+    - outcome: ambiguous
+      source: decision
+      target:
+        route: /clarify
+    - outcome: refusal
+      source: decision
+      target:
+        route: /help
+    - outcome: error
+      source: decision
+      target:
+        route: /help
+    - outcome: unavailable
+      source: decision
+      target:
+        route: /help
+    - outcome: accepted
+      source: effect
+      target:
+        terminal: await_receipt
+    - outcome: confirmed
+      source: effect
+      target:
+        terminal: release_call_ownership
+    - outcome: failed
+      source: effect
+      target:
+        route: /help
+    - outcome: unknown
+      source: effect
+      target:
+        terminal: await_receipt
+    - outcome: cancelled
+      source: control
+      target:
+        terminal: end_session
+    - outcome: disconnected
+      source: control
+      target:
+        terminal: end_session
+say:
+    argumentBindings:
+        - name: name
+          source: context.greeting_name
+        - name: count
+          source: context.candidate_count
+    families:
+        - prompt
+        - prompt.choice_count
+    localeSource: session
+useBindings: null
+useServices: null
+useTools: null

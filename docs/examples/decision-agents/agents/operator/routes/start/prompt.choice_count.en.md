@@ -1,0 +1,1 @@
+{count, plural, one {one authorized choice} other {# authorized choices}}

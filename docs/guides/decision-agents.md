@@ -22,46 +22,53 @@ are the basis for this page:
   factory. Generated registries do not install a decision adapter by default,
   and unresolved activation gates fail closed.
 
-The open [session-workflow PR #142](https://github.com/Origens-Dev/gobeyond/pull/142)
-is still a draft. No Jev service path or caller-authority policy is qualified
-yet; ORI-72 remains in progress. Draft cache-key and exact-speech work is not
-provider, cache, or activation evidence. Prewarm and lookahead are later work.
-This guide makes no live-provider, cached-speech, or production-activation
+Main also contains the dormant durable-session workflow added by
+[PR #142](https://github.com/Origens-Dev/gobeyond/pull/142). This example does
+not install a `DefineDecision` session adapter or start a session. No Jev path,
+caller-authority policy, V0 voice, or locale is qualified; [ORI-72](https://linear.app/mensagens/issue/ORI-72/qualify-one-jev-service-path-and-typed-response-contract)
+remains In Progress. Draft cache-key and exact-speech work is not provider,
+cache, or activation evidence. Prewarm and lookahead are later work. This guide
+makes no live-provider, live-session, cached-speech, or production-activation
 claim.
 
 ## Add a separate operator
 
-Agent definitions are separate packages under **agents/<id>/**. Add a new
-directory for the directory operator and keep the existing operator's directory
-and **agent.go** intact:
+Agent definitions are separate packages under **agents/<id>/**. The checked-in
+[synthetic example tree](../examples/decision-agents/agents/operator/agent.go)
+keeps a decision Operator and a separate direct Operator side by side:
 
 ~~~text
-agents/
-├── existing-operator/
-│   └── agent.go
-└── directory-operator/
-    ├── agent.go
-    └── routes/
-        ├── start/
-        │   ├── route.yaml
-        │   ├── prompt.en.md
-        │   └── prompt.choice_count.en.md
-        ├── clarify/
-        │   ├── route.yaml
-        │   ├── prompt.en.md
-        │   └── prompt.choice_count.en.md
-        └── help/
-            ├── route.yaml
-            └── prompt.help.en.md
+docs/examples/decision-agents/agents/
+├── operator/
+│   ├── agent.go
+│   └── routes/
+│       ├── start/{route.yaml,prompt.en.md,prompt.choice_count.en.md}
+│       ├── clarify/{route.yaml,prompt.en.md,prompt.choice_count.en.md}
+│       └── help/{route.yaml,prompt.help.en.md}
+└── alternate-operator/
+    └── agent.go
 ~~~
 
-The **agent.go** entry point declares **var Agent = agents.DefineDecision(...)**.
-Its **DecisionConfig** uses **RoutesDir: "routes"** and an inline frozen
-**decisionv1.Definition** for graph-wide messages, grants, budgets, locales,
-and policy gates. The compiler requires the inline definition to be a static
-literal; it does not evaluate a constructor or import another authored agent
-package. Its **Graph.Routes** must be empty because the files supply those
-routes. The contract has no default **decision.yaml**.
+The [`operator/agent.go`](../examples/decision-agents/agents/operator/agent.go)
+declares tools with **agents.DefineTool** and an exported
+**var Agent = agents.DefineDecision(...)**. Its **DecisionConfig** has
+**RoutesDir: "routes"** and an inline frozen **decisionv1.Definition** for
+graph-wide messages, grants, budgets, locales, and policy gates. The compiler
+requires that definition to be a static literal; it does not evaluate a
+constructor or import another authored agent package. **Graph.Routes** is
+empty because the route files supply those routes. The contract has no default
+**decision.yaml**. The sample tool handlers are inert compile stubs; the
+decision declaration has no **Invoke** method.
+
+[`alternate-operator/agent.go`](../examples/decision-agents/agents/alternate-operator/agent.go)
+is a second, separate **agents.Define** package with its own ID and deterministic
+handler. It demonstrates that adding the decision Operator does not replace
+the existing agent identity or imply a handoff between the two.
+
+The checked-in routes are [`start`](../examples/decision-agents/agents/operator/routes/start/route.yaml),
+[`clarify`](../examples/decision-agents/agents/operator/routes/clarify/route.yaml),
+and [`help`](../examples/decision-agents/agents/operator/routes/help/route.yaml).
+Each route's Markdown prompt resources live beside its **route.yaml**.
 
 See the [decision contract reference](../../agents/decisioncontract/README.md)
 for the full schema. Under **RoutesDir**, the compiler accepts only
@@ -69,11 +76,11 @@ for the full schema. Under **RoutesDir**, the compiler accepts only
 unknown files, and unknown route fields. The general
 [agent guide](agents.md) describes the shared agent layout.
 
-The route example below is one complete synthetic **/start** route. Its
-matching prompt and review-contract fixture are exercised by
-[TestDecisionAgentsGuideRouteCompiles](../../internal/project/decision_guide_test.go).
-It reuses the other synthetic **clarify** and **help** routes from the compiler
-fixture; it is not a deployable directory service.
+The route example below is the source tree's complete synthetic **/start**
+route. The example also includes compiler-valid **/clarify** and **/help**
+routes and every prompt file. The compiler test checks both the full tree and
+that this documented route matches the source file; none of the files defines
+a deployable directory service.
 
 <!-- decision-guide-start-route -->
 ~~~yaml
@@ -213,6 +220,25 @@ their digests; it does not connect to a matcher, directory, or Jev. The
 synthetic **jev** name is not a URL or an endpoint. No endpoint or credential
 belongs in route YAML.
 
+### Guest and verified data boundaries
+
+The example contains no caller identity, relationship record, or candidate
+data. Its **context.greeting_name** and **context.candidate_count** bindings
+are source names only; they do not prove who supplied a value or whether a
+caller is verified. The frozen fixture marks **g-caller-authority** unresolved,
+so it defines neither a verification method nor which relationship fields a
+verified caller may access.
+
+| Application input posture | Data in this example | Contract boundary |
+| --- | --- | --- |
+| Guest or unverified | No protected relationship snapshot is supplied. | The example grants no caller authority and makes no claim about guest-visible product data. |
+| Verified | No verified-caller fixture is supplied. | A future app must qualify caller authority and provide a scoped snapshot. Match and Jev results must resolve to candidate IDs in that snapshot; this check does not establish caller identity or qualify the source fields. |
+
+The example does not implement a guest/verified switch. Do not attach protected
+relationship data to this example or infer authority from a name, utterance,
+or model result. The owner decision and evidence for
+**g-caller-authority** remain required before such data can be used.
+
 The intended bounded path is deterministic matching first, then the declared
 decision service only when the match policy sends no-match there. A candidate
 can reach **act**; ambiguity and no-match route to clarification; refusal,
@@ -232,8 +258,10 @@ The tool map on **DecisionConfig** reuses the same **agents.DefineTool** values
 as **DefineAI**; tool schemas, approval-policy presence, and IDs are checked
 against those declarations. **Slots.Tools** and **Slots.Channels** likewise
 use the existing agent surface. A channel declaration records a slot; it does
-not select a speech provider. Service, caller-authority, budget, and approval
-provenance still require qualified adapter evidence.
+not select a speech provider. The source tree's **voice-provider** connector
+label and tool handlers are synthetic placeholders; nothing connects or
+executes. Service, caller-authority, budget, and approval provenance still
+require qualified adapter evidence.
 
 The **clarify** route in the fixture is bounded by its **recipient_selection**
 retry group. Retry counters belong to a logical task and have separate
@@ -285,26 +313,34 @@ say route=/clarify entry=entry-9f725ebfc007b910e117ef03 playback=playback-c46498
 
 ## Local checks and release boundary
 
-Run the contract, reducer, adapter-seam, and compiler checks locally:
+The feature-bearing GoBeyond source is available at the exact
+[**v0.1.0-alpha.121** tag](https://github.com/Origens-Dev/gobeyond/tree/v0.1.0-alpha.121).
+Pin the module in the consuming application's **go.mod** and commit **go.sum**;
+do not follow a floating **@main** or **@latest** reference:
 
 ~~~sh
-go test ./agents/decisioncontract/v1 -count=1
-go test ./agents/decisions -count=1
-go test ./agents/httpruntime -count=1
-go test ./internal/project -run 'TestCompileDecisionRoutesMatchesFrozenManifestAndDigests|TestDecisionCompilerSupportsExplicitSharedPromptFamilies|TestDecisionCompilerRejectsUnsafeFixtures|TestDecisionAgentsGuide' -count=1
+go get github.com/Origens-Dev/gobeyond@v0.1.0-alpha.121
 ~~~
 
-The compiler freezes the definition and prompt bytes into the existing agent
-manifest; **agents.FreezeDecisionManifest** uses the same canonicalizer and
-returns the release digest. Keep that digest with the compiled release
-artifacts. A changed route, grant, locale, or prompt byte changes the relevant
-frozen identity. This is source/build validation, not a session pin or a
+Run the contract, reducer, compiler, and example-package checks locally:
+
+~~~sh
+go test ./agents/decisioncontract/v1 ./agents/decisions -count=1
+go test ./internal/project -run 'TestCompileDecisionRoutesMatchesFrozenManifestAndDigests|TestDecisionCompilerSupportsExplicitSharedPromptFamilies|TestDecisionCompilerRejectsUnsafeFixtures|TestDecisionAgentsGuide|TestDecisionAgentsExample' -count=1
+go test ./docs/examples/decision-agents/... -count=1
+~~~
+
+The module tag pins compiler and contract code. Separately, the compiler freezes
+the definition and prompt bytes into the existing agent manifest;
+**agents.FreezeDecisionManifest** uses the canonicalizer and returns the
+definition's release digest. Keep that digest with the compiled release
+artifacts. A changed route, grant, locale, or prompt byte changes the frozen
+identity. This is source/build validation, not a live session pin or a
 traffic-selection procedure.
 
-This page does not demonstrate verified-versus-guest policy: caller authority
-is still unresolved, and a context source name is not proof of verification.
-The example also cannot show a qualified voice/locale, real directory or Jev
-result, runtime session lifecycle, provider response, cached speech, or
-prewarming. Those require separately qualified runtime and provider behavior.
-The Markdown is repository source; documentation sync and publication remain
-separate work.
+This page does not qualify caller authority, Jev service path, retry ceilings,
+voice/locale, or prompt policy. The compiled definition stays blocked by those
+unresolved gates even when source tests pass. The example cannot show a real
+directory or Jev result, a `DefineDecision` session lifecycle, provider
+response, cached speech, or prewarming. The Markdown and example tree are
+repository source; documentation sync and publication remain separate work.
