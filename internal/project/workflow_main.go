@@ -225,6 +225,7 @@ func main() {
 	if os.Getenv("GOBEYOND_TEMPORAL_NAMESPACE") == "" {
 		_ = os.Setenv("GOBEYOND_TEMPORAL_NAMESPACE", "default")
 	}
+	log.Printf("gobeyond worker: before temporal serve task_queue=%%s namespace=%%s", os.Getenv("GOBEYOND_TEMPORAL_TASK_QUEUE"), os.Getenv("GOBEYOND_TEMPORAL_NAMESPACE"))
 	if err := gbtemporal.Serve(context.Background(), gbtemporal.Options{
 		Register: func(w worker.Worker) {
 %s%s%s		},

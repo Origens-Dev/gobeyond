@@ -286,6 +286,64 @@ func TestSignalReadinessUnixgram(t *testing.T) {
 	}
 }
 
+func TestFormatStartupStageOmitsSecretsAndKeepsEffectiveHost(t *testing.T) {
+	options := Options{
+		Address:   "user:token@p-preview.uj3du.tmprl.cloud:7233",
+		Namespace: "p-8a58a887bd434927bc509daf363b7-preview.uj3du",
+		TaskQueue: "realtime-portal-support__preview",
+		APIKey:    "super-secret-api-key",
+		TLSCert:   "-----BEGIN CERTIFICATE-----\nSECRET_CERT\n-----END CERTIFICATE-----",
+		TLSKey:    "-----BEGIN PRIVATE KEY-----\nSECRET_KEY\n-----END PRIVATE KEY-----",
+	}
+	line := formatStartupStage("before temporal dial", options, "claim_mode=hosted readiness_nonce_set=true")
+	for _, forbidden := range []string{
+		"super-secret-api-key",
+		"BEGIN CERTIFICATE",
+		"BEGIN PRIVATE KEY",
+		"SECRET_CERT",
+		"SECRET_KEY",
+		"user:token",
+		"nonce-value",
+	} {
+		if strings.Contains(line, forbidden) {
+			t.Fatalf("startup stage leaked %q: %s", forbidden, line)
+		}
+	}
+	for _, want := range []string{
+		"before temporal dial",
+		"address=p-preview.uj3du.tmprl.cloud:7233",
+		"namespace=p-8a58a887bd434927bc509daf363b7-preview.uj3du",
+		"task_queue=realtime-portal-support__preview",
+		"auth=mtls+api_key",
+		"claim_mode=hosted",
+		"readiness_nonce_set=true",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %q in %s", want, line)
+		}
+	}
+}
+
+func TestSanitizeHostPortRedactsPEMAndEmpty(t *testing.T) {
+	if got := sanitizeHostPort(""); got != "(empty)" {
+		t.Fatalf("empty = %q", got)
+	}
+	if got := sanitizeHostPort("-----BEGIN CERTIFICATE-----\nabc"); got != "(redacted)" {
+		t.Fatalf("pem = %q", got)
+	}
+	if got := sanitizeHostPort("localhost:7233"); got != "localhost:7233" {
+		t.Fatalf("localhost = %q", got)
+	}
+}
+
+func TestClaimModeLabelDoesNotReadDEKValue(t *testing.T) {
+	t.Setenv(EnvClaimMode, "")
+	t.Setenv(EnvClaimDEK, "this-is-a-dek-value-not-for-logs")
+	if got := claimModeLabel(); got != "hosted" {
+		t.Fatalf("claim mode = %q", got)
+	}
+}
+
 func TestWorkerStopTimeoutPreservesActivitiesWithinHostDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		value string

@@ -100,6 +100,12 @@ func Serve(ctx context.Context, options Options) error {
 	if err := validateDeploymentVersioning(options); err != nil {
 		return err
 	}
+	log.Printf("%s", formatStartupStage("config loaded", options, fmt.Sprintf(
+		"claim_mode=%s readiness_nonce_set=%t readiness_signal_set=%t",
+		claimModeLabel(),
+		strings.TrimSpace(os.Getenv(EnvReadinessNonce)) != "",
+		strings.TrimSpace(os.Getenv(EnvReadinessSignal)) != "",
+	)))
 
 	clientOptions, err := clientOptions(options)
 	if err != nil {
@@ -120,13 +126,14 @@ func Serve(ctx context.Context, options Options) error {
 		tracker.handoff = newRecoveryTaskHandoff(&tracker.uncovered)
 		clientOptions.ConnectionOptions.DialOptions = append(clientOptions.ConnectionOptions.DialOptions, grpc.WithChainUnaryInterceptor(tracker.handoff.intercept))
 	}
+	log.Printf("%s", formatStartupStage("before temporal dial", options, ""))
 	dialStart := time.Now()
 	c, err := client.Dial(clientOptions)
 	if err != nil {
 		return fmt.Errorf("temporal adapter: dial: %w", err)
 	}
 	defer c.Close()
-	log.Printf("temporal adapter: dial ok in %s", time.Since(dialStart).Round(time.Millisecond))
+	log.Printf("%s", formatStartupStage("after temporal dial", options, "duration="+time.Since(dialStart).Round(time.Millisecond).String()))
 
 	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -174,11 +181,12 @@ func Serve(ctx context.Context, options Options) error {
 	// Start synchronously before any fail-closed Stop(). worker.Run+manual Stop
 	// races when the probe fails before Run's internal Start (SDK panics:
 	// "attempted to start a worker that has been stopped before").
+	log.Printf("%s", formatStartupStage("before worker start", options, ""))
 	if err := w.Start(); err != nil {
 		<-probeCh
 		return fmt.Errorf("temporal adapter: start worker: %w", err)
 	}
-	log.Printf("temporal adapter: worker started in %s", time.Since(runStart).Round(time.Millisecond))
+	log.Printf("%s", formatStartupStage("after worker start", options, "duration="+time.Since(runStart).Round(time.Millisecond).String()))
 
 	// Start exactly once. Run calls Start again and can panic if cancellation
 	// stops the worker before the Run goroutine gets scheduled.
@@ -197,10 +205,12 @@ func Serve(ctx context.Context, options Options) error {
 		w.Stop()
 		return fmt.Errorf("temporal adapter: %s is required when %s is set", EnvReadinessSignal, EnvReadinessNonce)
 	}
+	log.Printf("%s", formatStartupStage("before ready signal", options, ""))
 	if err := signalReadiness(readinessSignal, readinessNonce); err != nil {
 		w.Stop()
 		return fmt.Errorf("temporal adapter: signal readiness: %w", err)
 	}
+	log.Printf("%s", formatStartupStage("after ready signal", options, ""))
 
 	cont := make(chan os.Signal, 1)
 	signal.Notify(cont, syscall.SIGCONT)
@@ -345,6 +355,63 @@ func dialTLSConfig(options Options) (*tls.Config, error) {
 		return &tls.Config{MinVersion: tls.VersionTLS12}, nil
 	}
 	return nil, nil
+}
+
+func startupAuthMode(options Options) string {
+	hasCert := strings.TrimSpace(options.TLSCert) != "" || strings.TrimSpace(options.TLSKey) != ""
+	hasAPIKey := strings.TrimSpace(options.APIKey) != ""
+	switch {
+	case hasCert && hasAPIKey:
+		return "mtls+api_key"
+	case hasCert:
+		return "mtls"
+	case hasAPIKey:
+		return "api_key"
+	default:
+		return "plaintext"
+	}
+}
+
+func claimModeLabel() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv(EnvClaimMode)))
+	if mode == "" {
+		if strings.TrimSpace(os.Getenv(EnvClaimDEK)) != "" {
+			return "hosted"
+		}
+		return "unset"
+	}
+	return mode
+}
+
+func sanitizeHostPort(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "(empty)"
+	}
+	if strings.Contains(addr, "BEGIN ") || strings.Contains(addr, "\n") {
+		return "(redacted)"
+	}
+	if at := strings.LastIndex(addr, "@"); at >= 0 {
+		return addr[at+1:]
+	}
+	return addr
+}
+
+// formatStartupStage is the hosted worker startup breadcrumb. It never includes
+// API keys, TLS PEMs, claim DEKs, or readiness nonces.
+func formatStartupStage(stage string, options Options, extra string) string {
+	line := fmt.Sprintf(
+		"temporal adapter: %s address=%s namespace=%s task_queue=%s auth=%s",
+		stage,
+		sanitizeHostPort(options.Address),
+		options.Namespace,
+		options.TaskQueue,
+		startupAuthMode(options),
+	)
+	if extra != "" {
+		return line + " " + extra
+	}
+	return line
 }
 
 func optionsFromEnv(options Options) Options {
