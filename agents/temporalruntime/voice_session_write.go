@@ -23,6 +23,7 @@ var errWriteForgedKey = errors.New("forged write idempotency key")
 var errWriteMissingBinding = errors.New("voice write requires a verified resource binding")
 var errWriteBindingMismatch = errors.New("resource binding does not match the verified session")
 var errWriteCallIDMismatch = errors.New("voice write call_id does not match the verified session")
+var errExecuteToolV2WriteOnly = errors.New("execute_tool.v2 is write-only")
 
 // resourceBindingFromGrantScope is an INTERIM mapping of the verified grant
 // Scope onto the opaque SDK ResourceBinding. Admitted shapes (Scope.Validate):
