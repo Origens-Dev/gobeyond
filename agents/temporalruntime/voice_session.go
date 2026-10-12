@@ -26,8 +26,15 @@ const (
 
 	// VoiceSessionExecuteToolUpdate is the Maglev/API → workflow Update that
 	// runs a Live tool as a LocalActivity on the agent worker (P2 remote path
-	// and P3 colocated LocalActivity tools).
+	// and P3 colocated LocalActivity tools). Read, playback, and call-control
+	// stay on this name. VoiceWrite also remains accepted here for current
+	// .v1 callers.
 	VoiceSessionExecuteToolUpdate = "gobeyond.agents.voice_session.execute_tool.v1"
+	// VoiceSessionExecuteToolUpdateV2 is the VoiceWrite Temporal Update.
+	// Binding-aware workers register this name. The verified grant Scope is
+	// the only source of ResourceBinding; request-supplied bindings are never
+	// trusted. Workers that only register .v1 reject .v2 as unregistered.
+	VoiceSessionExecuteToolUpdateV2 = "gobeyond.agents.voice_session.execute_tool.v2"
 	// VoiceSessionApproveToolUpdate responds to one exact workflow-owned pending
 	// call and returns its final result after execution or denial.
 	VoiceSessionApproveToolUpdate                  = "gobeyond.agents.voice_session.approve_tool.v1"
@@ -270,6 +277,42 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 		return err
 	}
 
+	handleWrite := func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+		req, identity, replay, err := bindVoiceWriteRequest(in, req)
+		if err != nil {
+			if errors.Is(err, errWriteToolCallID) {
+				return VoiceSessionExecuteToolResult{Error: err.Error()}, nil
+			}
+			return VoiceSessionExecuteToolResult{}, err
+		}
+		callID := strings.TrimSpace(req.ToolCallID)
+		req.ApprovalConfirmed = false
+		if interactionID := pendingByCall[callID]; interactionID != "" {
+			pending := pendingApprovals[interactionID]
+			if pending.ToolName != req.ToolName || voiceToolInputHash(pending.Input) != voiceToolInputHash(req.Input) || pending.ActorID != req.ActorID || pending.ActorKind != req.ActorKind {
+				return VoiceSessionExecuteToolResult{}, errors.New("conflicting replay for pending approval")
+			}
+			return makeVoiceApprovalResult(interactionID, pending), nil
+		}
+		cached, done, err := writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, replay)
+		if err != nil || done {
+			return cached, err
+		}
+		if writes.unknown[identity] {
+			req.WriteReconcileOnly = true
+		}
+		result, err := executeVoiceWriteToolLocal(ctx, req)
+		if err == nil && result.Approval != nil {
+			writes.pending[identity] = false
+			req.ApprovalExpiresAt = workflow.Now(ctx).Add(5 * time.Minute)
+			result.Approval.ExpiresAt = req.ApprovalExpiresAt
+			pendingApprovals[result.Approval.InteractionID] = req
+			pendingByCall[callID] = result.Approval.InteractionID
+			return result, nil
+		}
+		return writes.finish(identity, result, err)
+	}
+
 	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdate,
 		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
 			if !exclusiveVoiceDispatch(req) {
@@ -290,39 +333,22 @@ func VoiceSessionWorkflow(ctx workflow.Context, in VoiceSessionInput) error {
 			if req.CallControl != nil {
 				return control.execute(ctx, in, req)
 			}
-			req, identity, replay, err := bindVoiceWriteRequest(in, req)
-			if err != nil {
-				if errors.Is(err, errWriteToolCallID) {
-					return VoiceSessionExecuteToolResult{Error: err.Error()}, nil
-				}
+			return handleWrite(ctx, req)
+		}); err != nil {
+		return err
+	}
+	if err := workflow.SetUpdateHandler(ctx, VoiceSessionExecuteToolUpdateV2,
+		func(ctx workflow.Context, req VoiceSessionExecuteToolInput) (VoiceSessionExecuteToolResult, error) {
+			if !exclusiveVoiceDispatch(req) {
+				return VoiceSessionExecuteToolResult{}, errors.New("mixed remote dispatch")
+			}
+			if req.SourcePlayback != nil || req.HiddenCompletion != nil || req.RemoteRead != nil || req.CallControl != nil {
+				return VoiceSessionExecuteToolResult{}, errExecuteToolV2WriteOnly
+			}
+			if err := validateVoiceDecisionEffectBinding(in, req); err != nil {
 				return VoiceSessionExecuteToolResult{}, err
 			}
-			callID := strings.TrimSpace(req.ToolCallID)
-			req.ApprovalConfirmed = false
-			if interactionID := pendingByCall[callID]; interactionID != "" {
-				pending := pendingApprovals[interactionID]
-				if pending.ToolName != req.ToolName || voiceToolInputHash(pending.Input) != voiceToolInputHash(req.Input) || pending.ActorID != req.ActorID || pending.ActorKind != req.ActorKind {
-					return VoiceSessionExecuteToolResult{}, errors.New("conflicting replay for pending approval")
-				}
-				return makeVoiceApprovalResult(interactionID, pending), nil
-			}
-			cached, done, err := writes.reserve(ctx, identity, req.ToolName, req.ToolCallID, replay)
-			if err != nil || done {
-				return cached, err
-			}
-			if writes.unknown[identity] {
-				req.WriteReconcileOnly = true
-			}
-			result, err := executeVoiceWriteToolLocal(ctx, req)
-			if err == nil && result.Approval != nil {
-				writes.pending[identity] = false
-				req.ApprovalExpiresAt = workflow.Now(ctx).Add(5 * time.Minute)
-				result.Approval.ExpiresAt = req.ApprovalExpiresAt
-				pendingApprovals[result.Approval.InteractionID] = req
-				pendingByCall[callID] = result.Approval.InteractionID
-				return result, nil
-			}
-			return writes.finish(identity, result, err)
+			return handleWrite(ctx, req)
 		}); err != nil {
 		return err
 	}
