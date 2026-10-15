@@ -32,6 +32,33 @@ an idempotency key and publishes the resulting generation to the active edge
 route. Edge purge is an optimization; generation changes are the correctness
 boundary.
 
-For hosted applications, `cache.InvalidateRemote` submits that event to the
-platform invalidation endpoint. The application still owns webhook signature
-verification; GoBeyond owns idempotency, generation publication, and retries.
+## Hosted invalidation
+
+`cache.InvalidateHosted` is available only in a compatible hosted runtime that
+provides the capability. Applications must authenticate and validate incoming
+webhooks before calling it.
+
+```go
+result, err := cache.InvalidateHosted(ctx, cache.HostedInvalidationOptions{
+    IdempotencyKey: deliveryID,
+})
+```
+
+The request contains only `idempotency_key`; its trimmed value must be nonempty
+and at most 200 bytes. Reuse the same key when retrying the same event, and use
+a different key for a new event. The runtime determines the invalidation scope;
+applications cannot select another environment or supply host lists.
+
+A successful call reports durable acceptance, not completed cache propagation.
+The result status may be `accepted`, `started`, `already_started`, or `existing`.
+Consumers must not treat any of these as proof that fresh content is visible.
+
+The call returns an error for invalid input, an unavailable capability, request
+failure or timeout, a non-202 response, or an invalid acceptance response. A
+request uses a ten-second timeout and also respects context cancellation. An
+error after submission may leave acceptance uncertain; retry with the same key.
+There is no automatic fallback to a credential-based API.
+
+The transport uses the existing `GOBEYOND_HOST_REPORT_SOCKET` configuration.
+Local environments without that capability return an error. The older
+`cache.InvalidateRemote` API is separate and requires its own configuration.
