@@ -247,7 +247,7 @@ func TestHandlerResizesPNGAndConvertsJPEG(t *testing.T) {
 		if format != test.format || decoded.Bounds().Dx() != widthFromQuery(test.query) {
 			t.Fatalf("%s: format=%s bounds=%v", test.query, format, decoded.Bounds())
 		}
-		if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=3600" {
+		if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=0, s-maxage=3600, must-revalidate" {
 			t.Fatalf("cache control = %q", got)
 		}
 	}
@@ -381,4 +381,56 @@ func widthFromQuery(query string) int {
 		return 64
 	}
 	return 32
+}
+
+func TestSameRemoteURLReplacementChangesTransformedBytes(t *testing.T) {
+	var source []byte
+	remote, err := NewRemoteLoader([]string{"images.ctfassets.net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	remote.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		reads++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(source)), Header: make(http.Header), Request: request}, nil
+	})}
+	handler := Handler(remote)
+	render := func(fill color.NRGBA) []byte {
+		picture := image.NewNRGBA(image.Rect(0, 0, 64, 32))
+		for y := 0; y < 32; y++ {
+			for x := 0; x < 64; x++ {
+				picture.SetNRGBA(x, y, fill)
+			}
+		}
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, picture); err != nil {
+			t.Fatal(err)
+		}
+		source = encoded.Bytes()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", Route+"?url=https%3A%2F%2Fimages.ctfassets.net%2Fspace%2Fasset%2Fsame.png&w=32", nil))
+		if rec.Code != 200 {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		return rec.Body.Bytes()
+	}
+	first := render(color.NRGBA{R: 255, A: 255})
+	second := render(color.NRGBA{B: 255, A: 255})
+	if bytes.Equal(first, second) || reads != 2 {
+		t.Fatalf("replacement not fetched/transformed: reads=%d", reads)
+	}
+}
+
+func TestBrowserRevalidatesRevisionedImagesWhileCDNKeepsConfiguredTTL(t *testing.T) {
+	t.Setenv(ImageCacheSecondsEnv, "60")
+	root := t.TempDir()
+	writeTestPNG(t, filepath.Join(root, "brand.png"), 80, 40)
+	recorder := httptest.NewRecorder()
+	Handler(DiskLoader{Root: root}).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, Route+"?v=2&url=%2Fbrand.png&w=32", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=0, s-maxage=60, must-revalidate" {
+		t.Fatalf("policy=%q", got)
+	}
 }

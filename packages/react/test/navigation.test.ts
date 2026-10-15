@@ -363,7 +363,7 @@ test("data prefetch loads route code and warms opted-in route data", async () =>
     await waitFor(() => imports === 1);
     await waitFor(() => requests === 1);
     assert.equal(requests, 1, "prefetch warms the runtime data payload, not only the JS chunk");
-    assert.deepEqual(warmedImages, ["/_gobeyond/image?url=%2Fhero.jpg&w=1920&q=75"]);
+    assert.deepEqual(warmedImages, ["/_gobeyond/image?v=2&url=%2Fhero.jpg&w=1920&q=75"]);
     await app?.prefetch(linkTarget);
     assert.equal(imports, 1);
     assert.equal(requests, 1, "an already-warm, still-fresh entry is not re-fetched");

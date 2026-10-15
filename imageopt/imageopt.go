@@ -452,7 +452,7 @@ func Handler(loader Loader) http.Handler {
 			reject(http.StatusUnsupportedMediaType, "unsupported_source", err.Error())
 			return
 		}
-		writer.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", CacheSecondsFromEnvironment()))
+		writer.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=0, s-maxage=%d, must-revalidate", CacheSecondsFromEnvironment()))
 		writer.Header().Set("Content-Type", contentType)
 		writer.Header().Set("Content-Length", strconv.Itoa(len(output)))
 		_, _ = writer.Write(output)

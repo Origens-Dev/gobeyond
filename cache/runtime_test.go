@@ -46,3 +46,15 @@ func TestDeployPrefixFromEnv(t *testing.T) {
 		t.Fatalf("DeployPrefixFromEnv() = %q", got)
 	}
 }
+
+func TestGenerationHandlesShareNamespacedFillCoordination(t *testing.T) {
+	runtime := &Runtime{generation: "old", flight: &flightGroup{}, refreshing: &inFlightSet{}}
+	first := runtime.WithGeneration("next")
+	second := runtime.WithGeneration("next")
+	if first.flight != second.flight || first.refreshing != second.refreshing {
+		t.Fatal("generation handles lost shared coordination")
+	}
+	if first.Generation() != "next" || runtime.Generation() == "next" {
+		t.Fatal("generation changed original runtime")
+	}
+}

@@ -19,7 +19,7 @@ func TestImageSrcHelperMatchesReactHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "/_gobeyond/image?url=%2Fbrand%2Flogo+mark.png&w=640&q=82&f=png"
+	const want = "/_gobeyond/image?v=2&url=%2Fbrand%2Flogo+mark.png&w=640&q=82&f=png"
 	if value != want {
 		t.Fatalf("imageSrc = %q, want %q", value, want)
 	}
@@ -38,7 +38,7 @@ func TestImageSrcHelperDefaultsQuality(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "/_gobeyond/image?url=%2Fbrand%2Flogo.png&w=32&q=75"
+	const want = "/_gobeyond/image?v=2&url=%2Fbrand%2Flogo.png&w=32&q=75"
 	if value != want {
 		t.Fatalf("imageSrc = %q, want %q", value, want)
 	}

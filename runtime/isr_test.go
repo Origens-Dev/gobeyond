@@ -346,3 +346,25 @@ func TestRouteISRWithoutACacheRuntimeLoadsEveryRequest(t *testing.T) {
 		t.Fatalf("loader ran %d times, want every request to recompute without a cache", loads.Load())
 	}
 }
+
+// A warm process must not use startup-generation props to fill a newly fenced
+// edge namespace before host resolver caches have converged.
+func TestHostedGenerationFencesWarmISRProps(t *testing.T) {
+	t.Setenv(HostedRuntimeEnv, "1")
+	var loads atomic.Int32
+	server := isrServer(t, func(*gb.PageContext) (LoadedPage, error) {
+		if loads.Add(1) == 1 {
+			return okPage("Before"), nil
+		}
+		return okPage("After"), nil
+	})
+	for _, tc := range []struct{ generation, want string }{{"old", "Before"}, {"old", "Before"}, {"new", "After"}, {"new", "After"}} {
+		recorder := getDocument(t, server, "https://example.com/products/widget", http.Header{"X-GoBeyond-Cache-Generation": {tc.generation}})
+		if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), tc.want) {
+			t.Fatalf("generation=%s status=%d body=%s", tc.generation, recorder.Code, recorder.Body.String())
+		}
+	}
+	if loads.Load() != 2 {
+		t.Fatalf("loads=%d", loads.Load())
+	}
+}

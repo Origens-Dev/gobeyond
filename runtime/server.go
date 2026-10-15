@@ -500,8 +500,14 @@ func newCacheRuntime(config Config) (*cache.Runtime, error) {
 // newRequestScope creates the per-request cache scope: the Get-gate privacy
 // flag plus the server's cache handle, which is what makes cache.Load and
 // cache.Revalidate* functional inside loaders, actions, and API handlers.
-func (s *Server) newRequestScope(private bool) *cache.RequestScope {
-	return cache.NewRequestScope(private, cache.WithRuntimeHandle(s.cache))
+func (s *Server) newRequestScope(private bool, requests ...*http.Request) *cache.RequestScope {
+	handle := s.cache
+	if hostedRuntime() && handle != nil && len(requests) > 0 && requests[0] != nil {
+		if generation := requests[0].Header.Get("X-GoBeyond-Cache-Generation"); generation != "" {
+			handle = handle.WithGeneration(handle.Generation() + ":request:" + generation)
+		}
+	}
+	return cache.NewRequestScope(private, cache.WithRuntimeHandle(handle))
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -681,7 +687,7 @@ func acceptsGzip(request *http.Request) bool {
 func (s *Server) serveDocument(writer http.ResponseWriter, request *http.Request, requestID string) {
 	current := request.Clone(request.Context())
 	privateRequest := cache.IsPrivateRequest(request.Header)
-	current = current.WithContext(cache.WithRequestScope(current.Context(), s.newRequestScope(privateRequest)))
+	current = current.WithContext(cache.WithRequestScope(current.Context(), s.newRequestScope(privateRequest, request)))
 	for rewrites := 0; rewrites <= maxRewrites; rewrites++ {
 		_, params, _ := s.pageTable.Resolve(current.URL.Path)
 		requestContext := current.Context()
@@ -1053,7 +1059,7 @@ func (s *Server) serveAPI(writer http.ResponseWriter, request *http.Request, req
 
 func (s *Server) applyMiddleware(request *http.Request, requestID string, params map[string]string, final gb.Handler) (gb.Response, error) {
 	privateRequest := cache.IsPrivateRequest(request.Header)
-	request = request.WithContext(cache.WithRequestScope(request.Context(), s.newRequestScope(privateRequest)))
+	request = request.WithContext(cache.WithRequestScope(request.Context(), s.newRequestScope(privateRequest, request)))
 	pipe := final
 	if s.config.Middleware != nil {
 		pipe = s.config.Middleware(final)

@@ -67,8 +67,8 @@ type Runtime struct {
 	logger         *slog.Logger
 	now            func() time.Time
 
-	flight     flightGroup
-	refreshing inFlightSet
+	flight     *flightGroup
+	refreshing *inFlightSet
 }
 
 // NewRuntime validates config and returns the handle to install on request
@@ -84,7 +84,7 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if config.Store == nil {
 		return nil, errors.New("cache: runtime requires a store")
 	}
-	runtime := &Runtime{
+	runtime := &Runtime{flight: &flightGroup{}, refreshing: &inFlightSet{},
 		deployPrefix:   config.DeployPrefix,
 		buildID:        config.BuildID,
 		generation:     config.Generation,
@@ -169,4 +169,13 @@ func (s *inFlightSet) leave(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.keys, key)
+}
+
+// WithGeneration creates an isolated cache identity over the same byte store.
+// It shares synchronization keyed by the full namespace without copying mutexes.
+func (rt *Runtime) WithGeneration(generation string) *Runtime {
+	if rt == nil || rt.generation == generation {
+		return rt
+	}
+	return &Runtime{deployPrefix: rt.deployPrefix, buildID: rt.buildID, generation: generation, store: rt.store, maxStale: rt.maxStale, refreshTimeout: rt.refreshTimeout, logger: rt.logger, now: rt.now, flight: rt.flight, refreshing: rt.refreshing}
 }
