@@ -247,7 +247,7 @@ func TestHandlerResizesPNGAndConvertsJPEG(t *testing.T) {
 		if format != test.format || decoded.Bounds().Dx() != widthFromQuery(test.query) {
 			t.Fatalf("%s: format=%s bounds=%v", test.query, format, decoded.Bounds())
 		}
-		if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=3600" {
+		if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=0, s-maxage=3600, must-revalidate" {
 			t.Fatalf("cache control = %q", got)
 		}
 	}
@@ -418,5 +418,19 @@ func TestSameRemoteURLReplacementChangesTransformedBytes(t *testing.T) {
 	second := render(color.NRGBA{B: 255, A: 255})
 	if bytes.Equal(first, second) || reads != 2 {
 		t.Fatalf("replacement not fetched/transformed: reads=%d", reads)
+	}
+}
+
+func TestBrowserRevalidatesRevisionedImagesWhileCDNKeepsConfiguredTTL(t *testing.T) {
+	t.Setenv(ImageCacheSecondsEnv, "60")
+	root := t.TempDir()
+	writeTestPNG(t, filepath.Join(root, "brand.png"), 80, 40)
+	recorder := httptest.NewRecorder()
+	Handler(DiskLoader{Root: root}).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, Route+"?v=2&url=%2Fbrand.png&w=32", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=0, s-maxage=60, must-revalidate" {
+		t.Fatalf("policy=%q", got)
 	}
 }

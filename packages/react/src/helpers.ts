@@ -41,5 +41,5 @@ export function imageSrc(
   options: ImageOptions,
 ): string {
   const query = `url=${url(source)}&w=${url(String(options.w))}&q=${url(String(options.q ?? 75))}`;
-  return `/_gobeyond/image?${query}${options.f ? `&f=${url(options.f)}` : ""}`;
+  return `/_gobeyond/image?v=2&${query}${options.f ? `&f=${url(options.f)}` : ""}`;
 }

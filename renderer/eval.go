@@ -434,7 +434,7 @@ func evalHelper(expr *renderplan.Helper, env environment, path string) (any, err
 				return nil, evaluation(path, "imageSrc options.q must be scalar")
 			}
 		}
-		result := "/_gobeyond/image?url=" + url.QueryEscape(source) +
+		result := "/_gobeyond/image?v=2&url=" + url.QueryEscape(source) +
 			"&w=" + url.QueryEscape(width) + "&q=" + url.QueryEscape(quality)
 		if configured, exists := options["f"]; exists {
 			format, ok := configured.(string)
