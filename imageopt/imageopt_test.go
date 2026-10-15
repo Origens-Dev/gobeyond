@@ -382,3 +382,41 @@ func widthFromQuery(query string) int {
 	}
 	return 32
 }
+
+func TestSameRemoteURLReplacementChangesTransformedBytes(t *testing.T) {
+	var source []byte
+	remote, err := NewRemoteLoader([]string{"images.ctfassets.net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	remote.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		reads++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(source)), Header: make(http.Header), Request: request}, nil
+	})}
+	handler := Handler(remote)
+	render := func(fill color.NRGBA) []byte {
+		picture := image.NewNRGBA(image.Rect(0, 0, 64, 32))
+		for y := 0; y < 32; y++ {
+			for x := 0; x < 64; x++ {
+				picture.SetNRGBA(x, y, fill)
+			}
+		}
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, picture); err != nil {
+			t.Fatal(err)
+		}
+		source = encoded.Bytes()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", Route+"?url=https%3A%2F%2Fimages.ctfassets.net%2Fspace%2Fasset%2Fsame.png&w=32", nil))
+		if rec.Code != 200 {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		return rec.Body.Bytes()
+	}
+	first := render(color.NRGBA{R: 255, A: 255})
+	second := render(color.NRGBA{B: 255, A: 255})
+	if bytes.Equal(first, second) || reads != 2 {
+		t.Fatalf("replacement not fetched/transformed: reads=%d", reads)
+	}
+}
