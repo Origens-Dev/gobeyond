@@ -21,8 +21,19 @@ func TestHostedInvalidationBoundSocket(t *testing.T) {
 		if r.Method != "POST" || r.URL.Path != "/v1/cache/invalidate" {
 			t.Errorf("unexpected request")
 		}
-		if r.Header.Get("X-GoBeyond-Internal-Token") != "" {
-			t.Error("platform credential sent")
+		allowedHeaders := map[string]bool{
+			"Content-Type":    true,
+			"Content-Length":  true,
+			"Accept-Encoding": true,
+			"User-Agent":      true,
+		}
+		for name := range r.Header {
+			if !allowedHeaders[name] {
+				t.Errorf("unexpected outgoing header %q", name)
+			}
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q", got)
 		}
 		raw, _ := io.ReadAll(r.Body)
 		body = string(raw)
