@@ -200,12 +200,18 @@ func (s *voiceReadWorkflowState) execute(ctx workflow.Context, in VoiceSessionIn
 		return s.results[key], nil
 	}
 	limit := 2
+	if r.Context.Scope.Kind == "resource_agent" {
+		limit = maxVoiceSessionToolCalls
+	}
 	if r.Context.Scope.Kind == "platform_support" {
 		// Support can inspect several networks in one session. Keep reads bounded
 		// by the same per-session limit used for authored voice actions.
 		limit = maxVoiceSessionToolCalls
 	}
 	if err := s.budget.consume(r.ToolID, r.ToolCallID, digest, limit); err != nil {
+		if r.Context.Scope.Kind == "resource_agent" {
+			return VoiceSessionExecuteToolResult{Error: "home read budget exhausted"}, nil
+		}
 		if r.Context.Scope.Kind == "platform_support" {
 			return VoiceSessionExecuteToolResult{Error: "support read budget exhausted"}, nil
 		}

@@ -32,6 +32,12 @@ var errExecuteToolV2WriteOnly = errors.New("execute_tool.v2 is write-only")
 // mailbox/line/DID product names; the application maps the binding onto its
 // own resources. Callers and model arguments cannot populate this projection.
 func resourceBindingFromGrantScope(scope voicecontract.Scope) agents.ResourceBinding {
+	if scope.Kind == "resource_agent" {
+		if scope.Validate() != nil {
+			return agents.ResourceBinding{}
+		}
+		return agents.ResourceBinding{Kind: scope.Kind, ResourceID: scope.ResourceID}
+	}
 	return agents.ResourceBinding{
 		Kind:        strings.TrimSpace(scope.Kind),
 		ResourceID:  strings.TrimSpace(scope.LineID),

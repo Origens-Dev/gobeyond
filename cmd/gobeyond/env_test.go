@@ -173,3 +173,35 @@ func TestCompilerResourceLimitsAreValidated(t *testing.T) {
 		t.Fatal("unsafe resource settings admitted")
 	}
 }
+
+func TestCompilerEnvironmentPreservesManagedProxyAndCATrustOnly(t *testing.T) {
+	transport := map[string]string{
+		"HTTP_PROXY": "http://managed-proxy.example:8080", "HTTPS_PROXY": "http://managed-proxy.example:8080",
+		"NO_PROXY": "localhost,127.0.0.1", "ALL_PROXY": "http://managed-proxy.example:8080",
+		"http_proxy": "http://managed-proxy.example:8080", "https_proxy": "http://managed-proxy.example:8080",
+		"no_proxy": "localhost,127.0.0.1", "all_proxy": "http://managed-proxy.example:8080",
+		"SSL_CERT_FILE": "/executor/ca-bundle.pem", "SSL_CERT_DIR": "/executor/certs",
+		"NODE_EXTRA_CA_CERTS": "/executor/ca-bundle.pem", "GIT_SSL_CAINFO": "/executor/ca-bundle.pem", "GIT_SSL_CAPATH": "/executor/certs",
+	}
+	for key, value := range transport {
+		t.Setenv(key, value)
+	}
+	blocked := []string{"CLERK_SECRET_KEY", "AWS_SECRET_ACCESS_KEY", "GOBEYOND_OIDC_TOKEN", "HTTPS_PROXY_SECRET", "NODE_TLS_REJECT_UNAUTHORIZED", "GIT_SSL_NO_VERIFY", "GIT_CONFIG_COUNT", "GOWORK"}
+	for _, key := range blocked {
+		t.Setenv(key, "must-not-reach-compiler")
+	}
+	values := environmentValues(compilerEnvironment())
+	for key, expected := range transport {
+		if values[key] != expected {
+			t.Errorf("compiler lost executor transport configuration %s", key)
+		}
+	}
+	for _, key := range blocked {
+		if _, ok := values[key]; ok {
+			t.Errorf("compiler received non-allowlisted configuration %s", key)
+		}
+	}
+	if values["GOFLAGS"] != "-mod=readonly" || values["GOTOOLCHAIN"] != "local" {
+		t.Fatal("transport configuration changed compiler dependency policy")
+	}
+}
