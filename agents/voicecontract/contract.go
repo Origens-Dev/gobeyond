@@ -18,6 +18,9 @@ const (
 
 // Scope is a tagged union. SelectedLineID is added only by a fenced transition.
 type Scope struct {
+	ConfigRevision uint64 `json:"config_revision,omitempty"`
+	ResourceType         string `json:"resource_type,omitempty"`
+	ResourceID           string `json:"resource_id,omitempty"`
 	Kind                 string `json:"kind"`
 	LineID               string `json:"line_id,omitempty"`
 	DIDID                string `json:"did_id,omitempty"`
@@ -49,7 +52,7 @@ type Context struct {
 }
 
 type GrantClaims struct {
-	BudgetPolicy       string   `json:"budget_policy,omitempty"`
+	BudgetPolicy string `json:"budget_policy,omitempty"`
 	// MailboxPlayback is the mint-time producer admission claim bound into the
 	// signed grant ("on" or "off"). Empty means unspecified (legacy / no
 	// playback tools). New source playback requires "on"; completion does not.

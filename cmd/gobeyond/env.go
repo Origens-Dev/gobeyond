@@ -144,6 +144,12 @@ func compilerEnvironment() []string {
 			}
 		case "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "GOCACHE", "GOMODCACHE", "GOPATH", "GOPROXY", "GOSUMDB", "GOOS", "GOARCH", "CGO_ENABLED", "GOBEYOND_COMPILER_CLI", "PNPM_HOME":
 			controlled = append(controlled, entry)
+		// Dependency downloads must retain the executor's managed egress and CA
+		// trust. These exact process-owned keys are transport configuration,
+		// never dotenv/deployment configuration. Do not admit broad prefixes or
+		// TLS-verification bypasses such as NODE_TLS_REJECT_UNAUTHORIZED.
+		case "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH":
+			controlled = append(controlled, entry)
 		}
 	}
 	// Older published Vite plugins use this internal signal to disable dotenv.

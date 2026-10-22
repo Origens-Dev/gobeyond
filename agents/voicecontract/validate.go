@@ -19,18 +19,21 @@ func (c Context) ValidateForVersion(version string) error {
 		return errors.New("invalid context version")
 	}
 	if v2(version) {
-		if (c.Scope.Kind != "agent" && c.Scope.Kind != "platform_support") || !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops {
+		if (c.Scope.Kind != "agent" && c.Scope.Kind != "platform_support" && c.Scope.Kind != "resource_agent") || !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops {
 			return errors.New("invalid agent context identity")
 		}
 		return nil
 	}
-	if c.Scope.Kind == "agent" || c.Scope.Kind == "platform_support" || c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
+	if c.Scope.Kind == "agent" || c.Scope.Kind == "platform_support" || c.Scope.Kind == "resource_agent" || c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
 		return errors.New("v2 context on legacy wire")
 	}
 	return nil
 }
 
 func (s Scope) Validate() error {
+	if s.Kind != "resource_agent" && (s.ResourceType != "" || s.ResourceID != "" || s.ConfigRevision != 0) {
+		return errors.New("resource fields on non-resource scope")
+	}
 	switch s.Kind {
 	case "operator":
 		if !identifier(s.LineID) || s.DIDID != "" || s.RecipientSetRevision != "" || s.SelectedLineID != "" {
@@ -43,6 +46,10 @@ func (s Scope) Validate() error {
 	case "agent":
 		if !identifier(s.LineID) || s.DIDID != "" || s.RecipientSetRevision != "" || s.SelectedLineID != "" {
 			return errors.New("invalid agent scope")
+		}
+	case "resource_agent":
+		if !identifier(s.ResourceType) || !identifier(s.ResourceID) || s.ConfigRevision == 0 || s.LineID != "" || s.DIDID != "" || s.RecipientSetRevision != "" || s.SelectedLineID != "" {
+			return errors.New("invalid resource agent scope")
 		}
 	case "platform_support":
 		if s.LineID != "" || s.DIDID != "" || s.RecipientSetRevision != "" || s.SelectedLineID != "" {
@@ -66,6 +73,10 @@ func (c Context) Validate() error {
 		if c.NetworkID != "" || c.ActorKind != "user" {
 			return errors.New("invalid platform support identity")
 		}
+	} else if c.Scope.Kind == "resource_agent" {
+		if c.NetworkID != "" || (c.ActorKind != "user" && c.ActorKind != "service") {
+			return errors.New("invalid resource agent identity")
+		}
 	} else if !identifier(c.NetworkID) {
 		return errors.New("invalid context identifier")
 	}
@@ -79,7 +90,7 @@ func (c Context) Validate() error {
 		return err
 	}
 	if c.TransportCallID != "" || c.ParentCallID != "" || c.HopID != "" || c.HopCount != 0 {
-		if !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops || (c.Scope.Kind != "agent" && c.Scope.Kind != "platform_support") {
+		if !callIdentifier(c.TransportCallID) || !callIdentifier(c.ParentCallID) || !identifier(c.HopID) || c.HopCount == 0 || c.HopCount > MaxHops || (c.Scope.Kind != "agent" && c.Scope.Kind != "platform_support" && c.Scope.Kind != "resource_agent") {
 			return errors.New("invalid per-hop identity")
 		}
 	}
@@ -240,7 +251,7 @@ func (s SoftphoneEvent) Validate() error {
 }
 
 func (r ReadRequest) Validate() error {
-	if !validVersion(r.Version) || r.Context.ValidateForVersion(r.Version) != nil || (r.Version == LegacyVersion && r.Context.Scope.Kind != "operator") || (r.Version == Version && r.Context.Scope.Kind != "agent" && r.Context.Scope.Kind != "platform_support") || !identifier(r.ToolID) || !identifier(r.ToolCallID) {
+	if !validVersion(r.Version) || r.Context.ValidateForVersion(r.Version) != nil || (r.Version == LegacyVersion && r.Context.Scope.Kind != "operator") || (r.Version == Version && r.Context.Scope.Kind != "agent" && r.Context.Scope.Kind != "platform_support" && r.Context.Scope.Kind != "resource_agent") || !identifier(r.ToolID) || !identifier(r.ToolCallID) {
 		return errors.New("invalid remote read")
 	}
 	raw, err := CanonicalJSON(r.Arguments, 1024)

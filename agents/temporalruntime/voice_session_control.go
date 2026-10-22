@@ -114,7 +114,7 @@ func executeVoiceRegistryActivityKind(ctx context.Context, req VoiceSessionExecu
 		c = &voicecontract.Command{Version: r.Version, Context: r.Context, ToolID: r.ToolID, ToolCallID: r.ToolCallID, InputDigest: r.InputDigest, Arguments: r.Arguments}
 	}
 	validControl := c != nil && c.Validate() == nil && ((c.Version == voicecontract.LegacyVersion && c.Context.Scope.Kind == "operator" && c.ToolID == "dial-contact") || (c.Version == voicecontract.Version && c.Context.Scope.Kind == "agent"))
-	validRead := c != nil && ((c.Version == voicecontract.Version && (c.Context.Scope.Kind == "agent" || c.Context.Scope.Kind == "platform_support")) || (c.Version == voicecontract.LegacyVersion && c.Context.Scope.Kind == "operator"))
+	validRead := c != nil && ((c.Version == voicecontract.Version && (c.Context.Scope.Kind == "agent" || c.Context.Scope.Kind == "platform_support" || c.Context.Scope.Kind == "resource_agent")) || (c.Version == voicecontract.LegacyVersion && c.Context.Scope.Kind == "operator"))
 	if c == nil || (!read && !validControl) || (read && !validRead) || len(req.Grant) == 0 || len(req.Grant) > 8192 {
 		return VoiceSessionExecuteToolResult{}, errors.New("invalid control request")
 	}
@@ -244,6 +244,11 @@ func voiceScopedActor(c voicecontract.Context, grant, operation string, barrier 
 	}
 	if c.HopCount != 0 {
 		metadata["hop_count"] = strconv.FormatUint(uint64(c.HopCount), 10)
+	}
+	if c.Scope.Kind == "resource_agent" {
+		metadata["resource_type"] = c.Scope.ResourceType
+		metadata["resource_id"] = c.Scope.ResourceID
+		metadata["configuration_revision"] = strconv.FormatUint(c.Scope.ConfigRevision, 10)
 	}
 	if read {
 		delete(metadata, "operation_id")
