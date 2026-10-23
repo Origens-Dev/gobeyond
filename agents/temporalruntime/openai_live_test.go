@@ -2,7 +2,10 @@ package temporalruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -258,5 +261,300 @@ func TestOpenAILiveOpeningPromptsSpeechAfterAcknowledgment(t *testing.T) {
 				t.Fatalf("speech trigger=%v", got[1])
 			}
 		})
+	}
+}
+
+// Provider evidence tests use exact raw fake-server frames. They establish the
+// decoder and callback boundary, not live provider support or billing finality.
+func runOpenAIProviderEvidence(t *testing.T, frames []string, cfg voice.StartConfig) error {
+	t.Helper()
+	t.Setenv("OPENAI_API_KEY", "test-provider-evidence")
+	t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "-")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		var start map[string]any
+		if c.ReadJSON(&start) != nil {
+			return
+		}
+		if c.WriteJSON(map[string]any{"type": "session.started", "session": openAITestStartedSession(start, "provider_evidence_session")}) != nil {
+			return
+		}
+		for _, raw := range frames {
+			if c.WriteMessage(websocket.TextMessage, []byte(raw)) != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	adapter := NewOpenAILiveAdapter(agents.DefineAI(agents.AIConfig{}))
+	adapter.endpoint = "ws" + strings.TrimPrefix(server.URL, "http")
+	cfg.Actor = agents.Actor{ID: "actor", Kind: "user"}
+	cfg.EnabledToolIDs = []string{}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	h, _, err := adapter.Start(ctx, cfg, make(chan []byte), make(chan voice.AudioFrame, 8))
+	if err != nil {
+		return err
+	}
+	return h.Run(ctx)
+}
+func providerEvidenceDigest(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func TestOpenAILiveProviderClosurePreservesMetricPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		known     bool
+	}{
+		{"missing usage", `{"type":"session.closed"}`, false},
+		{"missing seconds", `{"type":"session.closed","usage":{}}`, false},
+		{"null seconds", `{"type":"session.closed","usage":{"seconds":null}}`, false},
+		{"explicit zero", `{ "type": "session.closed", "usage": {"seconds":0} }`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []voice.ProviderEvent
+			var legacy []voice.Usage
+			var order []string
+			err := runOpenAIProviderEvidence(t, []string{tc.raw}, voice.StartConfig{OnProviderEvent: func(ctx context.Context, e voice.ProviderEvent) error {
+				if err := e.Validate(); err != nil {
+					t.Error(err)
+				}
+				events = append(events, e.Clone())
+				order = append(order, e.Kind)
+				if e.DurationSeconds != nil {
+					*e.DurationSeconds = 999
+				}
+				return nil
+			}, OnUsage: func(u voice.Usage) { legacy = append(legacy, u); order = append(order, "legacy") }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if tc.known {
+				want = 2
+			}
+			if len(events) != want || len(legacy) != 1 || legacy[0].DurationSeconds != 0 || !legacy[0].Final {
+				t.Fatalf("events=%+v legacy=%+v", events, legacy)
+			}
+			last := events[len(events)-1]
+			if last.Kind != voice.ProviderEventSessionClosed || last.DurationSeconds != nil || last.InputTokens != nil || last.OutputTokens != nil || last.TotalTokens != nil || last.Final || last.PayloadDigest != providerEvidenceDigest(tc.raw) || last.ProviderSessionID != "provider_evidence_session" || last.SourceEventType != "session.closed" {
+				t.Fatalf("invalid termination fact: %+v", last)
+			}
+			if tc.known {
+				if first := events[0]; first.Kind != voice.ProviderEventUsage || first.DurationSeconds == nil || *first.DurationSeconds != 0 || !first.Final || first.PayloadDigest != last.PayloadDigest {
+					t.Fatalf("explicit zero lost: %+v", first)
+				}
+			}
+			if order[len(order)-1] != "legacy" {
+				t.Fatalf("legacy ran before typed observations: %v", order)
+			}
+		})
+	}
+}
+
+func TestOpenAILiveProviderResponsePresenceAndLegacyIsolation(t *testing.T) {
+	created := `{"type":"response.event","delegation_id":"delegation","event":{"type":"response.created","response":{"id":"response"}}}`
+	complete := `{"type":"response.event","delegation_id":"delegation","event":{"type":"response.completed","response":{"id":"response","model":"reported-backend","usage":{"input_tokens":0,"total_tokens":7}}}}`
+	closed := `{"type":"session.closed"}`
+	var events []voice.ProviderEvent
+	var legacy []voice.Usage
+	err := runOpenAIProviderEvidence(t, []string{created, complete, closed}, voice.StartConfig{OnProviderEvent: func(_ context.Context, e voice.ProviderEvent) error {
+		events = append(events, e.Clone())
+		if e.InputTokens != nil {
+			*e.InputTokens = 99
+		}
+		return nil
+	}, OnUsage: func(u voice.Usage) { legacy = append(legacy, u) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || len(legacy) != 2 {
+		t.Fatalf("events=%+v legacy=%+v", events, legacy)
+	}
+	e := events[0]
+	if e.Kind != voice.ProviderEventUsage || e.InputTokens == nil || *e.InputTokens != 0 || e.OutputTokens != nil || e.TotalTokens == nil || *e.TotalTokens != 7 || e.DurationSeconds != nil || !e.Final || e.ProviderResponseID != "response" || e.Model != "reported-backend" || e.SourceEventType != "response.event" || e.PayloadDigest != providerEvidenceDigest(complete) {
+		t.Fatalf("partial metrics changed: %+v", e)
+	}
+	if legacy[0].PromptTokens != 0 || legacy[0].CompletionTokens != 0 || legacy[0].TotalTokens != 7 {
+		t.Fatal("observer mutated decoder-owned metrics")
+	}
+}
+
+func TestOpenAILiveProviderObserverFailureStopsBeforeLegacy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		frames []string
+		failAt int
+	}{
+		{"usage", []string{`{"type":"session.usage.updated","usage":{"seconds":2}}`, `{"type":"session.closed"}`}, 1},
+		{"closed without usage", []string{`{"type":"session.closed"}`}, 1},
+		{"closed after sameframe usage", []string{`{"type":"session.closed","usage":{"seconds":2}}`}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sentinel := errors.New("durable observer unavailable")
+			calls, legacy := 0, 0
+			err := runOpenAIProviderEvidence(t, tc.frames, voice.StartConfig{OnProviderEvent: func(context.Context, voice.ProviderEvent) error {
+				calls++
+				if calls == tc.failAt {
+					return sentinel
+				}
+				return nil
+			}, OnUsage: func(voice.Usage) { legacy++ }})
+			if !errors.Is(err, sentinel) || calls != tc.failAt || legacy != 0 {
+				t.Fatalf("err=%v typed=%d legacy=%d", err, calls, legacy)
+			}
+		})
+	}
+}
+
+func TestOpenAILiveProviderEOFDoesNotInventClosure(t *testing.T) {
+	raw := `{"type":"session.usage.updated","usage":{"seconds":2}}`
+	var events []voice.ProviderEvent
+	err := runOpenAIProviderEvidence(t, []string{raw}, voice.StartConfig{OnProviderEvent: func(_ context.Context, e voice.ProviderEvent) error { events = append(events, e.Clone()); return nil }})
+	if err == nil {
+		t.Fatal("unexpected clean EOF")
+	}
+	if len(events) != 1 || events[0].Kind != voice.ProviderEventUsage || events[0].Final {
+		t.Fatalf("EOF invented terminal evidence: %+v", events)
+	}
+}
+
+func TestOpenAILiveProviderSessionMismatchFailsBeforeObservation(t *testing.T) {
+	for _, raw := range []string{`{"type":"session.closed","session":{"id":"foreign"}}`, `{"type":"session.closed","session":{"model":"foreign"}}`} {
+		calls, legacy := 0, 0
+		err := runOpenAIProviderEvidence(t, []string{raw}, voice.StartConfig{OnProviderEvent: func(context.Context, voice.ProviderEvent) error { calls++; return nil }, OnUsage: func(voice.Usage) { legacy++ }})
+		if err == nil || calls != 0 || legacy != 0 {
+			t.Fatalf("mismatched session/model accepted: %v typed=%d legacy=%d", err, calls, legacy)
+		}
+	}
+}
+
+type openAIProviderEvidenceContextKey struct{}
+
+func TestOpenAILiveProviderFinalEvidenceSurvivesMediaCancellation(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-evidence-cancel")
+	t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "-")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		var start map[string]any
+		if c.ReadJSON(&start) != nil {
+			return
+		}
+		_ = c.WriteJSON(map[string]any{"type": "session.started", "session": openAITestStartedSession(start, "cancel_evidence")})
+		var command map[string]any
+		if c.ReadJSON(&command) != nil {
+			return
+		}
+		if command["type"] != "session.close" {
+			t.Error("wrong close handshake command")
+			return
+		}
+		_ = c.WriteMessage(websocket.TextMessage, []byte(`{"type":"session.closed","usage":{"seconds":1.25}}`))
+	}))
+	defer server.Close()
+	adapter := NewOpenAILiveAdapter(agents.DefineAI(agents.AIConfig{}))
+	adapter.endpoint = "ws" + strings.TrimPrefix(server.URL, "http")
+	var events []voice.ProviderEvent
+	h, _, err := adapter.Start(context.Background(), voice.StartConfig{Actor: agents.Actor{ID: "actor", Kind: "user"}, EnabledToolIDs: []string{}, OnProviderEvent: func(ctx context.Context, e voice.ProviderEvent) error {
+		if ctx.Err() != nil || ctx.Value(openAIProviderEvidenceContextKey{}) != "trace-value" {
+			t.Error("final observation lost detached context values")
+		}
+		deadline, ok := ctx.Deadline()
+		remaining := time.Until(deadline)
+		if !ok || remaining <= 0 || remaining > 2*time.Second {
+			t.Errorf("evidence context not bounded to two seconds: %v %v", ok, remaining)
+		}
+		events = append(events, e.Clone())
+		return nil
+	}}, make(chan []byte), make(chan voice.AudioFrame))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := context.WithValue(context.Background(), openAIProviderEvidenceContextKey{}, "trace-value")
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+	if err = h.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Kind != voice.ProviderEventUsage || events[0].DurationSeconds == nil || *events[0].DurationSeconds != 1.25 || !events[0].Final || events[1].Kind != voice.ProviderEventSessionClosed {
+		t.Fatalf("actual final close evidence lost: %+v", events)
+	}
+}
+
+func TestOpenAILiveProviderLocalCloseWithoutServerAckIsNotTermination(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-local-close")
+	t.Setenv("GOBEYOND_LIVE_OPENING_TURN", "-")
+	commandReceived := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		var start map[string]any
+		if c.ReadJSON(&start) != nil {
+			return
+		}
+		_ = c.WriteJSON(map[string]any{"type": "session.started", "session": openAITestStartedSession(start, "local_close_evidence")})
+		var command map[string]any
+		if c.ReadJSON(&command) == nil && command["type"] == "session.close" {
+			close(commandReceived)
+		}
+		// Deliberately close the socket without a provider session.closed event.
+	}))
+	defer server.Close()
+	adapter := NewOpenAILiveAdapter(agents.DefineAI(agents.AIConfig{}))
+	adapter.endpoint = "ws" + strings.TrimPrefix(server.URL, "http")
+	events := 0
+	h, _, err := adapter.Start(context.Background(), voice.StartConfig{Actor: agents.Actor{ID: "actor", Kind: "user"}, OnProviderEvent: func(context.Context, voice.ProviderEvent) error { events++; return nil }}, make(chan []byte), make(chan voice.AudioFrame))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-commandReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("close command not sent")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err = h.Run(ctx); err == nil {
+		t.Fatal("local close unexpectedly proved clean provider end")
+	}
+	if events != 0 {
+		t.Fatal("local socket close fabricated provider termination")
+	}
+}
+
+func TestOpenAILiveProviderObserverTimeoutDoesNotAcknowledgeClosure(t *testing.T) {
+	calls, legacy := 0, 0
+	err := runOpenAIProviderEvidence(t, []string{`{"type":"session.closed","usage":{"seconds":2}}`}, voice.StartConfig{
+		OnProviderEvent: func(ctx context.Context, e voice.ProviderEvent) error {
+			calls++
+			if e.Kind != voice.ProviderEventUsage {
+				t.Error("timed-out usage was followed by closure")
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		OnUsage: func(voice.Usage) { legacy++ },
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 || legacy != 0 {
+		t.Fatalf("timeout acknowledged evidence: err=%v typed=%d legacy=%d", err, calls, legacy)
 	}
 }

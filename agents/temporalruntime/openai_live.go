@@ -2,7 +2,9 @@ package temporalruntime
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -214,7 +216,7 @@ type openAILiveEvent struct {
 		} `json:"audio"`
 	} `json:"session"`
 	Usage struct {
-		Seconds float64 `json:"seconds"`
+		Seconds *float64 `json:"seconds"`
 	} `json:"usage"`
 	Error struct {
 		Code string `json:"code"`
@@ -227,9 +229,9 @@ type openAILiveEvent struct {
 			Model  string `json:"model"`
 			Status string `json:"status"`
 			Usage  struct {
-				Input  int64 `json:"input_tokens"`
-				Output int64 `json:"output_tokens"`
-				Total  int64 `json:"total_tokens"`
+				Input  *int64 `json:"input_tokens"`
+				Output *int64 `json:"output_tokens"`
+				Total  *int64 `json:"total_tokens"`
 			} `json:"usage"`
 		} `json:"response"`
 		Item struct {
@@ -433,8 +435,23 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 				return errors.New("OpenAI audio queue full")
 			}
 		case "session.usage.updated", "session.closed":
+			if h.cfg.OnProviderEvent != nil {
+				if (e.Session.ID != "" && e.Session.ID != h.providerID) || (e.Session.Model != "" && e.Session.Model != h.model) {
+					return errors.New("OpenAI provider event session or model mismatch")
+				}
+				if e.Usage.Seconds != nil {
+					if err := h.observeProviderEvent(ctx, voice.ProviderEvent{Kind: voice.ProviderEventUsage, Provider: "openai", Model: h.model, ProviderSessionID: h.providerID, SourceEventType: e.Type, PayloadDigest: openAIProviderPayloadDigest(raw), DurationSeconds: e.Usage.Seconds, Final: e.Type == "session.closed"}); err != nil {
+						return err
+					}
+				}
+				if e.Type == "session.closed" {
+					if err := h.observeProviderEvent(ctx, voice.ProviderEvent{Kind: voice.ProviderEventSessionClosed, Provider: "openai", Model: h.model, ProviderSessionID: h.providerID, SourceEventType: e.Type, PayloadDigest: openAIProviderPayloadDigest(raw)}); err != nil {
+						return err
+					}
+				}
+			}
 			if h.cfg.OnUsage != nil {
-				h.cfg.OnUsage(voice.Usage{Model: h.model, Backend: "openai", DurationSeconds: e.Usage.Seconds, ProviderSessionID: h.providerID, Final: e.Type == "session.closed"})
+				h.cfg.OnUsage(voice.Usage{Model: h.model, Backend: "openai", DurationSeconds: openAIFloatOrZero(e.Usage.Seconds), ProviderSessionID: h.providerID, Final: e.Type == "session.closed"})
 			}
 			if e.Type == "session.closed" {
 				return nil
@@ -508,13 +525,18 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 				}
 				completed[n.Response.ID] = true
 				h.logControlStage(n.Type, "", "")
-				if h.cfg.OnUsage != nil {
-					u := n.Response.Usage
-					model := n.Response.Model
-					if model == "" {
-						model = h.backend
+				u := n.Response.Usage
+				model := n.Response.Model
+				if model == "" {
+					model = h.backend
+				}
+				if h.cfg.OnProviderEvent != nil && (u.Input != nil || u.Output != nil || u.Total != nil) {
+					if err := h.observeProviderEvent(ctx, voice.ProviderEvent{Kind: voice.ProviderEventUsage, Provider: "openai", Model: model, ProviderSessionID: h.providerID, ProviderResponseID: n.Response.ID, SourceEventType: e.Type, PayloadDigest: openAIProviderPayloadDigest(raw), InputTokens: u.Input, OutputTokens: u.Output, TotalTokens: u.Total, Final: true}); err != nil {
+						return err
 					}
-					h.cfg.OnUsage(voice.Usage{WebSearchCalls: searches[responseID], Model: model, Backend: "openai", PromptTokens: u.Input, CompletionTokens: u.Output, TotalTokens: u.Total, ProviderSessionID: h.providerID, ProviderResponseID: n.Response.ID, Final: true})
+				}
+				if h.cfg.OnUsage != nil {
+					h.cfg.OnUsage(voice.Usage{WebSearchCalls: searches[responseID], Model: model, Backend: "openai", PromptTokens: openAIIntOrZero(u.Input), CompletionTokens: openAIIntOrZero(u.Output), TotalTokens: openAIIntOrZero(u.Total), ProviderSessionID: h.providerID, ProviderResponseID: n.Response.ID, Final: true})
 				}
 				delete(searches, responseID)
 				if n.Type != "response.completed" {
@@ -690,4 +712,41 @@ func (h *openAILiveHandle) logControlStage(stage, tool, code string) {
 		tool = ""
 	}
 	log.Printf("openai live control session=%q stage=%s tool=%q code=%s", h.cfg.SessionID, stage, tool, code)
+}
+
+// observeProviderEvent emits only facts decoded from the current provider frame.
+// It runs before legacy billing callbacks. Cloning prevents an observer from
+// mutating parser-owned metric pointers and changing those legacy observations.
+func (h *openAILiveHandle) observeProviderEvent(ctx context.Context, event voice.ProviderEvent) error {
+	if h.cfg.OnProviderEvent == nil {
+		return nil
+	}
+	if err := event.Validate(); err != nil {
+		return errors.New("invalid OpenAI provider evidence")
+	}
+	// The sole provider reader deliberately survives media cancellation for
+	// the bounded close handshake. Persist those final facts with context
+	// values intact, without handing a cancelled or unbounded context to sinks.
+	evidenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := h.cfg.OnProviderEvent(evidenceCtx, event.Clone()); err != nil {
+		return fmt.Errorf("OpenAI provider evidence observation failed: %w", err)
+	}
+	return nil
+}
+func openAIProviderPayloadDigest(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+func openAIIntOrZero(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+func openAIFloatOrZero(v *float64) float64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
