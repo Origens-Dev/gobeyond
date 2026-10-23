@@ -36,6 +36,9 @@ type RemoteInvalidationResult struct {
 // invalidation was durably handed to Temporal, not that every cache layer has
 // already observed it.
 func InvalidateRemote(ctx context.Context, options RemoteInvalidationOptions) (RemoteInvalidationResult, error) {
+	if isSharedComputation(ctx) {
+		return RemoteInvalidationResult{}, ErrSharedComputation
+	}
 	options.EnvironmentID = strings.TrimSpace(options.EnvironmentID)
 	options.IdempotencyKey = strings.TrimSpace(options.IdempotencyKey)
 	if options.EnvironmentID == "" || options.IdempotencyKey == "" {

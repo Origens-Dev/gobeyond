@@ -38,7 +38,7 @@ The helper is portable, so the compiler emits the same URL during Go rendering
 and React hydration:
 
 ```text
-/_gobeyond/image?url=%2Fbrand%2Flogo.png&w=256&q=75
+/_gobeyond/image?v=2&url=%2Fbrand%2Flogo.png&w=256&q=75
 ```
 
 Its signature is `imageSrc(source, { w, q?, f? })`:
@@ -47,8 +47,10 @@ Its signature is `imageSrc(source, { w, q?, f? })`:
 imageSrc("/photos/hero.jpg", { w: 1200, q: 82, f: "jpeg" });
 ```
 
-Quality defaults to `75`; format may be `"jpeg"` or `"png"`. When format is
-omitted, the source JPEG/PNG format is retained.
+Quality defaults to `75`. Explicit formats are `"jpeg"`, `"png"`, and `"webp"`.
+An omitted format or `"auto"` negotiates WebP when acceptable, otherwise JPEG.
+Use explicit PNG to preserve transparency when JPEG fallback is unsuitable.
+React rendering, Go rendering, and route-image prefetching use the same URL.
 
 ## Endpoint parameters
 
@@ -57,14 +59,16 @@ omitted, the source JPEG/PNG format is retained.
   the deployment. Protocol-relative URLs, ports, query strings, fragments,
   backslashes, and path traversal are rejected. Remote requests do not forward
   viewer cookies, authorization headers, or other credentials.
-- `w` is required and must be one of `16, 32, 48, 64, 96, 128, 256, 384, 640,
-  750, 828, 1080, 1200, 1920, 2048, 3840`.
-- `q` is optional, defaults to `75`, and is clamped to the range `1` through
-  `100`. It controls JPEG encoding; PNG encoding is lossless.
-- `f` is optional. Supported values are `jpeg`, `jpg`, and `png`. WebP is
-  deferred.
+- `w` is required and must be a decimal integer between `1` and `3840`,
+  including responsive widths such as `640`, `960`, `1280`, and `1920`.
+- `q` is optional, defaults to `75`, and must be an integer from `1` through
+  `100`. It controls JPEG/WebP quality; PNG encoding is lossless.
+- `f` is optional. Supported values are `jpeg`, `jpg`, `png`, `webp`, and `auto`.
+  Duplicate parameters and malformed integers are rejected. Legacy URLs with no
+  `v`, or with `v=1`/`v=2`, remain accepted. Negotiated responses include
+  `Vary: Accept`; explicit formats do not depend on that header.
 
-JPEG and PNG sources are supported. The requested width preserves the source
+JPEG, PNG, and WebP sources are supported. The requested width preserves the source
 aspect ratio.
 
 ## Local disk setup
@@ -75,15 +79,29 @@ Set `GOBEYOND_STATIC_DIR` to the built static directory. The runtime resolves
 ```bash
 GOBEYOND_STATIC_DIR="$PWD/dist/static" ./dist/server/gobeyond-server
 curl -o /tmp/logo.png \
-  "http://localhost:8080/_gobeyond/image?url=%2Fbrand%2Flogo.png&w=256&q=75"
+  "http://localhost:8080/_gobeyond/image?v=2&url=%2Fbrand%2Flogo.png&w=256&q=75"
 ```
 
-Successful responses set `Cache-Control: public, max-age=3600`. The customer
+Successful responses set `Cache-Control: public, max-age=N, s-maxage=N`,
+where N is `GOBEYOND_IMAGE_CACHE_SECONDS` for standalone runtimes (default
+3600). Hosted deployment tooling supplies the `.gobeyond/images.json`
+`cacheSeconds` policy; a standalone operator must set the environment variable
+explicitly. The handler does not read that deployment file itself. Errors are
+`no-store`. The customer
 deployment's CDN caches each host/source/variant combination; the Go runtime is
 invoked on a cache miss and performs the resize before returning the response.
 Optimized images are public and shareable by default, matching the semantics of
-Next's default image optimizer. Authentication belongs to the page or
-middleware boundary; private images require a separate, auth-aware design.
+Next's default image optimizer. The hosted optimizer does not run application authentication middleware.
+Remote/static sources are fetched without viewer credentials even when a
+request has cookies or Authorization. Custom loaders must return public,
+request-independent bytes; they receive cancellation/deadlines without viewer
+context values. Protect private images through a separate authorization-aware
+delivery path.
+
+Standalone WebP encoding uses pinned `github.com/gen2brain/webp` with a
+CGo-free fallback. No system libwebp is required; CI verifies it with
+`CGO_ENABLED=0 go test -tags nodynamic ./imageopt`. This adds codec code and
+optional dynamic loading to the dependency graph; hosted encoding retains libvips.
 
 ## Production S3 setup (requires infra apply)
 
@@ -202,3 +220,16 @@ layout widgets that depend on viewport or browser state remain client-only.
 When such a widget is necessary, isolate it behind `ClientOnly`; a portable
 layout may be supplied as the fallback when showing the same content before
 JavaScript is useful.
+
+## Cache identity and invalidation
+
+Hosted image variants are keyed by host, deployment, generation, canonical source,
+width, quality, negotiated format, and optimizer output version. Incidental viewer
+cookies do not partition public images. Internal format keys are separate even
+when the public URL negotiates through `Accept`.
+
+Hosted Cloudflare invalidation advances the active generation eventually; it is
+not a barrier over every replica. Browser images remain fresh for `cacheSeconds`,
+and invalidation cannot evict a fresh browser copy. Use revisioned source paths
+for immediate replacement. CloudFront-bypass and standalone disk/S3/remote paths
+have TTL-bounded freshness, without the hosted Cloudflare generation guarantee.

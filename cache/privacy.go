@@ -20,11 +20,12 @@ const (
 	OIDCTokenHeader = WorkloadIdentityHeader
 )
 
-// IsPrivateRequest is the Get-gate (Locked decision 6): it reports whether
+// IsPrivateRequest is the route/response Get-gate: it reports whether
 // request headers carry any signal that this request is bound to viewer
-// identity. It must be evaluated before any cache read, and its result
+// identity. Evaluate it before any route/response cache read, and capture its result
 // should be captured once, before middleware or a loader can strip or add
 // headers, so later privacy checks stay consistent for the whole request.
+// Explicit cache.Load computations use declared inputs instead of this gate.
 //
 // A request is private when it carries a Cookie, an Authorization header, or a
 // non-empty AuthContextHeader. Forged or stray copies of viewer-auth headers

@@ -77,26 +77,23 @@ func TestLoadWithoutRequestScopeComputesWithoutCaching(t *testing.T) {
 	}
 }
 
-// TestLoadOnPrivateRequestSkipsTheStore is the fail-closed Get gate: a request
-// carrying viewer identity must not read or write a shared entry, and must
-// still succeed.
-func TestLoadOnPrivateRequestSkipsTheStore(t *testing.T) {
+// Explicit data computations share by inputs, even when the caller carries
+// viewer credentials. The response privacy gate remains on LoadRoute.
+func TestLoadOnPrivateRequestSharesData(t *testing.T) {
 	clock := newTestClock()
 	store := newFakeStore(clock)
 	runtime := newTestRuntime(t, store, clock)
 	var calls atomic.Int32
-
-	for i := 0; i < 2; i++ {
-		if _, err := Load(scopedContext(runtime, true), productOptions(), JSONCodec[string](), counterLoader(&calls)); err != nil {
-			t.Fatalf("Load() error = %v", err)
+	for _, private := range []bool{false, true, true} {
+		if _, err := Load(scopedContext(runtime, private), productOptions(), JSONCodec[string](), counterLoader(&calls)); err != nil {
+			t.Fatal(err)
 		}
 	}
-
-	if calls.Load() != 2 {
-		t.Fatalf("loader called %d times, want 2", calls.Load())
+	if calls.Load() != 1 {
+		t.Fatalf("loader called %d times, want 1", calls.Load())
 	}
-	if gets, sets, _ := store.counts(); gets != 0 || sets != 0 {
-		t.Fatalf("store touched on a private request: gets=%d sets=%d", gets, sets)
+	if gets, sets, _ := store.counts(); gets != 4 || sets != 1 {
+		t.Fatalf("gets=%d sets=%d, want 4/1", gets, sets)
 	}
 }
 

@@ -54,7 +54,7 @@ func TestImageOptimizerIsSiblingRuntimeRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/_gobeyond/image?url=%2Fbrand.png&w=32", nil))
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/_gobeyond/image?url=%2Fbrand.png&w=32&f=png", nil))
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "image/png" {
 		t.Fatalf("status=%d type=%q body=%s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
 	}
@@ -736,8 +736,8 @@ func TestRequestScopePresentOnDocumentRuntimeAPIAndActionRequests(t *testing.T) 
 
 // TestConfiguredCacheServesLoadersAcrossRequests proves the wiring end to end:
 // Config.Cache installs a handle on every RequestScope, so a loader's
-// cache.Load hits on the second request, and the privacy gate still applies -
-// a request carrying a cookie recomputes rather than reading the shared entry.
+// cache.Load reuses explicit shared computation even for cookie-bearing requests,
+// while the enclosing document retains the route response privacy gate.
 func TestConfiguredCacheServesLoadersAcrossRequests(t *testing.T) {
 	var loads atomic.Int32
 	page := PageRoute{
@@ -755,7 +755,7 @@ func TestConfiguredCacheServesLoadersAcrossRequests(t *testing.T) {
 			if err != nil {
 				return LoadedPage{}, err
 			}
-			return LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}, Metadata: gb.Metadata{Lang: "en", Title: title}}, nil
+			return LoadedPage{Kind: gb.ResultOK, Status: http.StatusOK, Props: map[string]any{}, Metadata: gb.Metadata{Lang: "en", Title: title}, Cache: gb.PublicRevalidate(time.Minute, 5*time.Minute, 24*time.Hour)}, nil
 		},
 	}
 	server, err := New(Config{
@@ -786,8 +786,11 @@ func TestConfiguredCacheServesLoadersAcrossRequests(t *testing.T) {
 	if privateRecorder.Code != http.StatusOK {
 		t.Fatalf("private document status=%d", privateRecorder.Code)
 	}
-	if loads.Load() != 2 {
-		t.Fatalf("cached loader ran %d times, want a private request to bypass the cache", loads.Load())
+	if loads.Load() != 1 {
+		t.Fatalf("cached loader ran %d times, want shared data reuse for private requests", loads.Load())
+	}
+	if got := privateRecorder.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("private document cache-control=%q, want no-store", got)
 	}
 }
 

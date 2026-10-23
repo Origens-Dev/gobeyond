@@ -6,6 +6,7 @@ require (
 	github.com/Origens-Dev/go-ai v0.1.0-alpha.2
 	github.com/Origens-Dev/go-temporal-ai-sdk v0.1.0-alpha.10
 	github.com/aws/aws-lambda-go v1.49.0
+	github.com/gen2brain/webp v0.6.4
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.19.1
@@ -26,6 +27,7 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

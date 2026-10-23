@@ -250,8 +250,8 @@ async function linkWorkspacePackages(destination) {
   await symlink(join(workspaceRoot, 'node_modules/typescript'), join(nodeModules, 'typescript'), 'dir')
   await symlink(join(workspaceRoot, 'examples/seo-site/node_modules/@vitejs/plugin-react'), join(nodeModules, '@vitejs/plugin-react'), 'dir')
   await symlink(join(workspaceRoot, 'examples/seo-site/node_modules/vite'), join(nodeModules, 'vite'), 'dir')
-  await symlink(join(workspaceRoot, 'node_modules/.bin/tsc'), join(nodeModules, '.bin/tsc'))
-  await symlink(join(workspaceRoot, 'node_modules/.bin/vite'), join(nodeModules, '.bin/vite'))
+  await symlink(join(workspaceRoot, 'node_modules/typescript/bin/tsc'), join(nodeModules, '.bin/tsc'))
+  await symlink(join(workspaceRoot, 'node_modules/vite/bin/vite.js'), join(nodeModules, '.bin/vite'))
 }
 
 async function serveAndFetch(binary, cwd, publicOrigin) {

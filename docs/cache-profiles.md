@@ -21,7 +21,17 @@ Named profiles provide a shared vocabulary for application data:
   normal freshness boundary and the finite TTL as a recovery guard.
 - `ProfileImmutable`: thirty-one days for deployment-scoped values.
 
-Private requests never read or write shared cache entries. Public route
+`cache.Load` caches shared computations by explicit `Name` and `Args`, even on
+requests carrying cookies or Authorization. Authorize before every call and put
+every varying input (including user/tenant identifiers) in `Args`. Callbacks get
+a computation-only context with cancellation/deadlines, fresh memoization, and
+dependency tracking; arbitrary request values and action mutation state are not
+inherited. Go closures can still capture state: this contract is not a sandbox.
+Nested shared cache calls propagate dependency versions to their enclosing
+computation or route, including cache hits and concurrent fills.
+
+Private page and route requests still never read or write shared route entries.
+Shared data reuse does not change the response privacy policy. Public route
 responses carry the active cache generation in `X-GoBeyond-Cache-Generation`
 and soft-navigation payloads. A generation change causes the browser router
 cache to discard entries when it observes the next fresh response.
