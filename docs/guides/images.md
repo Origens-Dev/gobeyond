@@ -106,6 +106,13 @@ compiling the large transpiled codec from v0.6.4, which exceeded memory on
 constrained hosted build workers. It adds codec bytes, Wazero, and optional
 dynamic loading to the dependency graph; hosted encoding retains libvips.
 
+Production GoBeyond builds use `CGO_ENABLED=0` and the `nodynamic` build tag
+to exclude that optional loader. Linux server and worker artifacts are checked
+for dynamic interpreters and shared-library requirements before publication.
+When building a standalone server without the GoBeyond CLI for a minimal Linux
+root filesystem, use `go build -tags nodynamic` as well; CGo disabled alone is
+insufficient to exclude dynamic linkage.
+
 ## Production S3 setup (requires infra apply)
 
 Production Lambdas have no disk-resident `public/` copy. The hosting platform

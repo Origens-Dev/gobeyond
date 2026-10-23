@@ -298,7 +298,7 @@ func compileCheckpoint(c buildCheckpoint, compileWorkers bool) error {
 		{
 			name: "build Go server",
 			run: func() error {
-				return runCommandWithEnvironment(root, environment, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", serverOutput, serverTarget)
+				return buildProductionExecutable(root, environment, serverOutput, serverTarget)
 			},
 		},
 		{
@@ -320,7 +320,7 @@ func compileCheckpoint(c buildCheckpoint, compileWorkers bool) error {
 			tasks = append(tasks, buildTask{
 				name: "build worker " + wt.ID,
 				run: func() error {
-					return runCommandWithEnvironment(root, withEnvironment(environment, "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", workerOutput, wt.PackageDir)
+					return buildProductionExecutable(root, environment, workerOutput, wt.PackageDir)
 				},
 			})
 		}
@@ -413,6 +413,9 @@ func compileCheckpoint(c buildCheckpoint, compileWorkers bool) error {
 		return err
 	}
 	if err := writePublicRuntimeContract(projectRoot, dist); err != nil {
+		return err
+	}
+	if err := verifyProductionArtifacts(environment, dist); err != nil {
 		return err
 	}
 	artifacts := map[string]any{

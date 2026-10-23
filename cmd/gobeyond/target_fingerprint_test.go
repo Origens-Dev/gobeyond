@@ -38,7 +38,18 @@ func TestTargetFingerprintTracksTransitiveSourceEmbedsAndPlatform(t *testing.T) 
 		}
 		return d
 	}
+	write("shared/dynamic.go", "//go:build !nodynamic\n\npackage shared\nconst Dynamic=1\n")
+	write("shared/static.go", "//go:build nodynamic\n\npackage shared\nconst Dynamic=2\n")
 	one, two := fingerprint("one"), fingerprint("two")
+	write("shared/dynamic.go", "//go:build !nodynamic\n\npackage shared\nconst Dynamic=3\n")
+	if fingerprint("one") != one {
+		t.Fatal("excluded dynamic dependency invalidated target")
+	}
+	write("shared/static.go", "//go:build nodynamic\n\npackage shared\nconst Dynamic=4\n")
+	if fingerprint("one") == one {
+		t.Fatal("production build-tag dependency did not invalidate target")
+	}
+	one = fingerprint("one")
 	write("unrelated/page.tsx", "different web source")
 	if fingerprint("one") != one || fingerprint("two") != two {
 		t.Fatal("unrelated source invalidated workers")
