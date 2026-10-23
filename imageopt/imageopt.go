@@ -27,6 +27,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gen2brain/webp"
 )
 
 const (
@@ -50,7 +52,7 @@ const (
 	ImageErrorHeader = "X-GoBeyond-Image-Error"
 )
 
-// DefaultWidths bounds the variants the runtime will generate.
+// DefaultWidths lists common responsive widths; any integer from 1 to 3840 is supported.
 var DefaultWidths = []int{16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840}
 
 var (
@@ -59,8 +61,8 @@ var (
 	errSourceTooLarge = errors.New("image source too large")
 )
 
-// Loader opens a same-site static path. Implementations must not interpret it
-// as a remote URL.
+// Loader opens a public, request-independent image source. Custom implementations
+// must not derive bytes from viewer credentials or captured request state.
 type Loader interface {
 	Open(context.Context, string) (io.ReadCloser, error)
 }
@@ -382,12 +384,11 @@ func (loader DiskLoader) Open(_ context.Context, source string) (io.ReadCloser, 
 
 // Handler returns an HTTP handler for Route.
 func Handler(loader Loader) http.Handler {
-	widths := make(map[int]struct{}, len(DefaultWidths))
-	for _, width := range DefaultWidths {
-		widths[width] = struct{}{}
-	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		reject := func(status int, code, message string) {
+			writer.Header().Set("Cache-Control", "no-store")
+			writer.Header().Set("CDN-Cache-Control", "no-store")
+			writer.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
 			writer.Header().Set(ImageErrorHeader, code)
 			http.Error(writer, message, status)
 		}
@@ -400,35 +401,18 @@ func Handler(loader Loader) http.Handler {
 			reject(http.StatusServiceUnavailable, "source_unavailable", "image optimizer source unavailable")
 			return
 		}
-		source := request.URL.Query().Get("url")
-		width, err := strconv.Atoi(request.URL.Query().Get("w"))
+		variant, err := ParseVariant(request.URL.RawQuery, request.Header.Get("Accept"))
 		if err != nil {
-			reject(http.StatusBadRequest, "invalid_width", "invalid image width")
+			var invalid *VariantError
+			errors.As(err, &invalid)
+			reject(invalid.Status, invalid.Code, invalid.Message)
 			return
 		}
-		if _, ok := widths[width]; !ok {
-			reject(http.StatusBadRequest, "unsupported_width", "unsupported image width")
-			return
+		if variant.Negotiated {
+			writer.Header().Add("Vary", "Accept")
 		}
-		quality := defaultQuality
-		if raw := request.URL.Query().Get("q"); raw != "" {
-			quality, err = strconv.Atoi(raw)
-			if err != nil {
-				reject(http.StatusBadRequest, "invalid_quality", "invalid image quality")
-				return
-			}
-		}
-		quality = max(1, min(quality, 100))
-		format := strings.ToLower(request.URL.Query().Get("f"))
-		if format == "jpg" {
-			format = "jpeg"
-		}
-		if format != "" && format != "jpeg" && format != "png" {
-			reject(http.StatusBadRequest, "unsupported_format", "unsupported image format")
-			return
-		}
-
-		input, err := loader.Open(request.Context(), source)
+		// A custom public loader must not inherit viewer identity through context.
+		input, err := loader.Open(publicImageContext{request.Context()}, variant.Source)
 		if err != nil {
 			status := http.StatusInternalServerError
 			code := "source_open_failed"
@@ -443,7 +427,7 @@ func Handler(loader Loader) http.Handler {
 			return
 		}
 		defer input.Close()
-		output, contentType, err := optimize(&sourceLimitReader{Reader: input, Remaining: maxSourceBytes}, width, quality, format)
+		output, contentType, err := optimize(&sourceLimitReader{Reader: input, Remaining: maxSourceBytes}, variant.Width, variant.Quality, variant.Format)
 		if err != nil {
 			if errors.Is(err, errSourceTooLarge) {
 				reject(http.StatusRequestEntityTooLarge, "source_too_large", "image source too large")
@@ -452,7 +436,7 @@ func Handler(loader Loader) http.Handler {
 			reject(http.StatusUnsupportedMediaType, "unsupported_source", err.Error())
 			return
 		}
-		writer.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=0, s-maxage=%d, must-revalidate", CacheSecondsFromEnvironment()))
+		writer.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, s-maxage=%d", CacheSecondsFromEnvironment(), CacheSecondsFromEnvironment()))
 		writer.Header().Set("Content-Type", contentType)
 		writer.Header().Set("Content-Length", strconv.Itoa(len(output)))
 		_, _ = writer.Write(output)
@@ -525,11 +509,25 @@ func (r *sourceLimitReader) Read(p []byte) (int, error) {
 }
 
 func optimize(reader io.Reader, width, quality int, requestedFormat string) ([]byte, string, error) {
-	source, sourceFormat, err := image.Decode(reader)
+	data, err := io.ReadAll(io.LimitReader(reader, maxSourceBytes+1))
 	if err != nil {
-		if errors.Is(err, errSourceTooLarge) {
-			return nil, "", errSourceTooLarge
-		}
+		return nil, "", err
+	}
+	if len(data) > maxSourceBytes {
+		return nil, "", errSourceTooLarge
+	}
+	config, sourceFormat, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", errors.New("unsupported image source")
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxSourcePixels {
+		return nil, "", errors.New("image dimensions are unsupported")
+	}
+	if sourceFormat != "jpeg" && sourceFormat != "png" && sourceFormat != "webp" {
+		return nil, "", errors.New("image source must be JPEG, PNG or WebP")
+	}
+	source, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
 		return nil, "", errors.New("unsupported image source")
 	}
 	bounds := source.Bounds()
@@ -537,8 +535,8 @@ func optimize(reader io.Reader, width, quality int, requestedFormat string) ([]b
 	if sourceWidth <= 0 || sourceHeight <= 0 || int64(sourceWidth)*int64(sourceHeight) > maxSourcePixels {
 		return nil, "", errors.New("image dimensions are unsupported")
 	}
-	if sourceFormat != "jpeg" && sourceFormat != "png" {
-		return nil, "", errors.New("image source must be JPEG or PNG")
+	if sourceFormat != "jpeg" && sourceFormat != "png" && sourceFormat != "webp" {
+		return nil, "", errors.New("image source must be JPEG, PNG or WebP")
 	}
 	height := max(1, int(math.Round(float64(sourceHeight)*float64(width)/float64(sourceWidth))))
 	if int64(width)*int64(height) > maxSourcePixels {
@@ -559,6 +557,11 @@ func optimize(reader io.Reader, width, quality int, requestedFormat string) ([]b
 			return nil, "", err
 		}
 		return output.Bytes(), "image/jpeg", nil
+	case "webp":
+		if err := webp.Encode(&output, resized, webp.Options{Quality: quality, Method: 4}); err != nil {
+			return nil, "", err
+		}
+		return output.Bytes(), "image/webp", nil
 	case "png":
 		encoder := png.Encoder{CompressionLevel: png.DefaultCompression}
 		if err := encoder.Encode(&output, resized); err != nil {
@@ -610,3 +613,8 @@ func interpolate(c00, c10, c01, c11 uint8, fx, fy float64) uint8 {
 	bottom := float64(c01)*(1-fx) + float64(c11)*fx
 	return uint8(math.Round(top*(1-fy) + bottom*fy))
 }
+
+// publicImageContext preserves cancellation/deadlines without request values.
+type publicImageContext struct{ context.Context }
+
+func (publicImageContext) Value(any) any { return nil }

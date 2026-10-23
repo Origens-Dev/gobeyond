@@ -64,15 +64,13 @@ func (jsonCodec[T]) Decode(data []byte) (T, error) {
 
 // Load returns the cached value for options, computing it with fn on a miss.
 //
-// Caching is opt-in and fails closed. When ctx carries no RequestScope, when
-// the request is private (see IsPrivateRequest), when no cache runtime is
-// installed, or when Revalidate is non-positive, Load simply calls fn: a
-// missing or untrustworthy caching context degrades to the uncached behaviour
-// instead of erroring, so adding cache.Load to a loader can never turn a
-// working page into a failing one. Misconfiguration that is always a bug - an
-// empty Name, a nil codec or fn, arguments that cannot be canonically encoded
-// - does error, everywhere, so it surfaces on the first run rather than only
-// on cache-enabled deployments.
+// Load is shared computation caching: cookies and authorization do not disable
+// it. Args must include every varying input (including tenant/user identity
+// where relevant), and callers must authorize before EVERY call, including
+// hits. Callbacks receive cancellation/deadlines and a fresh computation scope,
+// not incoming context values or request memo state. Closures must not capture
+// undeclared request inputs. This contract also applies to uncached fallbacks.
+// Without a runtime or a positive duration the callback simply computes once.
 //
 // A hit past its revalidate deadline but inside the runtime's stale window is
 // returned immediately while one background goroutine refreshes it, guarded by
@@ -95,13 +93,14 @@ func Load[T any](ctx context.Context, options Options, codec Codec[T], fn func(c
 		// loader reads an intentionally uncached value.
 		scope.RecordDependencyTags(options.Tags...)
 	}
-	runtime := loadRuntime(ctx)
+	runtime := dataRuntime(ctx)
 	revalidate := options.Revalidate
 	if revalidate <= 0 {
 		revalidate = options.Profile.Duration()
 	}
 	if runtime == nil || revalidate <= 0 {
-		return fn(ctx)
+		result, err := compute(ctx, runtime, entry{name: options.Name, tags: normalizeTags(options.Tags), shared: true}, codec, nil, fn)
+		return consume(ctx, result), err
 	}
 	key, err := DataKeyWithGeneration(runtime.deployPrefix, runtime.buildID, runtime.generation, options.Name, options.Args)
 	if err != nil {
@@ -109,6 +108,7 @@ func Load[T any](ctx context.Context, options Options, codec Codec[T], fn func(c
 	}
 	return loadEntry(ctx, runtime, entry{
 		name:       options.Name,
+		shared:     true,
 		key:        key,
 		revalidate: revalidate,
 		tags:       normalizeTags(options.Tags),
@@ -122,6 +122,7 @@ type entry struct {
 	// name labels the entry in logs. It is the caller's Options.Name for data
 	// entries and the route ID for route entries.
 	name       string
+	shared     bool
 	key        string
 	revalidate time.Duration
 	tags       []string
@@ -142,6 +143,7 @@ func loadEntry[T any](ctx context.Context, runtime *Runtime, item entry, codec C
 	if hit {
 		value, decodeErr := codec.Decode(record.Value)
 		if decodeErr == nil {
+			observeDependencies(ctx, dependencySnapshot{versions: record.TagVersions})
 			if runtime.now().Before(record.FreshUntil) {
 				return value, nil
 			}
@@ -158,7 +160,17 @@ func loadEntry[T any](ctx context.Context, runtime *Runtime, item entry, codec C
 // the Get gate, so a private request never even reads a shared entry.
 func loadRuntime(ctx context.Context) *Runtime {
 	scope, ok := RequestScopeFrom(ctx)
-	if !ok || scope.Private() {
+	if !ok || scope.Private() || scope.computation {
+		return nil
+	}
+	return scope.runtime
+}
+
+// dataRuntime deliberately does not apply request privacy. Data is explicitly
+// keyed computation; route responses retain the separate loadRuntime gate.
+func dataRuntime(ctx context.Context) *Runtime {
+	scope, ok := RequestScopeFrom(ctx)
+	if !ok {
 		return nil
 	}
 	return scope.runtime
@@ -167,75 +179,60 @@ func loadRuntime(ctx context.Context) *Runtime {
 func fill[T any](ctx context.Context, runtime *Runtime, item entry, codec Codec[T], storable func(T) bool, fn func(context.Context) (T, error)) (T, error) {
 	var zero T
 	result, err := runtime.flight.do(item.key, func() (any, error) {
+		// A previous leader may have populated the key after this request's
+		// initial miss but before it acquired the flight slot. Reuse that fresh
+		// record; stale entries must still be recomputed for refreshes.
+		if record, hit, readErr := runtime.store.Get(ctx, item.key); readErr == nil && hit && runtime.now().Before(record.FreshUntil) {
+			if value, decodeErr := codec.Decode(record.Value); decodeErr == nil {
+				return computed[T]{value: value, dependencies: dependencySnapshot{versions: record.TagVersions}}, nil
+			}
+		}
 		return compute(ctx, runtime, item, codec, storable, fn)
 	})
-	if err != nil {
+	if result == nil && err != nil {
 		return zero, err
 	}
-	value, ok := result.(T)
+	value, ok := result.(computed[T])
 	if !ok {
 		return zero, fmt.Errorf("cache: load %q returned a value that is not %s; two call sites are sharing one Name with different types", item.name, reflect.TypeFor[T]())
 	}
-	return value, nil
+	return consume(ctx, value), err
 }
 
-// compute runs fn and writes the result back, fenced by the tag versions read
-// before fn started. Reading the versions first is what makes the store's
-// write-time compare-and-set meaningful: a bump that lands while fn is running
-// changes the current versions, and the write is then rejected instead of
-// resurrecting data the bump invalidated.
-func compute[T any](ctx context.Context, runtime *Runtime, item entry, codec Codec[T], storable func(T) bool, fn func(context.Context) (T, error)) (any, error) {
-	var versions map[string]int64
-	fenced := true
-	if len(item.tags) > 0 {
-		read, err := runtime.store.TagVersions(ctx, item.tags)
+// compute retains the versions observed BEFORE each dependency was read. A
+// nested hit contributes its stored versions; a nested fill its prefill fence.
+// A later read must never replace those versions and bless stale bytes.
+func compute[T any](ctx context.Context, runtime *Runtime, item entry, codec Codec[T], storable func(T) bool, fn func(context.Context) (T, error)) (computed[T], error) {
+	deps := &dependencies{}
+	if runtime != nil && len(item.tags) > 0 {
+		versions, err := runtime.store.TagVersions(ctx, item.tags)
 		if err != nil {
 			runtime.logger.Warn("cache tag versions unavailable", "name", item.name, "error", err)
-			fenced = false
 		}
-		versions = read
+		deps.merge(dependencySnapshot{versions: versions, unsafe: err != nil})
 	}
-	value, err := fn(ctx)
+	callbackCtx := context.WithValue(ctx, dependencyContextKey{}, deps)
+	if item.shared {
+		callbackCtx = computationContext(ctx, runtime, deps)
+	}
+	value, err := fn(callbackCtx)
+	result := computed[T]{value: value, dependencies: deps.snapshot()}
 	if err != nil {
-		return nil, err
+		return result, err
 	}
-	if !fenced || (storable != nil && !storable(value)) {
-		return value, nil
-	}
-	// A route loader may discover additional data tags by calling Load. Read
-	// those versions after fn so the route record carries the dependency set;
-	// Store.Set still provides the final write fence if a bump races this read.
-	if scope, ok := RequestScopeFrom(ctx); ok {
-		dependencyTags := scope.DependencyTags()
-		allTags := normalizeTags(append(append([]string(nil), item.tags...), dependencyTags...))
-		if len(allTags) > len(item.tags) {
-			read, err := runtime.store.TagVersions(ctx, allTags)
-			if err != nil {
-				runtime.logger.Warn("cache dependency tag versions unavailable", "name", item.name, "error", err)
-				fenced = false
-			} else {
-				versions = read
-			}
-		}
-	}
-	if !fenced {
-		return value, nil
+	if runtime == nil || item.revalidate <= 0 || result.dependencies.unsafe || (storable != nil && !storable(value)) {
+		return result, nil
 	}
 	encoded, err := codec.Encode(value)
 	if err != nil {
 		runtime.logger.Warn("cache entry could not be encoded", "name", item.name, "error", err)
-		return value, nil
+		return result, nil
 	}
-	now := runtime.now()
-	record := Record{
-		Value:       encoded,
-		TagVersions: versions,
-		FreshUntil:  now.Add(item.revalidate),
-	}
+	record := Record{Value: encoded, TagVersions: result.dependencies.versions, FreshUntil: runtime.now().Add(item.revalidate)}
 	if err := runtime.store.Set(ctx, item.key, record, item.revalidate+runtime.maxStale); err != nil && !errors.Is(err, ErrStaleWrite) {
 		runtime.logger.Warn("cache write failed", "name", item.name, "error", err)
 	}
-	return value, nil
+	return result, nil
 }
 
 // refreshInBackground recomputes a stale entry without making the current
@@ -249,6 +246,11 @@ func refreshInBackground[T any](ctx context.Context, runtime *Runtime, item entr
 		return
 	}
 	detached := context.WithoutCancel(ctx)
+	// Refresh never records dependencies or refresh instructions on the request
+	// that already received stale bytes. Shared callbacks are further isolated
+	// by compute; route callbacks retain their ordinary request context values.
+	detached = WithRequestScope(detached, NewRequestScope(false, WithRuntimeHandle(runtime)))
+	detached = context.WithValue(detached, dependencyContextKey{}, (*dependencies)(nil))
 	go func() {
 		defer runtime.refreshing.leave(item.key)
 		defer func() {

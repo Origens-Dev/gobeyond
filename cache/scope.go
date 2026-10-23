@@ -9,8 +9,9 @@ import (
 // requires. See the package doc for what it holds and where the runtime
 // attaches it.
 type RequestScope struct {
-	private bool
-	runtime *Runtime
+	private     bool
+	computation bool
+	runtime     *Runtime
 
 	mu           sync.Mutex
 	memo         map[string]*memoEntry
@@ -44,9 +45,18 @@ func NewRequestScope(private bool, options ...ScopeOption) *RequestScope {
 	return scope
 }
 
+// Generation reports the cache namespace installed when this request began.
+// It is unaffected by subsequent mutations to the request's headers.
+func (s *RequestScope) Generation() string {
+	if s == nil || s.runtime == nil {
+		return ""
+	}
+	return s.runtime.Generation()
+}
+
 // Private reports the request's Get-gate privacy flag captured at scope
-// creation. Cache layers must treat a private RequestScope as fail-closed:
-// skip reads and skip writes regardless of an otherwise-public CachePolicy.
+// creation. Route/response caches treat private requests as fail-closed.
+// Explicit data computations share only by their declared inputs instead.
 func (s *RequestScope) Private() bool {
 	if s == nil {
 		return true
@@ -57,7 +67,7 @@ func (s *RequestScope) Private() bool {
 // RecordRefreshPath accumulates a path a later RevalidatePath call wants the
 // client to refresh. It is safe for concurrent use.
 func (s *RequestScope) RecordRefreshPath(path string) {
-	if s == nil || path == "" {
+	if s == nil || s.computation || path == "" {
 		return
 	}
 	s.mu.Lock()
@@ -68,7 +78,7 @@ func (s *RequestScope) RecordRefreshPath(path string) {
 // RecordRefreshTag accumulates a tag a later RevalidateTag call wants the
 // client to refresh. It is safe for concurrent use.
 func (s *RequestScope) RecordRefreshTag(tag string) {
-	if s == nil || tag == "" {
+	if s == nil || s.computation || tag == "" {
 		return
 	}
 	s.mu.Lock()

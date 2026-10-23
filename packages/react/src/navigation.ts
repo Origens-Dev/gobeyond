@@ -1227,6 +1227,35 @@ export function createSoftNavigation(
   const listeners = new Set<NavigationLifecycleListener>();
   const routerCache = options.routerCache ?? createRouterCache(options.routerCacheOptions);
   const pendingWarms = new Map<string, Promise<RuntimeNavigationPayload | undefined>>();
+  // A generation is opaque: ordering comes from response admission, never
+  // lexicographic comparison. Retire pending work when new data is observed.
+  let dataEpoch = 0;
+  let dataGeneration: string | undefined;
+  const retiredGenerations = new Set<string>();
+
+  function admitPayload(payload: RuntimeNavigationPayload, epoch: number): boolean {
+    if (destroyed || epoch !== dataEpoch) return false;
+    const generation = payload.result.cacheGeneration;
+    if (!generation) return dataGeneration === undefined;
+    if (retiredGenerations.has(generation)) return false;
+    if (generation !== dataGeneration) {
+      // Initial observation must retain parallel first-page prefetches: they
+      // commonly all belong to this generation and each warms a visible hero.
+      if (dataGeneration !== undefined) {
+        retiredGenerations.add(dataGeneration);
+        dataEpoch += 1;
+        routerCache.clear();
+        pendingWarms.clear();
+      }
+      dataGeneration = generation;
+    }
+    return true;
+  }
+
+  function payloadIsCurrent(payload: RuntimeNavigationPayload): boolean {
+    return payload.result.cacheGeneration === dataGeneration;
+  }
+
   const observedViewportLinks = new WeakSet<HTMLAnchorElement>();
   let viewportObserver: IntersectionObserver | undefined;
   let linkMutationObserver: MutationObserver | undefined;
@@ -1361,7 +1390,10 @@ export function createSoftNavigation(
     route: MatchedBrowserRoute,
     controller: AbortController,
     navigationOptions: NavigateOptions,
+    generationRetry = 0,
   ): Promise<RuntimeNavigationPayload | undefined> {
+    if (active !== controller || destroyed) return undefined;
+    const requestEpoch = dataEpoch;
     const runtimePath =
       `/_gobeyond/builds/${encodeURIComponent(options.buildId)}/runtime/` +
       encodeURIComponent(route.routeId);
@@ -1397,6 +1429,10 @@ export function createSoftNavigation(
       controller.abort();
       throw error;
     }
+    if (active !== controller || destroyed) return undefined;
+    if (requestEpoch !== dataEpoch) {
+      return retryCurrentNavigation(url, href, route, controller, navigationOptions, generationRetry);
+    }
     if (response.type === "opaqueredirect") {
       settleHard();
       hardNavigate(url.href);
@@ -1423,7 +1459,11 @@ export function createSoftNavigation(
       hardNavigate(url.href);
       return undefined;
     }
-    const payload = parseRuntimeNavigationPayload(await response.text());
+    const text = await response.text();
+    // A newer navigation may have superseded this one while its body arrived.
+    // Obsolete responses must not affect generation admission or cache state.
+    if (active !== controller || destroyed) return undefined;
+    const payload = parseRuntimeNavigationPayload(text);
     if ((payload.deploymentRevision ?? "") !== (readRuntimeConfiguration(options.document).deploymentRevision ?? "")) {
       throw handleBuildMismatch(`deployment:${readRuntimeConfiguration(options.document).deploymentRevision ?? "unknown"}`, `deployment:${payload.deploymentRevision ?? "unknown"}`, { environment: mismatchEnvironment, onUpdateRequired });
     }
@@ -1437,6 +1477,9 @@ export function createSoftNavigation(
       throw new Error(
         `GoBeyond runtime returned route ${payload.routeId} for ${route.routeId}.`,
       );
+    }
+    if (!admitPayload(payload, requestEpoch)) {
+      return retryCurrentNavigation(url, href, route, controller, navigationOptions, generationRetry);
     }
     if (payload.result.kind === "redirect") {
       if (!payload.result.redirectTo) {
@@ -1467,6 +1510,7 @@ export function createSoftNavigation(
       navigationOptions,
       payload,
       componentResult,
+      generationRetry,
     );
   }
 
@@ -1477,6 +1521,21 @@ export function createSoftNavigation(
    * and `navigate`'s Router Cache fast path (see `routerCache.get` above),
    * so a cache hit behaves identically to a network hit from here on.
    */
+  function retryCurrentNavigation(
+    url: URL,
+    href: string,
+    route: MatchedBrowserRoute,
+    controller: AbortController,
+    navigationOptions: NavigateOptions,
+    generationRetry: number,
+  ): Promise<RuntimeNavigationPayload | undefined> {
+    if (active !== controller || destroyed) return Promise.resolve(undefined);
+    if (generationRetry >= 1) {
+      throw new Error("GoBeyond cache generation changed during navigation; retry navigation.");
+    }
+    return performNavigation(url, href, route, controller, navigationOptions, generationRetry + 1);
+  }
+
   async function renderNavigationResult(
     url: URL,
     href: string,
@@ -1485,7 +1544,12 @@ export function createSoftNavigation(
     navigationOptions: NavigateOptions,
     payload: RuntimeNavigationPayload,
     componentResult: Promise<ComponentResolution>,
+    generationRetry = 0,
   ): Promise<RuntimeNavigationPayload | undefined> {
+    const renderEpoch = dataEpoch;
+    if (!payloadIsCurrent(payload)) {
+      return retryCurrentNavigation(url, href, route, controller, navigationOptions, generationRetry);
+    }
     const metadata = payload.result.metadata;
     if (!metadata) {
       throw new Error("GoBeyond runtime result is missing metadata.");
@@ -1502,6 +1566,10 @@ export function createSoftNavigation(
       throw new Error(`No browser route registered for ${route.routeId}.`);
     }
     if (active !== controller || destroyed) return undefined;
+
+    if (renderEpoch !== dataEpoch || !payloadIsCurrent(payload)) {
+      return retryCurrentNavigation(url, href, route, controller, navigationOptions, generationRetry);
+    }
 
     const mode = navigationOptions.history ?? "push";
     if (mode === "push") saveScroll();
@@ -1575,6 +1643,8 @@ export function createSoftNavigation(
     // may name routes other than the one currently mounted, and an omitted
     // `paths` (no narrower signal for "something changed") clears
     // everything rather than risk replaying stale data.
+    dataEpoch += 1;
+    pendingWarms.clear();
     routerCache.invalidatePaths(paths ?? []);
     if (paths && paths.length > 0 && !pathsIncludePathname(paths, url.pathname)) {
       return undefined;
@@ -1604,6 +1674,8 @@ export function createSoftNavigation(
   }
 
   function clearRouterCache(paths?: readonly string[]): void {
+    dataEpoch += 1;
+    pendingWarms.clear();
     routerCache.invalidatePaths(paths ?? []);
   }
 
@@ -1629,6 +1701,7 @@ export function createSoftNavigation(
     runtimeURL.searchParams.set("path", url.pathname + url.search);
     const request = options.fetch ?? targetWindow.fetch.bind(targetWindow);
 
+    const requestEpoch = dataEpoch;
     const warm = (async (): Promise<RuntimeNavigationPayload | undefined> => {
       const response = await request(runtimeURL, {
         method: "GET",
@@ -1648,7 +1721,8 @@ export function createSoftNavigation(
       ) {
         return undefined;
       }
-      routerCache.setPrivate(key, payload);
+      if (!admitPayload(payload, requestEpoch)) return undefined;
+      if (!routerCache.set(key, payload)) routerCache.setPrivate(key, payload);
       warmPriorityImages(route, payload);
       return payload;
     })().catch(() => {

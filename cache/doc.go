@@ -2,7 +2,7 @@
 // per-request memoization (cache.Memo), the data cache (cache.Load), the route
 // props cache (cache.LoadRoute), their invalidation entry points (RevalidateTag
 // / RevalidatePath), the byte Store tiers those sit on, the shared privacy
-// predicate that gates every cache layer, and the key/envelope contracts the
+// predicate that gates route/response caching, and the key/envelope contracts the
 // action-refresh client is built against.
 //
 // # RequestScope
@@ -78,16 +78,14 @@
 //
 // # Privacy: Get-gate vs Set-gate
 //
-// IsPrivateRequest is the Get-gate: it inspects only request headers and
-// answers "must this request be treated as carrying viewer identity" before
-// any cache read or origin load happens. IsPrivateResponse is the Set-gate:
-// it additionally inspects the loaded response's Set-Cookie header, because
-// a response can mint viewer identity even when the inbound request had
-// none. Every cache layer must fail closed - private wins over any requested
-// CachePublic policy. cache.Load applies the Get gate by skipping the store
-// entirely on a private request and computing the value instead; invalidation
-// is deliberately not gated, because a mutation made by an authenticated
-// viewer still has to evict the public data it changed.
+// IsPrivateRequest is the route/response Get-gate: request headers carrying
+// identity prevent shared response reuse. IsPrivateResponse additionally
+// checks Set-Cookie before writing response-derived values. Private wins over
+// a requested CachePublic policy. Explicit cache.Load computations instead
+// share by their declared Args, even on cookie/Authorization-bearing requests;
+// this does not make the containing page or route publicly cacheable.
+// Invalidation remains available on authenticated request contexts because
+// mutations must evict the public data they changed.
 //
 // # Keys
 //
@@ -117,6 +115,21 @@
 //		Revalidate: 60 * time.Second,
 //		Tags:       []string{"products", "product:" + slug},
 //	}, cache.JSONCodec[Product](), fetchProduct)
+//
+// Args must include every varying input, including tenant, locale, or user ID
+// where relevant. Authorize before every Load call, including cache hits. The
+// callback receives cancellation/deadlines, the installed runtime, a fresh
+// computation-local Memo bag and dependency collector. It cannot read incoming
+// context values or the caller's memo/refresh state. Nested Load and Memo are
+// supported; route loading and invalidation return ErrSharedComputation. The
+// same callback contract applies with caching disabled or unavailable.
+// Closures can still capture identity or request objects: this is an explicit
+// input programming contract, not a sandbox. Do not capture varying values
+// omitted from Args.
+//
+// Nested reads propagate observed tag versions through hits, misses, stale
+// returns and singleflight waiters to enclosing computations and route props.
+// Conflicting snapshots and invalidation during a fill prevent stale writes.
 //
 // A fresh entry is returned as-is. An entry past its Revalidate deadline but
 // inside RuntimeConfig.MaxStale is returned immediately while one background
@@ -149,7 +162,8 @@
 //		PublicOrigin: origin, Revalidate: 60 * time.Second, Tags: []string{"products"},
 //	}, codec, storable, load)
 //
-// It differs from Load in two ways. It adds PathTag(Path) to the entry's tags
+// Unlike explicit Load computations, LoadRoute applies request privacy. It adds
+// PathTag(Path) to the entry's tags
 // itself, so RevalidatePath("/products/widget") drops exactly that page while
 // its siblings survive, without every route author remembering the tag. And it
 // takes a storable predicate consulted after the loader ran, because whether a

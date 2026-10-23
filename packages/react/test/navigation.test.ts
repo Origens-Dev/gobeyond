@@ -1667,3 +1667,249 @@ test("config-only revision evicts another deployment from an injected navigation
   assert.equal(calls,1);assert.equal(dom.window.document.querySelector("h1")?.textContent,"New config");
  }finally {await act(async()=>app?.root.unmount());restore();dom.window.close()}
 });
+
+for (const mode of ["public", "private_no_store"] as const) {
+  test(`late ${mode} prefetch cannot repopulate a newer generation`, async () => {
+    const dom = documentFor();
+    const restore = installDOM(dom);
+    const requests: { path: string; resolve: (value: Response) => void }[] = [];
+    let app: ReturnType<typeof bootstrap> | undefined;
+    const respond = (index: number, generation: string, name: string) => {
+      const value = payload(requests[index]!.path.startsWith("/products") ? "product" : "about", { name }, name,
+        mode === "public" ? { mode, maxAge: 60 } : { mode });
+      value.result.cacheGeneration = generation;
+      requests[index]!.resolve(new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } }));
+    };
+    try {
+      await act(async () => {
+        app = bootstrap({
+          routes: {
+            home: { component: Home, pattern: "/" },
+            product: { component: Product, pattern: "/products/[slug]", prefetch: "data" },
+            about: { component: About, pattern: "/about", prefetch: "data" },
+          },
+          document: dom.window.document,
+          fetch: async (input) => new Promise<Response>((resolve) => {
+            requests.push({ path: new URL(String(input)).searchParams.get("path")!, resolve });
+          }),
+          scrollTo() {},
+        });
+      });
+      const seed = app!.prefetch("/about?seed=1");
+      await waitFor(() => requests.length === 1);
+      respond(0, "opaque-old", "Initial generation");
+      await seed;
+      const old = app!.prefetch("/products/trail");
+      const fresh = app!.prefetch("/about");
+      await waitFor(() => requests.length === 3);
+      respond(2, "opaque-new", "Fresh about");
+      await fresh;
+      respond(1, "opaque-old", "Stale product");
+      await old;
+      const navigation = app!.navigate("/products/trail");
+      await waitFor(() => requests.length === 4);
+      await act(async () => {
+        respond(3, "opaque-new", "Fresh product");
+        await navigation;
+      });
+      assert.equal(dom.window.document.querySelector("h1")?.textContent, "Fresh product");
+    } finally {
+      app?.destroy();
+      await act(async () => app?.root.unmount());
+      restore();
+      dom.window.close();
+    }
+  });
+}
+
+test("a pending navigation retries when a prefetch observes a new generation", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  const requests: { path: string; resolve: (value: Response) => void }[] = [];
+  let app: ReturnType<typeof bootstrap> | undefined;
+  const respond = (index: number, generation: string, name: string) => {
+    const value = payload(requests[index]!.path.startsWith("/products") ? "product" : "about", { name }, name, { mode: "public", maxAge: 60 });
+    value.result.cacheGeneration = generation;
+    requests[index]!.resolve(new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } }));
+  };
+  try {
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+          about: { component: About, pattern: "/about", prefetch: "data" },
+        },
+        document: dom.window.document,
+        fetch: async (input) => new Promise<Response>((resolve) => {
+          requests.push({ path: new URL(String(input)).searchParams.get("path")!, resolve });
+        }),
+        scrollTo() {},
+      });
+    });
+    const seed = app!.prefetch("/about?seed=1");
+    await waitFor(() => requests.length === 1);
+    respond(0, "A", "Initial generation");
+    await seed;
+    const navigation = app!.navigate("/products/trail");
+    const fresh = app!.prefetch("/about");
+    await waitFor(() => requests.length === 3);
+    respond(2, "B", "Fresh about");
+    await fresh;
+    respond(1, "A", "Stale product");
+    await waitFor(() => requests.length === 4);
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "Home");
+    await act(async () => {
+      respond(3, "B", "Fresh product");
+      await navigation;
+    });
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "Fresh product");
+  } finally {
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test("generation change while the route module loads cannot paint stale props", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let app: ReturnType<typeof bootstrap> | undefined;
+  let resolveProduct!: (value: { default: typeof Product }) => void;
+  const productModule = new Promise<{ default: typeof Product }>((resolve) => { resolveProduct = resolve; });
+  let productRequests = 0;
+  try {
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { load: () => productModule, pattern: "/products/[slug]" },
+          about: { component: About, pattern: "/about", prefetch: "data" },
+        },
+        document: dom.window.document,
+        fetch: async (input) => {
+          const isProduct = new URL(String(input)).searchParams.get("path")!.startsWith("/products");
+          const old = isProduct && ++productRequests === 1;
+          const value = payload(isProduct ? "product" : "about", { name: old ? "Stale" : "Fresh" }, "Product", { mode: "public", maxAge: 60 });
+          value.result.cacheGeneration = old ? "A" : "B";
+          return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+        },
+        scrollTo() {},
+      });
+    });
+    const navigation = app!.navigate("/products/trail");
+    await waitFor(() => productRequests === 1);
+    // Let the old payload enter rendering and wait on the deferred route module.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await app!.prefetch("/about");
+    await act(async () => {
+      resolveProduct({ default: Product });
+      await navigation;
+    });
+    assert.equal(productRequests, 2);
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "Fresh");
+  } finally {
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+
+test("parallel initial same-generation prefetches all warm their images and data", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  const requests: ((value: Response) => void)[] = [];
+  const images: string[] = [];
+  let app: ReturnType<typeof bootstrap> | undefined;
+  try {
+    dom.window.Image = class {
+      decoding = "async";
+      set src(value: string) { images.push(value); }
+    } as unknown as typeof dom.window.Image;
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]", prefetch: "data", prefetchImages: [{ path: "hero", w: 1920 }] },
+        },
+        document: dom.window.document,
+        fetch: async () => new Promise<Response>((resolve) => { requests.push(resolve); }),
+        scrollTo() {},
+      });
+    });
+    const first = app!.prefetch("/products/first");
+    const second = app!.prefetch("/products/second");
+    await waitFor(() => requests.length === 2);
+    for (const [index, name] of ["First", "Second"].entries()) {
+      const value = payload("product", { name, hero: `/${name}.jpg` }, name, { mode: "public", maxAge: 60 });
+      value.result.cacheGeneration = "shared-initial-generation";
+      requests[index]!(new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } }));
+      await (index === 0 ? first : second);
+    }
+    assert.equal(images.length, 2);
+    await act(async () => { await app!.navigate("/products/first"); });
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "First");
+    await act(async () => { await app!.navigate("/products/second"); });
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "Second");
+    assert.equal(requests.length, 2, "both prefetched payloads should be reused");
+  } finally {
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test("a superseded navigation's delayed body cannot retire the current generation", async () => {
+  const dom = documentFor();
+  const restore = installDOM(dom);
+  let app: ReturnType<typeof bootstrap> | undefined;
+  let resolveOldBody!: (text: string) => void;
+  let readingOldBody = false;
+  const oldBody = new Promise<string>((resolve) => { resolveOldBody = resolve; });
+  let requests = 0;
+  try {
+    await act(async () => {
+      app = bootstrap({
+        routes: {
+          home: { component: Home, pattern: "/" },
+          product: { component: Product, pattern: "/products/[slug]" },
+          about: { component: About, pattern: "/about" },
+        },
+        document: dom.window.document,
+        fetch: async (input) => {
+          requests += 1;
+          const isProduct = new URL(String(input)).searchParams.get("path")!.startsWith("/products");
+          if (isProduct) {
+            const response = new Response(null, { headers: { "content-type": "application/json" } });
+            response.text = async () => { readingOldBody = true; return oldBody; };
+            return response;
+          }
+          const value = payload("about", { name: "Current" }, "Current", { mode: "public", maxAge: 60 });
+          value.result.cacheGeneration = "B";
+          return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+        },
+        scrollTo() {},
+      });
+    });
+    const obsolete = app!.navigate("/products/trail");
+    await waitFor(() => readingOldBody);
+    await act(async () => { await app!.navigate("/about"); });
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "Current");
+    const stale = payload("product", { name: "Obsolete" }, "Obsolete", { mode: "public", maxAge: 60 });
+    stale.result.cacheGeneration = "previously-unseen-A";
+    resolveOldBody(JSON.stringify(stale));
+    assert.equal(await obsolete, undefined);
+    await act(async () => { await app!.navigate("/about"); });
+    assert.equal(dom.window.document.querySelector("h1")?.textContent, "Current");
+    assert.equal(requests, 2, "obsolete generation must not evict the current navigation cache");
+  } finally {
+    app?.destroy();
+    await act(async () => app?.root.unmount());
+    restore();
+    dom.window.close();
+  }
+});

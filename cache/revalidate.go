@@ -32,6 +32,9 @@ func PathTag(path string) (string, error) {
 // respond immediately after calling it. Invalidation is not gated on privacy -
 // a mutation made by an authenticated viewer still invalidates public data.
 func RevalidateTag(ctx context.Context, tag string) error {
+	if isSharedComputation(ctx) {
+		return ErrSharedComputation
+	}
 	if tag == "" {
 		return errors.New("cache: RevalidateTag requires a non-empty tag")
 	}
@@ -54,6 +57,9 @@ func RevalidateTag(ctx context.Context, tag string) error {
 // value backs one page must list PathTag for that page in its Options.Tags to
 // participate.
 func RevalidatePath(ctx context.Context, path string) error {
+	if isSharedComputation(ctx) {
+		return ErrSharedComputation
+	}
 	normalized, err := NormalizePath(path)
 	if err != nil {
 		return err

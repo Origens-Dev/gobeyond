@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -363,8 +364,53 @@ func TestHostedGenerationFencesWarmISRProps(t *testing.T) {
 		if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), tc.want) {
 			t.Fatalf("generation=%s status=%d body=%s", tc.generation, recorder.Code, recorder.Body.String())
 		}
+		wantGeneration := server.cache.Generation() + ":request:" + tc.generation
+		if got := recorder.Header().Get("X-GoBeyond-Cache-Generation"); got != wantGeneration {
+			t.Fatalf("document generation=%q, want %q", got, wantGeneration)
+		}
+		runtimeResponse := getDocument(t, server, "https://example.com/_gobeyond/builds/build-1/runtime/product?path=%2Fproducts%2Fwidget", http.Header{"X-GoBeyond-Cache-Generation": {tc.generation}})
+		var payload struct {
+			Result LoadedPage `json:"result"`
+		}
+		if err := json.Unmarshal(runtimeResponse.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Result.CacheGeneration != wantGeneration || runtimeResponse.Header().Get("X-GoBeyond-Cache-Generation") != wantGeneration {
+			t.Fatalf("runtime generation payload=%q header=%q, want %q", payload.Result.CacheGeneration, runtimeResponse.Header().Get("X-GoBeyond-Cache-Generation"), wantGeneration)
+		}
 	}
 	if loads.Load() != 2 {
 		t.Fatalf("loads=%d", loads.Load())
+	}
+}
+
+func TestStandaloneIgnoresViewerCacheGeneration(t *testing.T) {
+	t.Setenv(HostedRuntimeEnv, "")
+	server := isrServer(t, func(*gb.PageContext) (LoadedPage, error) { return okPage("Public"), nil })
+	response := getDocument(t, server, "https://example.com/_gobeyond/builds/build-1/runtime/product?path=%2Fproducts%2Fwidget", http.Header{"X-GoBeyond-Cache-Generation": {"viewer-controlled"}})
+	if strings.Contains(response.Body.String(), "viewer-controlled") || strings.Contains(response.Header().Get("X-GoBeyond-Cache-Generation"), "viewer-controlled") {
+		t.Fatal("standalone trusted viewer generation")
+	}
+}
+
+func TestRuntimeReportsInstalledGenerationDespiteMiddlewareHeaderMutation(t *testing.T) {
+	t.Setenv(HostedRuntimeEnv, "1")
+	server := isrServer(t, func(*gb.PageContext) (LoadedPage, error) { return okPage("Public"), nil })
+	server.config.Middleware = func(next gb.Handler) gb.Handler {
+		return func(ctx *gb.RequestContext) (gb.Response, error) {
+			ctx.Request.Header.Set("X-GoBeyond-Cache-Generation", "modified")
+			return next(ctx)
+		}
+	}
+	response := getDocument(t, server, "https://example.com/_gobeyond/builds/build-1/runtime/product?path=%2Fproducts%2Fwidget", http.Header{"X-GoBeyond-Cache-Generation": {"trusted"}})
+	var payload struct {
+		Result LoadedPage `json:"result"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	want := server.cache.Generation() + ":request:trusted"
+	if payload.Result.CacheGeneration != want || response.Header().Get("X-GoBeyond-Cache-Generation") != want {
+		t.Fatalf("response generation payload=%q header=%q, want installed %q", payload.Result.CacheGeneration, response.Header().Get("X-GoBeyond-Cache-Generation"), want)
 	}
 }

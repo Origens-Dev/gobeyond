@@ -156,19 +156,19 @@ type APIRoute struct {
 type PublicOriginResolver func(*http.Request) (string, error)
 
 type Config struct {
-	DeploymentRevision  string
-	PublicConfig        map[string]string
-	BuildID             string
+	DeploymentRevision string
+	PublicConfig       map[string]string
+	BuildID            string
 	// AIDefinitionResolver exposes the compiler-registered AI definitions to
 	// authored API routes via agents.AIDefinitionFromContext.
 	AIDefinitionResolver agents.AIDefinitionResolver
-	PublicOrigin        string
-	ResolvePublicOrigin PublicOriginResolver
-	AllowedHosts        []string
-	BrowserAssets       *browserassets.Manifest
-	Pages               []PageRoute
-	Actions             []Action
-	APIs                []APIRoute
+	PublicOrigin         string
+	ResolvePublicOrigin  PublicOriginResolver
+	AllowedHosts         []string
+	BrowserAssets        *browserassets.Manifest
+	Pages                []PageRoute
+	Actions              []Action
+	APIs                 []APIRoute
 	// Middleware is the one authored Go request hook discovered from the
 	// application's root middleware.go. It is applied to documents, APIs,
 	// actions, and runtime payloads, but not health, static, or image routes.
@@ -502,12 +502,25 @@ func newCacheRuntime(config Config) (*cache.Runtime, error) {
 // cache.Revalidate* functional inside loaders, actions, and API handlers.
 func (s *Server) newRequestScope(private bool, requests ...*http.Request) *cache.RequestScope {
 	handle := s.cache
-	if hostedRuntime() && handle != nil && len(requests) > 0 && requests[0] != nil {
-		if generation := requests[0].Header.Get("X-GoBeyond-Cache-Generation"); generation != "" {
-			handle = handle.WithGeneration(handle.Generation() + ":request:" + generation)
-		}
+	if handle != nil && len(requests) > 0 {
+		handle = handle.WithGeneration(s.requestCacheGeneration(requests[0]))
 	}
 	return cache.NewRequestScope(private, cache.WithRuntimeHandle(handle))
+}
+
+// requestCacheGeneration is shared by cache keys and response metadata. Only
+// hosted runtimes accept this header; the hosting boundary replaces viewer input.
+func (s *Server) requestCacheGeneration(request *http.Request) string {
+	if s.cache == nil {
+		return ""
+	}
+	generation := s.cache.Generation()
+	if hostedRuntime() && request != nil {
+		if current := request.Header.Get("X-GoBeyond-Cache-Generation"); current != "" {
+			generation += ":request:" + current
+		}
+	}
+	return generation
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -834,8 +847,9 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	headers.Set("Content-Type", "text/html; charset=utf-8")
 	headers.Set("Cache-Control", responseCacheHeader(loaded.Cache, ctx.Request, ctx.Values, headers))
 	headers.Set("X-GoBeyond-Build", s.config.BuildID)
-	if s.config.Cache != nil && s.config.Cache.Generation != "" {
-		headers.Set("X-GoBeyond-Cache-Generation", s.config.Cache.Generation)
+	if scope, ok := cache.RequestScopeFrom(ctx.Context); ok && scope.Generation() != "" {
+		generation := scope.Generation()
+		headers.Set("X-GoBeyond-Cache-Generation", generation)
 	}
 	return gb.Response{Status: loaded.Status, Headers: headers, Body: output.Bytes()}, nil
 }
@@ -923,8 +937,8 @@ func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request,
 		if loadErr != nil {
 			return gb.Response{}, loadErr
 		}
-		if s.config.Cache != nil {
-			loaded.CacheGeneration = s.config.Cache.Generation
+		if scope, ok := cache.RequestScopeFrom(ctx.Context); ok {
+			loaded.CacheGeneration = scope.Generation()
 		}
 		if err := jsvalue.Validate(loaded.Props); err != nil {
 			return gb.Response{}, fmt.Errorf("page props are not JavaScript-compatible: %w", err)
@@ -1103,6 +1117,9 @@ func jsonPageResponse(status int, value any, loaded LoadedPage, ctx *gb.RequestC
 	headers := cloneHeader(loaded.Headers)
 	headers.Set("Content-Type", "application/json")
 	headers.Set("Cache-Control", responseCacheHeader(loaded.Cache, ctx.Request, ctx.Values, headers))
+	if loaded.CacheGeneration != "" {
+		headers.Set("X-GoBeyond-Cache-Generation", loaded.CacheGeneration)
+	}
 	return gb.Response{Status: status, Headers: headers, Body: body}, nil
 }
 

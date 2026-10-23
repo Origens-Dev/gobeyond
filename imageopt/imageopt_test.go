@@ -229,8 +229,8 @@ func TestHandlerResizesPNGAndConvertsJPEG(t *testing.T) {
 		contentType string
 		format      string
 	}{
-		{"url=%2Fbrand.png&w=32&q=0", "image/png", "png"},
-		{"url=%2Fbrand.png&w=64&q=120&f=jpeg", "image/jpeg", "jpeg"},
+		{"url=%2Fbrand.png&w=32&q=1&f=png", "image/png", "png"},
+		{"url=%2Fbrand.png&w=64&q=100&f=jpeg", "image/jpeg", "jpeg"},
 	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, Route+"?"+test.query, nil))
@@ -247,7 +247,7 @@ func TestHandlerResizesPNGAndConvertsJPEG(t *testing.T) {
 		if format != test.format || decoded.Bounds().Dx() != widthFromQuery(test.query) {
 			t.Fatalf("%s: format=%s bounds=%v", test.query, format, decoded.Bounds())
 		}
-		if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=0, s-maxage=3600, must-revalidate" {
+		if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=3600, s-maxage=3600" {
 			t.Fatalf("cache control = %q", got)
 		}
 	}
@@ -276,7 +276,7 @@ func TestHandlerAllowsConfiguredRemoteImage(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	Handler(remote).ServeHTTP(
 		recorder,
-		httptest.NewRequest(http.MethodGet, Route+"?url=https%3A%2F%2Fimages.ctfassets.net%2Fspace%2Fasset%2Fphoto.png&w=32", nil),
+		httptest.NewRequest(http.MethodGet, Route+"?url=https%3A%2F%2Fimages.ctfassets.net%2Fspace%2Fasset%2Fphoto.png&w=32&f=png", nil),
 	)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -302,9 +302,9 @@ func TestHandlerValidatesRequest(t *testing.T) {
 	}{
 		{http.MethodPost, "url=%2Fbrand.png&w=32", http.StatusMethodNotAllowed, "method_not_allowed"},
 		{http.MethodGet, "url=https%3A%2F%2Fexample.com%2Fbrand.png&w=32", http.StatusBadRequest, "invalid_source"},
-		{http.MethodGet, "url=%2Fbrand.png&w=31", http.StatusBadRequest, "unsupported_width"},
+		{http.MethodGet, "url=%2Fbrand.png&w=3841", http.StatusBadRequest, "invalid_width"},
 		{http.MethodGet, "url=%2Fbrand.png&w=32&q=bad", http.StatusBadRequest, "invalid_quality"},
-		{http.MethodGet, "url=%2Fbrand.png&w=32&f=webp", http.StatusBadRequest, "unsupported_format"},
+		{http.MethodGet, "url=%2Fbrand.png&w=32&f=avif", http.StatusBadRequest, "unsupported_format"},
 		{http.MethodGet, "url=%2Fmissing.png&w=32", http.StatusNotFound, "source_not_found"},
 	}
 	for _, test := range tests {
@@ -421,7 +421,7 @@ func TestSameRemoteURLReplacementChangesTransformedBytes(t *testing.T) {
 	}
 }
 
-func TestBrowserRevalidatesRevisionedImagesWhileCDNKeepsConfiguredTTL(t *testing.T) {
+func TestBrowserAndCDNKeepConfiguredImageTTL(t *testing.T) {
 	t.Setenv(ImageCacheSecondsEnv, "60")
 	root := t.TempDir()
 	writeTestPNG(t, filepath.Join(root, "brand.png"), 80, 40)
@@ -430,7 +430,7 @@ func TestBrowserRevalidatesRevisionedImagesWhileCDNKeepsConfiguredTTL(t *testing
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d", recorder.Code)
 	}
-	if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=0, s-maxage=60, must-revalidate" {
+	if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=60, s-maxage=60" {
 		t.Fatalf("policy=%q", got)
 	}
 }

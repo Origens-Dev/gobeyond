@@ -22,6 +22,9 @@ type HostedInvalidationOptions struct {
 // InvalidateHosted durably submits an invalidation through the slot capability.
 // Accepted means queued, not propagated. It never uses platform credentials.
 func InvalidateHosted(ctx context.Context, options HostedInvalidationOptions) (RemoteInvalidationResult, error) {
+	if isSharedComputation(ctx) {
+		return RemoteInvalidationResult{}, ErrSharedComputation
+	}
 	key := strings.TrimSpace(options.IdempotencyKey)
 	if key == "" || len(key) > 200 {
 		return RemoteInvalidationResult{}, fmt.Errorf("cache: invalid idempotency key")

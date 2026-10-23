@@ -38,7 +38,7 @@ type RouteOptions struct {
 // runtime, not this package, decides what a "value" is (props, metadata,
 // status, and kind - never response headers or rendered HTML).
 //
-// Like Load, it fails open: without a RequestScope, on a private request, with
+// It falls back uncached without a RequestScope, on a private request, with
 // no cache runtime installed, or with a non-positive Revalidate, it simply
 // calls fn. Unlike Load, the write is additionally gated on storable, because
 // a page's cacheability is only known after the loader ran: the runtime uses
@@ -49,6 +49,9 @@ type RouteOptions struct {
 // served immediately while one leased background goroutine refreshes it.
 func LoadRoute[T any](ctx context.Context, options RouteOptions, codec Codec[T], storable func(T) bool, fn func(context.Context) (T, error)) (T, error) {
 	var zero T
+	if isSharedComputation(ctx) {
+		return zero, ErrSharedComputation
+	}
 	if fn == nil {
 		return zero, errors.New("cache: LoadRoute requires a non-nil fn")
 	}
