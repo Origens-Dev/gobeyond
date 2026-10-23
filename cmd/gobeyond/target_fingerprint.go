@@ -29,7 +29,7 @@ type fingerprintGraph map[string]fingerprintPackage
 // go list resolves the actual target-platform import and embed graph without
 // compiling. Incomplete resolution disables reuse; it never guesses from paths.
 func loadFingerprintGraph(root string, targets []string) (fingerprintGraph, error) {
-	cmd := exec.Command("go", append([]string{"list", "-e", "-deps", "-json"}, targets...)...)
+	cmd := exec.Command("go", append([]string{"list", "-tags=" + productionBuildTag, "-e", "-deps", "-json"}, targets...)...)
 	cmd.Dir = root
 	cmd.Env = withEnvironment(compilerEnvironment(), "GOOS=linux", "GOARCH=arm64", "CGO_ENABLED=0", "GOFLAGS=")
 	var stderr bytes.Buffer
@@ -94,7 +94,7 @@ func (g fingerprintGraph) digest(target string, excluded map[string]bool, salt [
 	sort.Strings(names)
 	h := sha256.New()
 	enc := json.NewEncoder(h)
-	_ = enc.Encode([]string{"gobeyond-target/v1", runtime.Version(), "linux/arm64", "CGO_ENABLED=0", "-trimpath", "-ldflags=-s -w"})
+	_ = enc.Encode([]string{"gobeyond-target/v2", runtime.Version(), "linux/arm64", "CGO_ENABLED=0", "-tags=" + productionBuildTag, "-trimpath", "-ldflags=-s -w"})
 	_ = enc.Encode(salt)
 	for _, name := range names {
 		p := g[name]

@@ -127,7 +127,7 @@ func resumeWorkerCheckpoint(root, id string) error {
 		if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 			return err
 		}
-		return runCommandWithEnvironment(root, withEnvironment(compilerEnvironment(), "CGO_ENABLED=0"), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", output, w.PackageDir)
+		return buildProductionExecutable(root, compilerEnvironment(), output, w.PackageDir)
 	}
 	return fmt.Errorf("worker %q is absent from prepared build", id)
 }
