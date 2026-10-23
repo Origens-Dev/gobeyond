@@ -184,6 +184,15 @@ func fingerprintPlannedWeb(c *buildCheckpoint, graph fingerprintGraph) error {
 		}
 		metadata[name] = b
 	}
+	agents, err := project.LoadAgentsManifest(c.ProjectRoot)
+	if err != nil {
+		return err
+	}
+	preparation, err := readVoicePreparationManifest(c.ProjectRoot, agents)
+	if err != nil {
+		return err
+	}
+	metadata["voice-preparation.json"] = preparation
 	definitions, err := project.DiscoverWorkflowDefinitions(c.ProjectRoot)
 	if err != nil {
 		return err
