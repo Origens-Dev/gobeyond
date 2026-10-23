@@ -96,6 +96,11 @@ type StartConfig struct {
 	// OnUsage, when set, is invoked for each Live UsageMetadata the adapter
 	// observes. The callback must not block the audio path for long.
 	OnUsage func(Usage)
+	// OnProviderEvent receives typed evidence from supported provider adapters.
+	// Nil preserves legacy behavior. When set, callback errors stop processing
+	// before legacy usage delivery; callers must durably record evidence before
+	// returning success. Session closure is independent of metric finality.
+	OnProviderEvent func(context.Context, ProviderEvent) error
 }
 
 // AudioPreferences describes preferred provider-leg formats independently in

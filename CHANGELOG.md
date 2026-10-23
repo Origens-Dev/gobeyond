@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add the error-returning `OnProviderEvent` callback for typed provider evidence.
+  OpenAI Live preserves absent-versus-zero metric presence and reports an actual
+  `session.closed` frame separately from final usage. Existing `OnUsage`
+  behavior remains available; typed provider evidence for other adapters remains
+  unavailable pending qualification.
+
 - Copy an opaque grant-sourced `ResourceBinding` (`kind`, `resource_id`,
   `alternate_id`) from the verified voice session Scope into VoiceWrite
   tool execution. Handlers read it with `ToolResourceBinding`; session and
