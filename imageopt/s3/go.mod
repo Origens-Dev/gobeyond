@@ -7,7 +7,7 @@ module github.com/Origens-Dev/gobeyond/imageopt/s3
 go 1.24.0
 
 require (
-	github.com/Origens-Dev/gobeyond v0.1.0-alpha.1
+	github.com/Origens-Dev/gobeyond v0.1.0-alpha.128
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.31
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.0
