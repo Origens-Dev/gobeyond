@@ -103,7 +103,12 @@ func WriteWithAgentRevisions(root string, routes []Route, buildID string, check 
 	if buildID == "" {
 		return errors.New("build ID is required")
 	}
-	if err := syncGoSources(root, routes, buildID, check, revisions); err != nil {
+	agentDefinitions, err := DiscoverAgentDefinitions(root)
+	if err != nil {
+		return err
+	}
+	setAgentRevisions(agentDefinitions, buildID, revisions)
+	if err := syncGoSourcesWithAgents(root, routes, buildID, check, agentDefinitions); err != nil {
 		return err
 	}
 	workflowDefinitions, err := DiscoverWorkflowDefinitions(root)
@@ -116,11 +121,6 @@ func WriteWithAgentRevisions(root string, routes []Route, buildID string, check 
 		return err
 	}
 	workflowsManifestBytes = append(workflowsManifestBytes, '\n')
-	agentDefinitions, err := DiscoverAgentDefinitions(root)
-	if err != nil {
-		return err
-	}
-	setAgentRevisions(agentDefinitions, buildID, revisions)
 	agentsManifest := portableAgentsManifest(agentDefinitions, buildID)
 	if len(revisions) > 0 {
 		agentsManifest.APIVersion = "gobeyond.agents/v1alpha5"
@@ -133,6 +133,18 @@ func WriteWithAgentRevisions(root string, routes []Route, buildID string, check 
 	}
 	if err := attachDecisionManifests(&agentsManifest, agentDefinitions); err != nil {
 		return err
+	}
+	preparation, err := compiledVoicePreparation(agentDefinitions, agentsManifest)
+	if err != nil {
+		return err
+	}
+	preparationBytes, err := json.MarshalIndent(preparation, "", "  ")
+	if err != nil {
+		return err
+	}
+	preparationBytes = append(preparationBytes, '\n')
+	if len(preparationBytes) > MaxVoicePreparationBytes {
+		return errors.New("private voice preparation manifest too large")
 	}
 	agentsManifestBytes, err := json.MarshalIndent(agentsManifest, "", "  ")
 	if err != nil {
@@ -154,7 +166,9 @@ func WriteWithAgentRevisions(root string, routes []Route, buildID string, check 
 	manifestPath := filepath.Join(root, ".gobeyond", "routes.json")
 	workflowsManifestPath := filepath.Join(root, ".gobeyond", "workflows.json")
 	agentsManifestPath := filepath.Join(root, ".gobeyond", "agents.json")
+	preparationPath := filepath.Join(root, ".gobeyond", "voice-preparation.json")
 	outputs := map[string][]byte{
+		preparationPath:       preparationBytes,
 		manifestPath:          manifestBytes,
 		workflowsManifestPath: workflowsManifestBytes,
 		agentsManifestPath:    agentsManifestBytes,
@@ -163,7 +177,7 @@ func WriteWithAgentRevisions(root string, routes []Route, buildID string, check 
 	for path, content := range outputs {
 		// .gobeyond is ignored and may be absent in a clean clone. Check mode
 		// materializes that build input, then checks the committed Go registry.
-		if check && path != manifestPath && path != workflowsManifestPath && path != agentsManifestPath {
+		if check && path != manifestPath && path != workflowsManifestPath && path != agentsManifestPath && path != preparationPath {
 			existing, readErr := os.ReadFile(path)
 			if readErr != nil || !bytes.Equal(existing, content) {
 				return fmt.Errorf(
@@ -177,8 +191,17 @@ func WriteWithAgentRevisions(root string, routes []Route, buildID string, check 
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, content, 0o644); err != nil {
+		mode := os.FileMode(0o644)
+		if path == preparationPath {
+			mode = 0o600
+		}
+		if err := os.WriteFile(path, content, mode); err != nil {
 			return err
+		}
+		if path == preparationPath {
+			if err := os.Chmod(path, 0o600); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

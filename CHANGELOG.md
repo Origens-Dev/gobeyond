@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Emit a private compiled voice-preparation artifact containing exact base
+  instructions and deployment identity. Include it in build cache identity and
+  private deployment output so preparation can verify instructions against the
+  selected immutable deployment. Existing public and browser manifests retain
+  their existing fields.
+
 - Add the error-returning `OnProviderEvent` callback for typed provider evidence.
   OpenAI Live preserves absent-versus-zero metric presence and reports an actual
   `session.closed` frame separately from final usage. Existing `OnUsage`

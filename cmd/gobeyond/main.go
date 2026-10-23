@@ -358,6 +358,9 @@ func compileCheckpoint(c buildCheckpoint, compileWorkers bool) error {
 	if err := writeJSONFile(filepath.Join(dist, "deploy", buildpaths.AgentsManifest), agentsManifest); err != nil {
 		return err
 	}
+	if err := copyVoicePreparationManifest(projectRoot, dist, agentsManifest); err != nil {
+		return err
+	}
 	workflowDefinitions, wakeDiscoverErr := project.DiscoverWorkflowDefinitions(projectRoot)
 	if wakeDiscoverErr != nil {
 		return wakeDiscoverErr
@@ -2398,4 +2401,60 @@ func routeRegistryName(serverKey string) string {
 		result.WriteString(part[1:])
 	}
 	return result.String()
+}
+
+// readVoicePreparationManifest binds private instructions to the public compiled
+// identities without exposing instruction bytes through public metadata.
+func readVoicePreparationManifest(projectRoot string, agents project.AgentsManifest) ([]byte, error) {
+	f, err := os.Open(filepath.Join(projectRoot, ".gobeyond", "voice-preparation.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read private voice preparation: %w", err)
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, project.MaxVoicePreparationBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read private voice preparation: %w", err)
+	}
+	m, err := project.ReadVoicePreparationManifest(raw)
+	if err != nil {
+		return nil, fmt.Errorf("validate private voice preparation: %w", err)
+	}
+	if m.BuildID != agents.BuildID {
+		return nil, errors.New("private voice preparation build ID mismatch")
+	}
+	expected := map[string]project.AgentManifestDefinition{}
+	for _, a := range agents.Agents {
+		if a.Kind == project.AgentKindAI && a.Durable && a.Realtime {
+			if _, exists := expected[a.ID]; exists {
+				return nil, errors.New("duplicate compiled voice agent")
+			}
+			expected[a.ID] = a
+		}
+	}
+	if len(m.Agents) != len(expected) {
+		return nil, errors.New("private voice preparation agent set mismatch")
+	}
+	for _, a := range m.Agents {
+		public, ok := expected[a.AgentID]
+		if !ok || public.VoiceManifest == nil || public.Revision != a.CompiledRevision || public.VoiceManifest.CompiledRevision != a.CompiledRevision || public.VoiceManifestDigest != a.VoiceManifestDigest {
+			return nil, errors.New("private voice preparation compiled identity mismatch")
+		}
+	}
+	return raw, nil
+}
+
+func copyVoicePreparationManifest(projectRoot, dist string, agents project.AgentsManifest) error {
+	raw, err := readVoicePreparationManifest(projectRoot, agents)
+	if err != nil {
+		return err
+	}
+	destination := filepath.Join(dist, "deploy", "voice-preparation.json")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	// Remove an existing file first so its previous permissions cannot survive.
+	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.WriteFile(destination, raw, 0o600)
 }

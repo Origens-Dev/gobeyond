@@ -35,6 +35,15 @@ func SyncGoSources(root string, routes []Route, check bool) error {
 }
 
 func syncGoSources(root string, routes []Route, buildID string, check bool, revisions ...map[string]string) error {
+	agentDefinitions, err := DiscoverAgentDefinitions(root)
+	if err != nil {
+		return err
+	}
+	setAgentRevisions(agentDefinitions, buildID, revisions...)
+	return syncGoSourcesWithAgents(root, routes, buildID, check, agentDefinitions)
+}
+
+func syncGoSourcesWithAgents(root string, routes []Route, buildID string, check bool, agentDefinitions []AgentDefinition) error {
 	if _, err := DiscoverMiddlewareSource(root); err != nil {
 		return err
 	}
@@ -194,11 +203,6 @@ func syncGoSources(root string, routes []Route, buildID string, check bool, revi
 		}
 		outputs[filepath.Join(workflowTree, "wake", "wake_gen.go")] = wakeSource
 	}
-	agentDefinitions, err := DiscoverAgentDefinitions(root)
-	if err != nil {
-		return err
-	}
-	setAgentRevisions(agentDefinitions, buildID, revisions...)
 	for _, definition := range agentDefinitions {
 		authorDir := filepath.Join(root, filepath.FromSlash(definition.SourceDir))
 		moduleFile := filepath.Join(authorDir, "go.mod")
