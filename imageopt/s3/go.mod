@@ -7,7 +7,7 @@ module github.com/Origens-Dev/gobeyond/imageopt/s3
 go 1.24.0
 
 require (
-	github.com/Origens-Dev/gobeyond v0.1.0-alpha.128
+	github.com/Origens-Dev/gobeyond v0.1.0-alpha.129
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.31
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.0
@@ -30,7 +30,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.0 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
-	github.com/gen2brain/webp v0.6.4 // indirect
+	github.com/gen2brain/webp v0.5.5 // indirect
+	github.com/tetratelabs/wazero v1.9.0 // indirect
 )
 
 replace github.com/Origens-Dev/gobeyond => ../..

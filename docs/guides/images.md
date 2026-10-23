@@ -99,9 +99,12 @@ context values. Protect private images through a separate authorization-aware
 delivery path.
 
 Standalone WebP encoding uses pinned `github.com/gen2brain/webp` with a
-CGo-free fallback. No system libwebp is required; CI verifies it with
-`CGO_ENABLED=0 go test -tags nodynamic ./imageopt`. This adds codec code and
-optional dynamic loading to the dependency graph; hosted encoding retains libvips.
+CGo-free WebAssembly fallback. No system libwebp is required; CI verifies it with
+`CGO_ENABLED=0 go test -tags nodynamic ./imageopt`. This uses Wazero to load
+the bundled codec lazily on first use. It avoids
+compiling the large transpiled codec from v0.6.4, which exceeded memory on
+constrained hosted build workers. It adds codec bytes, Wazero, and optional
+dynamic loading to the dependency graph; hosted encoding retains libvips.
 
 ## Production S3 setup (requires infra apply)
 
