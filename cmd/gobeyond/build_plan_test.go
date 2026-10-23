@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Origens-Dev/gobeyond/imageopt"
 )
 
 func TestTargetPlanDefersNodeAndSeparatesWorkflowImplementation(t *testing.T) {
@@ -90,5 +92,81 @@ func TestPlannedWebGraphDoesNotHideUnresolvedDependencies(t *testing.T) {
 	graph := fingerprintGraph{"server": {Dir: root, Incomplete: true, Imports: []string{"example.test/missing"}}, "example.test/missing": {Error: &struct{ Err string }{"missing"}}}
 	if _, err := plannedWebGraph(c, graph).digest(root, nil, nil); err == nil {
 		t.Fatal("missing non-contract dependency allowed reuse")
+	}
+}
+
+func TestTargetPlanPreservesAuthoredImageConfig(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, body string) {
+		t.Helper()
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.test/image-plan\n\ngo 1.24\n")
+	write("app/page.tsx", "export default function Page(){ return <p>Hello</p> }\n")
+	write("server/cmd/app/main.go", "package main\nfunc main(){}\n")
+	config := `{"remoteDomains":["images.ctfassets.net"],"cacheSeconds":60}`
+	write(imageopt.DeploymentConfigPath, config)
+	if err := os.Chmod(filepath.Join(root, imageopt.DeploymentConfigPath), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write(".gobeyond/client-boundaries.json", "stale generated state")
+	write("generated/stale.go", "package stale\n")
+	write("dist/stale", "stale build output")
+
+	if err := prepareTargetPlan(root); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := imageopt.LoadDeploymentConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || len(got.RemoteDomains) != 1 || got.RemoteDomains[0] != "images.ctfassets.net" || got.CacheSeconds != 60 {
+		t.Fatalf("authored deployment config after target plan = %+v, present=%v", got, ok)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, imageopt.DeploymentConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != config {
+		t.Fatalf("image config bytes changed: %q", raw)
+	}
+	info, err := os.Stat(filepath.Join(root, imageopt.DeploymentConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("image config mode changed: %o", info.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gobeyond", "client-boundaries.json")); !os.IsNotExist(err) {
+		t.Fatalf("stale generated projection survived reset: err=%v", err)
+	}
+	first, err := readBuildCheckpoint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(imageopt.DeploymentConfigPath, `{"remoteDomains":["images.ctfassets.net"],"cacheSeconds":120}`)
+	if err := prepareTargetPlan(root); err != nil {
+		t.Fatal(err)
+	}
+	second, err := readBuildCheckpoint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Manifest.BuildID == second.Manifest.BuildID {
+		t.Fatal("image deployment config edit did not change web build identity")
+	}
+	for _, stale := range []string{"generated/stale.go", "dist/stale"} {
+		if _, err := os.Stat(filepath.Join(root, stale)); !os.IsNotExist(err) {
+			t.Fatalf("stale output %s survived reset: err=%v", stale, err)
+		}
 	}
 }

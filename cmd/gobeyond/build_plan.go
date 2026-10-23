@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Origens-Dev/gobeyond/imageopt"
 	"github.com/Origens-Dev/gobeyond/internal/project"
 )
 
@@ -20,11 +22,50 @@ func prepareTargetPlan(root string) error {
 	started := time.Now()
 	defer func() { slog.Info("gobeyond_target_plan_duration", "duration_seconds", time.Since(started).Seconds()) }()
 	website := websiteRoot(root)
+	// The target-plan reset clears generated state, but images.json is authored
+	// deployment input stored in the same directory. Preserve its exact bytes
+	// across the reset so the later web stage can emit image-config.json.
+	imageConfigPath := filepath.Join(root, imageopt.DeploymentConfigPath)
+	imageConfig, imageConfigErr := os.ReadFile(imageConfigPath)
+	preserveImageConfig := imageConfigErr == nil
+	imageConfigMode := os.FileMode(0o644)
+	if imageConfigErr != nil && !errors.Is(imageConfigErr, os.ErrNotExist) {
+		return fmt.Errorf("read authored image config: %w", imageConfigErr)
+	}
+	if preserveImageConfig {
+		info, err := os.Stat(imageConfigPath)
+		if err != nil {
+			return fmt.Errorf("stat authored image config: %w", err)
+		}
+		imageConfigMode = info.Mode().Perm()
+	}
+	restoreImageConfig := func() error {
+		if !preserveImageConfig {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(imageConfigPath), 0o755); err != nil {
+			return fmt.Errorf("restore authored image config directory: %w", err)
+		}
+		if err := os.WriteFile(imageConfigPath, imageConfig, imageConfigMode); err != nil {
+			return fmt.Errorf("restore authored image config: %w", err)
+		}
+		return nil
+	}
 	// Do not let a developer's ignored projections affect dependency discovery.
-	for _, dir := range []string{filepath.Join(website, "generated"), filepath.Join(root, ".gobeyond"), filepath.Join(root, "dist")} {
+	for _, dir := range []string{filepath.Join(website, "generated"), filepath.Join(root, "dist")} {
 		if err := os.RemoveAll(dir); err != nil {
 			return err
 		}
+	}
+	if err := os.RemoveAll(filepath.Join(root, ".gobeyond")); err != nil {
+		removeErr := fmt.Errorf("remove generated .gobeyond state: %w", err)
+		if restoreErr := restoreImageConfig(); restoreErr != nil {
+			return errors.Join(removeErr, restoreErr)
+		}
+		return removeErr
+	}
+	if err := restoreImageConfig(); err != nil {
+		return err
 	}
 	if err := syncRouteSchemaFiles(website, false); err != nil {
 		return err
@@ -152,6 +193,21 @@ func fingerprintPlannedWeb(c *buildCheckpoint, graph fingerprintGraph) error {
 		return err
 	}
 	metadata["wake.json"] = wake
+	// BuildSnapshot intentionally ignores .gobeyond because it is mostly
+	// generated. images.json is the authored exception and controls the
+	// deployment artifact, so include it explicitly in web-output identity.
+	imageConfigPath := filepath.Join(c.ProjectRoot, imageopt.DeploymentConfigPath)
+	imageConfigBytes, err := os.ReadFile(imageConfigPath)
+	if err == nil {
+		metadata["image-config.json"], err = json.Marshal(string(imageConfigBytes))
+		if err != nil {
+			return err
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		metadata["image-config.json"] = json.RawMessage("null")
+	} else {
+		return err
+	}
 	b, err := json.Marshal(struct {
 		Version  string
 		Sources  map[string]string
