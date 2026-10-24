@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Rename build-mismatch HTTP headers to the neutral `X-Build-Id`,
+  `X-Build-Error`, and `X-Deployment-Revision` names. Origins dual-write the
+  legacy `X-GoBeyond-Build` / `X-GoBeyond-Error` / `X-GoBeyond-Deployment`
+  names for one release so open tabs on the old client keep working; readers
+  prefer the new names and fall back to the old names.
+
 - Emit a private compiled voice-preparation artifact containing exact base
   instructions and deployment identity. Include it in build cache identity and
   private deployment output so preparation can verify instructions against the
