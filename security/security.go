@@ -18,7 +18,7 @@ const (
 )
 
 var reservedHeaders = map[string]struct{}{
-	"x-gobeyond-build":      {},
+	"x-build-id":            {},
 	"x-gobeyond-route":      {},
 	"x-gobeyond-action":     {},
 	"x-gobeyond-internal":   {},

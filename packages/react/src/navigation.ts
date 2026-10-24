@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import type { Root } from "react-dom/client";
 import {
   BUILD_ID_HEADER,
+  DEPLOYMENT_REVISION_HEADER,
   BuildMismatchError,
   fetchWithBuildGuard,
   handleBuildMismatch,
@@ -1705,7 +1706,7 @@ export function createSoftNavigation(
     const warm = (async (): Promise<RuntimeNavigationPayload | undefined> => {
       const response = await request(runtimeURL, {
         method: "GET",
-        headers: { accept: "application/json", [BUILD_ID_HEADER]: options.buildId, "x-gobeyond-deployment": readRuntimeConfiguration(options.document).deploymentRevision ?? "" },
+        headers: { accept: "application/json", [BUILD_ID_HEADER]: options.buildId, [DEPLOYMENT_REVISION_HEADER]: readRuntimeConfiguration(options.document).deploymentRevision ?? "" },
         redirect: "manual",
       });
       if (!response.ok) return undefined;

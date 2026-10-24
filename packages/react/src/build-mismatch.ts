@@ -1,7 +1,19 @@
 import { readRuntimeConfiguration } from "./runtime-config.js";
-export const BUILD_ID_HEADER = "x-gobeyond-build";
-export const BUILD_ERROR_HEADER = "x-gobeyond-error";
+export const BUILD_ID_HEADER = "x-build-id";
+export const BUILD_ERROR_HEADER = "x-build-error";
+export const DEPLOYMENT_REVISION_HEADER = "x-deployment-revision";
 export const BUILD_MISMATCH_CODE = "build_mismatch";
+
+// One-release fallback while mixed origins still emit the pre-rename names.
+const LEGACY_BUILD_ID_HEADER = "x-gobeyond-build";
+const LEGACY_BUILD_ERROR_HEADER = "x-gobeyond-error";
+const LEGACY_DEPLOYMENT_REVISION_HEADER = "x-gobeyond-deployment";
+
+function readHeader(headers: Headers, name: string, legacyName: string): string | null {
+  const value = headers.get(name);
+  if (value) return value;
+  return headers.get(legacyName);
+}
 
 const GUARD_PREFIX = "gobeyond:build-mismatch:";
 const ASSET_GUARD_PREFIX = "gobeyond:asset-load:";
@@ -261,10 +273,11 @@ async function readMismatchBody(
   response: Response,
 ): Promise<BuildMismatchBody | undefined> {
   if (
-    response.headers.get(BUILD_ERROR_HEADER)?.toLowerCase() ===
+    readHeader(response.headers, BUILD_ERROR_HEADER, LEGACY_BUILD_ERROR_HEADER)?.toLowerCase() ===
     BUILD_MISMATCH_CODE
   ) {
-    const expectedBuildId = response.headers.get(BUILD_ID_HEADER) ?? undefined;
+    const expectedBuildId =
+      readHeader(response.headers, BUILD_ID_HEADER, LEGACY_BUILD_ID_HEADER) ?? undefined;
     return {
       error: { code: BUILD_MISMATCH_CODE, expectedBuildId },
       buildId: expectedBuildId,
@@ -301,12 +314,19 @@ export async function fetchWithBuildGuard(
   const headers = new Headers(init?.headers);
   headers.set(BUILD_ID_HEADER, options.buildId);
   const revision = options.deploymentRevision ?? readRuntimeConfiguration().deploymentRevision;
-  if (revision) headers.set("x-gobeyond-deployment", revision);
+  if (revision) headers.set(DEPLOYMENT_REVISION_HEADER, revision);
 
   const request = options.fetch ?? globalThis.fetch;
   const response = await request(input, { ...init, headers });
-  if (response.status === 409 && response.headers.get(BUILD_ERROR_HEADER) === "deployment_mismatch") {
-    throw handleBuildMismatch(`deployment:${revision ?? "unknown"}`, `deployment:${response.headers.get("x-gobeyond-deployment") ?? "unknown"}`, options);
+  if (
+    response.status === 409 &&
+    readHeader(response.headers, BUILD_ERROR_HEADER, LEGACY_BUILD_ERROR_HEADER) === "deployment_mismatch"
+  ) {
+    throw handleBuildMismatch(
+      `deployment:${revision ?? "unknown"}`,
+      `deployment:${readHeader(response.headers, DEPLOYMENT_REVISION_HEADER, LEGACY_DEPLOYMENT_REVISION_HEADER) ?? "unknown"}`,
+      options,
+    );
   }
   const mismatch = await readMismatchBody(response);
   if (!mismatch) return response;

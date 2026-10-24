@@ -846,7 +846,7 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	headers := cloneHeader(loaded.Headers)
 	headers.Set("Content-Type", "text/html; charset=utf-8")
 	headers.Set("Cache-Control", responseCacheHeader(loaded.Cache, ctx.Request, ctx.Values, headers))
-	headers.Set("X-GoBeyond-Build", s.config.BuildID)
+	headers.Set(BuildIDHeader, s.config.BuildID)
 	if scope, ok := cache.RequestScopeFrom(ctx.Context); ok && scope.Generation() != "" {
 		generation := scope.Generation()
 		headers.Set("X-GoBeyond-Cache-Generation", generation)
@@ -895,9 +895,9 @@ func (s *Server) loadPage(parent context.Context, request *http.Request, params 
 }
 
 func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request, requestID string) {
-	if s.config.DeploymentRevision != "" && request.Header.Get(DeploymentRevisionHeader) != s.config.DeploymentRevision {
+	if s.config.DeploymentRevision != "" && requestDeploymentRevision(request.Header) != s.config.DeploymentRevision {
 		writer.Header().Set(DeploymentRevisionHeader, s.config.DeploymentRevision)
-		writer.Header().Set("X-GoBeyond-Error", "deployment_mismatch")
+		writer.Header().Set(BuildErrorHeader, "deployment_mismatch")
 		s.writeJSON(writer, http.StatusConflict, map[string]any{"error": "deployment_mismatch", "deploymentRevision": s.config.DeploymentRevision})
 		return
 	}
@@ -967,9 +967,9 @@ func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request,
 }
 
 func (s *Server) serveAction(writer http.ResponseWriter, request *http.Request, requestID string) {
-	if s.config.DeploymentRevision != "" && request.Header.Get(DeploymentRevisionHeader) != s.config.DeploymentRevision {
+	if s.config.DeploymentRevision != "" && requestDeploymentRevision(request.Header) != s.config.DeploymentRevision {
 		writer.Header().Set(DeploymentRevisionHeader, s.config.DeploymentRevision)
-		writer.Header().Set("X-GoBeyond-Error", "deployment_mismatch")
+		writer.Header().Set(BuildErrorHeader, "deployment_mismatch")
 		s.writeJSON(writer, http.StatusConflict, map[string]any{"error": "deployment_mismatch", "deploymentRevision": s.config.DeploymentRevision})
 		return
 	}

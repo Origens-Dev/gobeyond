@@ -8,11 +8,11 @@ import (
 
 func TestReservedHeadersAreStripped(t *testing.T) {
 	header := http.Header{
-		"X-GoBeyond-Build": {"forged"},
-		"Authorization":    {"allowed"},
+		"X-Build-Id":    {"forged"},
+		"Authorization": {"allowed"},
 	}
 	StripReservedHeaders(header)
-	if header.Get("X-GoBeyond-Build") != "" || header.Get("Authorization") != "allowed" {
+	if header.Get("X-Build-Id") != "" || header.Get("Authorization") != "allowed" {
 		t.Fatalf("unexpected filtered headers: %#v", header)
 	}
 }

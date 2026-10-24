@@ -265,6 +265,44 @@ func TestBuildMismatchRejectsActionBeforeExecution(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatal("mismatched action must not execute")
 	}
+	if recorder.Header().Get("X-GoBeyond-Build") != "" || recorder.Header().Get("X-GoBeyond-Error") != "" {
+		t.Fatalf("writer emitted legacy header names: %v", recorder.Header())
+	}
+}
+
+func TestDocumentEmitsNeutralBuildIDHeader(t *testing.T) {
+	plan := productPlan()
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		Pages: []PageRoute{{
+			Route:        router.Route{ID: "product", Pattern: "/products/[slug]", Mode: router.ModeDynamic},
+			Plan:         plan,
+			ClientScript: "https://cdn.example.com/product.js",
+			Load: func(*gb.PageContext) (LoadedPage, error) {
+				return LoadedPage{
+					Kind:     gb.ResultOK,
+					Props:    map[string]any{"name": "Widget", "available": true},
+					Status:   http.StatusOK,
+					Metadata: gb.Metadata{Lang: "en", Title: "Widget"},
+				}, nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/products/widget", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get(BuildIDHeader) != "build-1" {
+		t.Fatalf("missing %s: %v", BuildIDHeader, recorder.Header())
+	}
+	if recorder.Header().Get("X-GoBeyond-Build") != "" {
+		t.Fatalf("writer emitted legacy build header: %v", recorder.Header())
+	}
 }
 
 func TestActionRejectsCrossOriginBeforeExecution(t *testing.T) {

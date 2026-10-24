@@ -1232,7 +1232,7 @@ test("a build mismatch clears the Router Cache", async () => {
     }
     return new Response(null, {
       status: 409,
-      headers: { "x-gobeyond-error": "build_mismatch", "x-gobeyond-build": "build-next" },
+      headers: { "x-build-error": "build_mismatch", "x-build-id": "build-next" },
     });
   };
   const reloads: string[] = [];
