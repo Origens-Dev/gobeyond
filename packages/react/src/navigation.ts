@@ -3,12 +3,12 @@ import { createElement, type ComponentType, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import type { Root } from "react-dom/client";
 import {
-  BUILD_ID_HEADER,
   BuildMismatchError,
   fetchWithBuildGuard,
   handleBuildMismatch,
   renderUpdateRequired,
   shouldShowUpdateRequiredUI,
+  writeBuildAwareHeaders,
   type BuildMismatchEnvironment,
 } from "./build-mismatch.js";
 import {
@@ -1703,9 +1703,14 @@ export function createSoftNavigation(
 
     const requestEpoch = dataEpoch;
     const warm = (async (): Promise<RuntimeNavigationPayload | undefined> => {
+      const headers = new Headers({ accept: "application/json" });
+      writeBuildAwareHeaders(headers, {
+        buildId: options.buildId,
+        deploymentRevision: readRuntimeConfiguration(options.document).deploymentRevision ?? "",
+      });
       const response = await request(runtimeURL, {
         method: "GET",
-        headers: { accept: "application/json", [BUILD_ID_HEADER]: options.buildId, "x-gobeyond-deployment": readRuntimeConfiguration(options.document).deploymentRevision ?? "" },
+        headers,
         redirect: "manual",
       });
       if (!response.ok) return undefined;

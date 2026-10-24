@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  BUILD_ERROR_HEADER,
   BUILD_ID_HEADER,
+  DEPLOYMENT_REVISION_HEADER,
   BuildMismatchError,
   fetchWithBuildGuard,
   handleAssetLoadFailure,
@@ -124,11 +126,11 @@ test("an initial route chunk reloads once and a successful hydrate clears its gu
 test("build-aware fetch sends the build and never replays a mismatched action", async () => {
   const env = environment();
   let requests = 0;
-  let receivedBuild = "";
+  let receivedHeaders: Headers | undefined;
 
   const request: typeof fetch = async (_input, init) => {
     requests++;
-    receivedBuild = new Headers(init?.headers).get(BUILD_ID_HEADER) ?? "";
+    receivedHeaders = new Headers(init?.headers);
     return new Response(
       JSON.stringify({
         error: "build_mismatch",
@@ -143,14 +145,178 @@ test("build-aware fetch sends the build and never replays a mismatched action", 
     fetchWithBuildGuard(
       "/_gobeyond/builds/build-old/actions/save",
       { method: "POST", body: "{}" },
-      { buildId: "build-old", fetch: request, environment: env.value },
+      {
+        buildId: "build-old",
+        deploymentRevision: "revision-1",
+        fetch: request,
+        environment: env.value,
+      },
     ),
     (error: unknown) =>
       error instanceof BuildMismatchError && error.disposition === "reloading",
   );
-  assert.equal(receivedBuild, "build-old");
+  assert.equal(receivedHeaders?.get(BUILD_ID_HEADER), "build-old");
+  assert.equal(receivedHeaders?.get(DEPLOYMENT_REVISION_HEADER), "revision-1");
+  assert.equal(receivedHeaders?.get("x-gobeyond-build"), "build-old");
+  assert.equal(receivedHeaders?.get("x-gobeyond-deployment"), "revision-1");
+  assert.equal(receivedHeaders?.get("x-gobeyond-error"), null);
   assert.equal(requests, 1);
   assert.equal(env.reloads(), 1);
+});
+
+test("build-aware fetch treats new mismatch headers as authoritative", async () => {
+  const env = environment();
+  const request: typeof fetch = async () =>
+    new Response(null, {
+      status: 409,
+      headers: {
+        [BUILD_ERROR_HEADER]: "build_mismatch",
+        [BUILD_ID_HEADER]: "build-new",
+      },
+    });
+
+  await assert.rejects(
+    fetchWithBuildGuard(
+      "/_gobeyond/builds/build-old/runtime/home",
+      { method: "GET" },
+      { buildId: "build-old", fetch: request, environment: env.value },
+    ),
+    (error: unknown) =>
+      error instanceof BuildMismatchError &&
+      error.disposition === "reloading" &&
+      error.expectedBuildId === "build-new",
+  );
+  assert.equal(env.reloads(), 1);
+});
+
+test("build-aware fetch falls back to legacy mismatch headers for one release", async () => {
+  const env = environment();
+  const request: typeof fetch = async () =>
+    new Response(null, {
+      status: 409,
+      headers: {
+        "x-gobeyond-error": "build_mismatch",
+        "x-gobeyond-build": "build-legacy",
+      },
+    });
+
+  await assert.rejects(
+    fetchWithBuildGuard(
+      "/_gobeyond/builds/build-old/runtime/home",
+      { method: "GET" },
+      { buildId: "build-old", fetch: request, environment: env.value },
+    ),
+    (error: unknown) =>
+      error instanceof BuildMismatchError &&
+      error.disposition === "reloading" &&
+      error.expectedBuildId === "build-legacy",
+  );
+  assert.equal(env.reloads(), 1);
+});
+
+test("build-aware fetch prefers new mismatch headers over legacy names", async () => {
+  const env = environment();
+  const request: typeof fetch = async () =>
+    new Response(null, {
+      status: 409,
+      headers: {
+        [BUILD_ERROR_HEADER]: "build_mismatch",
+        [BUILD_ID_HEADER]: "build-new",
+        "x-gobeyond-error": "build_mismatch",
+        "x-gobeyond-build": "build-legacy",
+      },
+    });
+
+  await assert.rejects(
+    fetchWithBuildGuard(
+      "/_gobeyond/builds/build-old/runtime/home",
+      { method: "GET" },
+      { buildId: "build-old", fetch: request, environment: env.value },
+    ),
+    (error: unknown) =>
+      error instanceof BuildMismatchError && error.expectedBuildId === "build-new",
+  );
+});
+
+test("build-aware fetch still reads 412 JSON bodies without mismatch headers", async () => {
+  const env = environment();
+  const request: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({
+        error: { code: "build_mismatch", expectedBuildId: "build-new" },
+      }),
+      { status: 412, headers: { "content-type": "application/json" } },
+    );
+
+  await assert.rejects(
+    fetchWithBuildGuard(
+      "/_gobeyond/builds/build-old/actions/save",
+      { method: "POST", body: "{}" },
+      { buildId: "build-old", fetch: request, environment: env.value },
+    ),
+    (error: unknown) =>
+      error instanceof BuildMismatchError &&
+      error.disposition === "reloading" &&
+      error.expectedBuildId === "build-new",
+  );
+  assert.equal(env.reloads(), 1);
+});
+
+test("build-aware fetch treats new deployment mismatch headers as a reload", async () => {
+  const env = environment();
+  const request: typeof fetch = async () =>
+    new Response(JSON.stringify({ error: "deployment_mismatch" }), {
+      status: 409,
+      headers: {
+        [BUILD_ERROR_HEADER]: "deployment_mismatch",
+        [DEPLOYMENT_REVISION_HEADER]: "revision-new",
+      },
+    });
+
+  await assert.rejects(
+    fetchWithBuildGuard(
+      "/_gobeyond/builds/build-old/actions/save",
+      { method: "POST", body: "{}" },
+      {
+        buildId: "build-old",
+        deploymentRevision: "revision-old",
+        fetch: request,
+        environment: env.value,
+      },
+    ),
+    (error: unknown) =>
+      error instanceof BuildMismatchError &&
+      error.currentBuildId === "deployment:revision-old" &&
+      error.expectedBuildId === "deployment:revision-new",
+  );
+});
+
+test("build-aware fetch falls back to legacy deployment mismatch headers", async () => {
+  const env = environment();
+  const request: typeof fetch = async () =>
+    new Response(JSON.stringify({ error: "deployment_mismatch" }), {
+      status: 409,
+      headers: {
+        "x-gobeyond-error": "deployment_mismatch",
+        "x-gobeyond-deployment": "revision-legacy",
+      },
+    });
+
+  await assert.rejects(
+    fetchWithBuildGuard(
+      "/_gobeyond/builds/build-old/actions/save",
+      { method: "POST", body: "{}" },
+      {
+        buildId: "build-old",
+        deploymentRevision: "revision-old",
+        fetch: request,
+        environment: env.value,
+      },
+    ),
+    (error: unknown) =>
+      error instanceof BuildMismatchError &&
+      error.expectedBuildId === "deployment:revision-legacy",
+  );
 });
 
 test("same compiled build hydration preserves stale deployment reload guard", () => {

@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-const DeploymentRevisionHeader = "X-GoBeyond-Deployment"
-
 // deploymentConfig contains only explicitly public values. The platform passes
 // this JSON independently of encrypted server/worker variables.
 func loadDeploymentConfig(config *Config) error {

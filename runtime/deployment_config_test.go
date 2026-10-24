@@ -40,12 +40,31 @@ func TestDeploymentRevisionRejectsStaleActionWithoutExecuting(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/same-build/actions/save", strings.NewReader(`{}`))
+	request.Header.Set(DeploymentRevisionHeader, "old-config")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s headers=%v", response.Code, calls, response.Body.String(), response.Header())
+	}
+	requireDualHeader(t, response.Header(), BuildErrorHeader, "X-GoBeyond-Error", "deployment_mismatch")
+	requireDualHeader(t, response.Header(), DeploymentRevisionHeader, "X-GoBeyond-Deployment", "new-config")
+}
+
+func TestDeploymentRevisionAcceptsLegacyRequestHeader(t *testing.T) {
+	calls := 0
+	server, err := New(Config{BuildID: "same-build", DeploymentRevision: "new-config", PublicOrigin: "https://example.com", Actions: []Action{testAction("save", func(*gb.ActionContext, json.RawMessage) (any, error) { calls++; return nil, nil })}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://example.com/_gobeyond/builds/same-build/actions/save", strings.NewReader(`{}`))
 	request.Header.Set("X-GoBeyond-Deployment", "old-config")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || response.Header().Get("X-GoBeyond-Error") != "deployment_mismatch" || calls != 0 {
-		t.Fatalf("status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	if response.Code != http.StatusConflict || calls != 0 {
+		t.Fatalf("legacy request header ignored: status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 	}
+	requireDualHeader(t, response.Header(), BuildErrorHeader, "X-GoBeyond-Error", "deployment_mismatch")
+	requireDualHeader(t, response.Header(), DeploymentRevisionHeader, "X-GoBeyond-Deployment", "new-config")
 }
 
 func TestStaticDocumentBootstrapsDeploymentConfiguration(t *testing.T) {

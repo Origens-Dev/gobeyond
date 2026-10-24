@@ -265,6 +265,38 @@ func TestBuildMismatchRejectsActionBeforeExecution(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatal("mismatched action must not execute")
 	}
+	requireDualHeader(t, recorder.Header(), BuildIDHeader, "X-GoBeyond-Build", "new-build")
+	requireDualHeader(t, recorder.Header(), BuildErrorHeader, "X-GoBeyond-Error", "build_mismatch")
+}
+
+func TestDocumentEmitsNeutralBuildIDHeader(t *testing.T) {
+	plan := productPlan()
+	server, err := New(Config{
+		BuildID:      "build-1",
+		PublicOrigin: "https://example.com",
+		Pages: []PageRoute{{
+			Route:        router.Route{ID: "product", Pattern: "/products/[slug]", Mode: router.ModeDynamic},
+			Plan:         plan,
+			ClientScript: "https://cdn.example.com/product.js",
+			Load: func(*gb.PageContext) (LoadedPage, error) {
+				return LoadedPage{
+					Kind:     gb.ResultOK,
+					Props:    map[string]any{"name": "Widget", "available": true},
+					Status:   http.StatusOK,
+					Metadata: gb.Metadata{Lang: "en", Title: "Widget"},
+				}, nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "https://example.com/products/widget", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	requireDualHeader(t, recorder.Header(), BuildIDHeader, "X-GoBeyond-Build", "build-1")
 }
 
 func TestActionRejectsCrossOriginBeforeExecution(t *testing.T) {
