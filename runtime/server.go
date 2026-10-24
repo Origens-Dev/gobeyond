@@ -846,7 +846,7 @@ func (s *Server) documentHandler(ctx *gb.RequestContext) (gb.Response, error) {
 	headers := cloneHeader(loaded.Headers)
 	headers.Set("Content-Type", "text/html; charset=utf-8")
 	headers.Set("Cache-Control", responseCacheHeader(loaded.Cache, ctx.Request, ctx.Values, headers))
-	headers.Set(BuildIDHeader, s.config.BuildID)
+	setBuildIDHeader(headers, s.config.BuildID)
 	if scope, ok := cache.RequestScopeFrom(ctx.Context); ok && scope.Generation() != "" {
 		generation := scope.Generation()
 		headers.Set("X-GoBeyond-Cache-Generation", generation)
@@ -896,8 +896,8 @@ func (s *Server) loadPage(parent context.Context, request *http.Request, params 
 
 func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request, requestID string) {
 	if s.config.DeploymentRevision != "" && requestDeploymentRevision(request.Header) != s.config.DeploymentRevision {
-		writer.Header().Set(DeploymentRevisionHeader, s.config.DeploymentRevision)
-		writer.Header().Set(BuildErrorHeader, "deployment_mismatch")
+		setDeploymentRevisionHeader(writer.Header(), s.config.DeploymentRevision)
+		setBuildErrorHeader(writer.Header(), "deployment_mismatch")
 		s.writeJSON(writer, http.StatusConflict, map[string]any{"error": "deployment_mismatch", "deploymentRevision": s.config.DeploymentRevision})
 		return
 	}
@@ -968,8 +968,8 @@ func (s *Server) serveRuntime(writer http.ResponseWriter, request *http.Request,
 
 func (s *Server) serveAction(writer http.ResponseWriter, request *http.Request, requestID string) {
 	if s.config.DeploymentRevision != "" && requestDeploymentRevision(request.Header) != s.config.DeploymentRevision {
-		writer.Header().Set(DeploymentRevisionHeader, s.config.DeploymentRevision)
-		writer.Header().Set(BuildErrorHeader, "deployment_mismatch")
+		setDeploymentRevisionHeader(writer.Header(), s.config.DeploymentRevision)
+		setBuildErrorHeader(writer.Header(), "deployment_mismatch")
 		s.writeJSON(writer, http.StatusConflict, map[string]any{"error": "deployment_mismatch", "deploymentRevision": s.config.DeploymentRevision})
 		return
 	}
@@ -1145,6 +1145,8 @@ func (s *Server) writeResponse(writer http.ResponseWriter, response gb.Response)
 }
 
 func (s *Server) writeBuildMismatch(writer http.ResponseWriter, requestID string) {
+	setBuildIDHeader(writer.Header(), s.config.BuildID)
+	setBuildErrorHeader(writer.Header(), "build_mismatch")
 	s.writeJSON(writer, http.StatusConflict, map[string]any{
 		"error":     "build_mismatch",
 		"reload":    true,

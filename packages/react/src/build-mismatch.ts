@@ -4,7 +4,9 @@ export const BUILD_ERROR_HEADER = "x-build-error";
 export const DEPLOYMENT_REVISION_HEADER = "x-deployment-revision";
 export const BUILD_MISMATCH_CODE = "build_mismatch";
 
-// One-release fallback while mixed origins still emit the pre-rename names.
+// One-release dual-read/dual-write aliases so open tabs on the old client
+// keep working across a redeploy. Remove after sites rebuild onto this
+// release and gobeyond-internal#1989's gbhost/Dispatch changes deploy.
 const LEGACY_BUILD_ID_HEADER = "x-gobeyond-build";
 const LEGACY_BUILD_ERROR_HEADER = "x-gobeyond-error";
 const LEGACY_DEPLOYMENT_REVISION_HEADER = "x-gobeyond-deployment";
@@ -13,6 +15,29 @@ function readHeader(headers: Headers, name: string, legacyName: string): string 
   const value = headers.get(name);
   if (value) return value;
   return headers.get(legacyName);
+}
+
+function writeDualHeader(headers: Headers, name: string, legacyName: string, value: string): void {
+  headers.set(name, value);
+  // TODO(follow-up): remove one-release dual-write of X-GoBeyond-* after sites
+  // rebuild onto this release and gobeyond-internal#1989's gbhost/Dispatch
+  // changes deploy.
+  headers.set(legacyName, value);
+}
+
+export function writeBuildAwareHeaders(
+  headers: Headers,
+  options: { buildId: string; deploymentRevision?: string },
+): void {
+  writeDualHeader(headers, BUILD_ID_HEADER, LEGACY_BUILD_ID_HEADER, options.buildId);
+  if (options.deploymentRevision !== undefined) {
+    writeDualHeader(
+      headers,
+      DEPLOYMENT_REVISION_HEADER,
+      LEGACY_DEPLOYMENT_REVISION_HEADER,
+      options.deploymentRevision,
+    );
+  }
 }
 
 const GUARD_PREFIX = "gobeyond:build-mismatch:";
@@ -312,9 +337,11 @@ export async function fetchWithBuildGuard(
   options: BuildAwareFetchOptions,
 ): Promise<Response> {
   const headers = new Headers(init?.headers);
-  headers.set(BUILD_ID_HEADER, options.buildId);
   const revision = options.deploymentRevision ?? readRuntimeConfiguration().deploymentRevision;
-  if (revision) headers.set(DEPLOYMENT_REVISION_HEADER, revision);
+  writeBuildAwareHeaders(headers, {
+    buildId: options.buildId,
+    ...(revision ? { deploymentRevision: revision } : {}),
+  });
 
   const request = options.fetch ?? globalThis.fetch;
   const response = await request(input, { ...init, headers });

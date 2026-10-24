@@ -265,9 +265,8 @@ func TestBuildMismatchRejectsActionBeforeExecution(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatal("mismatched action must not execute")
 	}
-	if recorder.Header().Get("X-GoBeyond-Build") != "" || recorder.Header().Get("X-GoBeyond-Error") != "" {
-		t.Fatalf("writer emitted legacy header names: %v", recorder.Header())
-	}
+	requireDualHeader(t, recorder.Header(), BuildIDHeader, "X-GoBeyond-Build", "new-build")
+	requireDualHeader(t, recorder.Header(), BuildErrorHeader, "X-GoBeyond-Error", "build_mismatch")
 }
 
 func TestDocumentEmitsNeutralBuildIDHeader(t *testing.T) {
@@ -297,12 +296,7 @@ func TestDocumentEmitsNeutralBuildIDHeader(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if recorder.Header().Get(BuildIDHeader) != "build-1" {
-		t.Fatalf("missing %s: %v", BuildIDHeader, recorder.Header())
-	}
-	if recorder.Header().Get("X-GoBeyond-Build") != "" {
-		t.Fatalf("writer emitted legacy build header: %v", recorder.Header())
-	}
+	requireDualHeader(t, recorder.Header(), BuildIDHeader, "X-GoBeyond-Build", "build-1")
 }
 
 func TestActionRejectsCrossOriginBeforeExecution(t *testing.T) {

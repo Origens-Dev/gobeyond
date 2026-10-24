@@ -157,8 +157,8 @@ test("build-aware fetch sends the build and never replays a mismatched action", 
   );
   assert.equal(receivedHeaders?.get(BUILD_ID_HEADER), "build-old");
   assert.equal(receivedHeaders?.get(DEPLOYMENT_REVISION_HEADER), "revision-1");
-  assert.equal(receivedHeaders?.get("x-gobeyond-build"), null);
-  assert.equal(receivedHeaders?.get("x-gobeyond-deployment"), null);
+  assert.equal(receivedHeaders?.get("x-gobeyond-build"), "build-old");
+  assert.equal(receivedHeaders?.get("x-gobeyond-deployment"), "revision-1");
   assert.equal(receivedHeaders?.get("x-gobeyond-error"), null);
   assert.equal(requests, 1);
   assert.equal(env.reloads(), 1);

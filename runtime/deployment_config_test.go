@@ -43,12 +43,11 @@ func TestDeploymentRevisionRejectsStaleActionWithoutExecuting(t *testing.T) {
 	request.Header.Set(DeploymentRevisionHeader, "old-config")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || response.Header().Get(BuildErrorHeader) != "deployment_mismatch" || response.Header().Get(DeploymentRevisionHeader) != "new-config" || calls != 0 {
+	if response.Code != http.StatusConflict || calls != 0 {
 		t.Fatalf("status=%d calls=%d body=%s headers=%v", response.Code, calls, response.Body.String(), response.Header())
 	}
-	if response.Header().Get("X-GoBeyond-Error") != "" || response.Header().Get("X-GoBeyond-Deployment") != "" || response.Header().Get("X-GoBeyond-Build") != "" {
-		t.Fatalf("writer emitted legacy header names: %v", response.Header())
-	}
+	requireDualHeader(t, response.Header(), BuildErrorHeader, "X-GoBeyond-Error", "deployment_mismatch")
+	requireDualHeader(t, response.Header(), DeploymentRevisionHeader, "X-GoBeyond-Deployment", "new-config")
 }
 
 func TestDeploymentRevisionAcceptsLegacyRequestHeader(t *testing.T) {
@@ -61,9 +60,11 @@ func TestDeploymentRevisionAcceptsLegacyRequestHeader(t *testing.T) {
 	request.Header.Set("X-GoBeyond-Deployment", "old-config")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || response.Header().Get(BuildErrorHeader) != "deployment_mismatch" || calls != 0 {
+	if response.Code != http.StatusConflict || calls != 0 {
 		t.Fatalf("legacy request header ignored: status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 	}
+	requireDualHeader(t, response.Header(), BuildErrorHeader, "X-GoBeyond-Error", "deployment_mismatch")
+	requireDualHeader(t, response.Header(), DeploymentRevisionHeader, "X-GoBeyond-Deployment", "new-config")
 }
 
 func TestStaticDocumentBootstrapsDeploymentConfiguration(t *testing.T) {

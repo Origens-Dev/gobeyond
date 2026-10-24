@@ -552,7 +552,9 @@ test("intercepts a same-origin anchor and updates route metadata and accessibili
   const request: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     requests.push(url);
-    assert.equal(new Headers(init?.headers).get(BUILD_ID_HEADER), "build-test");
+    const sent = new Headers(init?.headers);
+    assert.equal(sent.get(BUILD_ID_HEADER), "build-test");
+    assert.equal(sent.get("x-gobeyond-build"), "build-test");
     return new Response(
       JSON.stringify(payload("product", { name: "Trail </script> Pack" }, "Trail <Pack>")),
       { status: 200, headers: { "content-type": "application/json" } },

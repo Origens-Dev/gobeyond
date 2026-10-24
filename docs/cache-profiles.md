@@ -32,8 +32,9 @@ computation or route, including cache hits and concurrent fills.
 
 Private page and route requests still never read or write shared route entries.
 Shared data reuse does not change the response privacy policy. Public route
-responses carry the active cache generation in `X-GoBeyond-Cache-Generation`
-and soft-navigation payloads. A generation change causes the browser router
+responses carry the active cache generation in the soft-navigation payload
+(`result.cacheGeneration`). Viewers no longer receive
+`X-GoBeyond-Cache-Generation`. A generation change causes the browser router
 cache to discard entries when it observes the next fresh response.
 
 Applications should call `cache.RevalidateTag` or `cache.RevalidatePath` from

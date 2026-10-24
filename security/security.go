@@ -18,7 +18,7 @@ const (
 )
 
 var reservedHeaders = map[string]struct{}{
-	"x-build-id":            {},
+	"x-gobeyond-build":      {}, // kept reserved for one release while dual-write still sends it
 	"x-gobeyond-route":      {},
 	"x-gobeyond-action":     {},
 	"x-gobeyond-internal":   {},
