@@ -265,6 +265,14 @@ type openAILiveHandle struct {
 	audioEpoch                 atomic.Uint64
 	barrierSeq                 atomic.Uint64
 	seen                       map[string]string // reader-owned call-id -> immutable argument fingerprint
+	terminationOnce            sync.Once
+	terminationMu              sync.Mutex
+	terminationDone            chan struct{}
+	termination                voice.SessionTermination
+	terminationSealing         bool
+	runStarted                 bool
+	closeWriteDone             chan struct{}
+	localCloseOnce             sync.Once
 }
 
 func (h *openAILiveHandle) write(v any) error {
@@ -273,23 +281,105 @@ func (h *openAILiveHandle) write(v any) error {
 	_ = h.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return h.conn.WriteJSON(v)
 }
+func (h *openAILiveHandle) initTermination() {
+	h.terminationOnce.Do(func() {
+		h.terminationDone = make(chan struct{})
+		h.termination = voice.SessionTermination{Provider: "openai", Model: h.model, ProviderSessionID: h.providerID, CallbackConfigured: h.cfg.OnProviderEvent != nil}
+	})
+}
+
+// WaitTermination never drives Run or Close. A timed-out wait leaves the
+// session and any synchronous observer unchanged, including a blocked observer.
+func (h *openAILiveHandle) WaitTermination(ctx context.Context) (voice.SessionTermination, error) {
+	if ctx == nil {
+		return voice.SessionTermination{}, errors.New("nil termination wait context")
+	}
+	h.initTermination()
+	select {
+	case <-h.terminationDone:
+		h.terminationMu.Lock()
+		defer h.terminationMu.Unlock()
+		return h.termination.Clone(), nil
+	case <-ctx.Done():
+		return voice.SessionTermination{}, ctx.Err()
+	}
+}
+
+func (h *openAILiveHandle) closeLocal() {
+	h.initTermination()
+	h.localCloseOnce.Do(func() {
+		err := h.conn.Close()
+		h.terminationMu.Lock()
+		h.termination.LocalCloseAttempted = true
+		if err != nil {
+			h.termination.LocalCloseError = err.Error()
+		}
+		h.terminationMu.Unlock()
+	})
+}
+
+func (h *openAILiveHandle) finishTermination(runErr error) {
+	h.terminationMu.Lock()
+	// Prevent a later Close request from changing the published result. An
+	// earlier request is acknowledged only after its bounded write returns.
+	h.terminationSealing = true
+	written := h.closeWriteDone
+	h.terminationMu.Unlock()
+	if written != nil {
+		<-written
+	}
+	h.closeLocal()
+	h.terminationMu.Lock()
+	h.termination.ConsumerReturned = true
+	h.termination.WorkersExited = true
+	if runErr != nil {
+		h.termination.RunError = runErr.Error()
+	}
+	close(h.terminationDone)
+	h.terminationMu.Unlock()
+}
+
 func (h *openAILiveHandle) Close() error {
+	h.initTermination()
 	h.closeOnce.Do(func() {
-		_ = h.write(map[string]any{"type": "session.close"})
+		h.terminationMu.Lock()
+		if h.terminationSealing {
+			h.terminationMu.Unlock()
+			return
+		}
+		h.termination.CloseRequested = true
+		h.closeWriteDone = make(chan struct{})
+		h.terminationMu.Unlock()
+		err := h.write(map[string]any{"type": "session.close"})
+		h.terminationMu.Lock()
+		if err != nil {
+			h.termination.CloseWriteError = err.Error()
+		}
+		close(h.closeWriteDone)
+		h.terminationMu.Unlock()
 		go func() {
 			select {
 			case <-h.closed:
 			case <-time.After(15 * time.Second):
 			}
-			_ = h.conn.Close()
+			h.closeLocal()
 		}()
 	})
 	return nil
 }
-func (h *openAILiveHandle) Run(parent context.Context) error {
+func (h *openAILiveHandle) Run(parent context.Context) (runErr error) {
+	h.initTermination()
+	h.terminationMu.Lock()
+	if h.runStarted {
+		h.terminationMu.Unlock()
+		return errors.New("OpenAI session Run already started")
+	}
+	h.runStarted = true
+	h.terminationMu.Unlock()
+	defer func() { h.finishTermination(runErr) }()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	defer h.conn.Close()
+	defer h.closeLocal()
 	defer close(h.closed)
 	batches := make(chan openAILiveBatch, 8)
 	frames := make(chan openAILiveAudio, 128)
@@ -300,7 +390,7 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 			case errs <- err:
 			default:
 			}
-			_ = h.conn.Close()
+			h.closeLocal()
 		}
 	}
 	var wg sync.WaitGroup
@@ -382,12 +472,32 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 	}
 	pending := map[string][]grokFunctionCall{}
 	activeResponses := map[string]string{}
+	createdResponses := map[string]bool{}
 	completed := map[string]bool{}
+	defer func() {
+		ids := map[string]bool{}
+		for id := range createdResponses {
+			if !completed[id] {
+				ids[id] = true
+			}
+		}
+		var outstanding []string
+		for id := range ids {
+			outstanding = append(outstanding, id)
+		}
+		sort.Strings(outstanding)
+		h.terminationMu.Lock()
+		h.termination.OutstandingResponseIDs = outstanding
+		h.terminationMu.Unlock()
+	}()
 	searches := map[string]int64{}
 	searchSeen := map[string]bool{}
 	for {
 		_, raw, err := h.conn.ReadMessage()
 		if err != nil {
+			h.terminationMu.Lock()
+			h.termination.ReadError = err.Error()
+			h.terminationMu.Unlock()
 			if parent.Err() != nil {
 				return parent.Err()
 			}
@@ -435,6 +545,12 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 				return errors.New("OpenAI audio queue full")
 			}
 		case "session.usage.updated", "session.closed":
+			if e.Type == "session.closed" && (e.Session.ID == "" || e.Session.ID == h.providerID) && (e.Session.Model == "" || e.Session.Model == h.model) {
+				h.terminationMu.Lock()
+				h.termination.ProviderClosed = true
+				h.termination.ProviderClosedPayloadDigest = openAIProviderPayloadDigest(raw)
+				h.terminationMu.Unlock()
+			}
 			if h.cfg.OnProviderEvent != nil {
 				if (e.Session.ID != "" && e.Session.ID != h.providerID) || (e.Session.Model != "" && e.Session.Model != h.model) {
 					return errors.New("OpenAI provider event session or model mismatch")
@@ -467,6 +583,10 @@ func (h *openAILiveHandle) Run(parent context.Context) error {
 				if e.DelegationID == "" || n.Response.ID == "" {
 					return errors.New("missing OpenAI delegation identity")
 				}
+				if !createdResponses[n.Response.ID] && len(createdResponses) >= 8192 {
+					return errors.New("OpenAI observed response budget exhausted")
+				}
+				createdResponses[n.Response.ID] = true
 				if previous := activeResponses[e.DelegationID]; previous != "" && previous != n.Response.ID && !completed[previous] {
 					return errors.New("overlapping OpenAI responses in one delegation")
 				}
@@ -729,7 +849,19 @@ func (h *openAILiveHandle) observeProviderEvent(ctx context.Context, event voice
 	// values intact, without handing a cancelled or unbounded context to sinks.
 	evidenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	if err := h.cfg.OnProviderEvent(evidenceCtx, event.Clone()); err != nil {
+	h.initTermination()
+	h.terminationMu.Lock()
+	h.termination.CallbackAttempts++
+	h.terminationMu.Unlock()
+	err := h.cfg.OnProviderEvent(evidenceCtx, event.Clone())
+	h.terminationMu.Lock()
+	if err != nil {
+		h.termination.CallbackError = err.Error()
+	} else {
+		h.termination.CallbackAcknowledged++
+	}
+	h.terminationMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("OpenAI provider evidence observation failed: %w", err)
 	}
 	return nil
