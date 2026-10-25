@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add optional OpenAI Live `TerminationWaiter` evidence after the reader,
+  synchronous provider callbacks, workers, and local socket cleanup finish.
+  Preserve callback acknowledgement/errors, observed provider closure, and
+  outstanding response identities separately. This is local termination
+  evidence, not complete provider usage, billing finality, or media drain.
+
 - Rename build-mismatch HTTP headers to the neutral `X-Build-Id`,
   `X-Build-Error`, and `X-Deployment-Revision` names. Origins dual-write the
   legacy `X-GoBeyond-Build` / `X-GoBeyond-Error` / `X-GoBeyond-Deployment`
