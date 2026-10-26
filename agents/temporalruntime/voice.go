@@ -54,10 +54,20 @@ func NewGeminiLiveAdapter(definition agents.AIDefinition) *GeminiLiveAdapter {
 	return &GeminiLiveAdapter{definition: definition, dial: dialGenaiLive}
 }
 
+// ErrGeminiProviderEvidenceUnsupported means the supported genai Live client
+// cannot supply the original received frame and metric-presence evidence required
+// by voice.ProviderEvent. Legacy OnUsage remains available, without that proof.
+var ErrGeminiProviderEvidenceUnsupported = errors.New("gemini live provider evidence is unsupported by the configured SDK")
+
 // Start opens a Live session and returns a handle that pumps PCM and tools.
 func (adapter *GeminiLiveAdapter) Start(ctx context.Context, cfg voice.StartConfig, pcmIn <-chan []byte, pcmOut chan<- voice.AudioFrame) (voice.SessionHandle, voice.StartResult, error) {
 	if adapter == nil {
 		return nil, voice.StartResult{}, errors.New("gemini live adapter is required")
+	}
+	// Reject before any provider connection or opening turn: a required durable
+	// evidence callback must never be silently ignored while incurring usage.
+	if cfg.OnProviderEvent != nil {
+		return nil, voice.StartResult{}, ErrGeminiProviderEvidenceUnsupported
 	}
 	if err := cfg.Actor.Validate(); err != nil {
 		return nil, voice.StartResult{}, err
@@ -214,17 +224,22 @@ func (handle *geminiLiveHandle) Run(ctx context.Context) error {
 		handle.closed = make(chan struct{})
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var pumpWG sync.WaitGroup
 	defer func() {
-		handle.toolWG.Wait()
+		cancel()
+		// Receive has no context argument. Close the socket before joining its
+		// reader, including when the uplink fails or the owner cancels.
 		_ = handle.Close()
+		pumpWG.Wait()
+		handle.toolWG.Wait()
 	}()
 	handle.toolErrCh = make(chan error, 1)
 
 	sendErrCh := make(chan error, 1)
 	recvErrCh := make(chan error, 1)
-	go func() { sendErrCh <- handle.sendPCM(ctx) }()
-	go func() { recvErrCh <- handle.receiveLoop(ctx) }()
+	pumpWG.Add(2)
+	go func() { defer pumpWG.Done(); sendErrCh <- handle.sendPCM(ctx) }()
+	go func() { defer pumpWG.Done(); recvErrCh <- handle.receiveLoop(ctx) }()
 
 	select {
 	case <-ctx.Done():
@@ -232,6 +247,7 @@ func (handle *geminiLiveHandle) Run(ctx context.Context) error {
 		return ctx.Err()
 	case err := <-recvErrCh:
 		cancel()
+		_ = handle.Close()
 		<-sendErrCh
 		handle.toolWG.Wait()
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
@@ -246,6 +262,7 @@ func (handle *geminiLiveHandle) Run(ctx context.Context) error {
 	case err := <-sendErrCh:
 		if err != nil {
 			cancel()
+			_ = handle.Close()
 			<-recvErrCh
 			handle.toolWG.Wait()
 			if !errors.Is(err, context.Canceled) {
@@ -258,6 +275,8 @@ func (handle *geminiLiveHandle) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-recvErrCh:
+			cancel()
+			_ = handle.Close()
 			handle.toolWG.Wait()
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
 				return err
