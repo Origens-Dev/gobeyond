@@ -77,6 +77,6 @@ must not treat a reducer effect or decoded receipt as authority.
 `agents/decisions/callback` is the typed host contract for say, listen, act,
 and the product-owned match callback. It reuses `httpruntime.DecisionAdapter`,
 `DecisionSessionWorkflow`, this reducer's `Effect` values, and
-`connections.SignDelivery`. It does not register an adapter or change default
-behavior. See that package's documentation for prompt IDs, turn IDs, and the
-match tagged union.
+`connections.SignDelivery` / `connections.VerifyDelivery`. It does not
+register an adapter or change default behavior. See that package's
+documentation for prompt IDs, turn IDs, and the match tagged union.

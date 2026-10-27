@@ -42,13 +42,20 @@
 // final utterance, and attempt count. The response is exactly one of
 // matched{targetId}, clarify{promptId}, or no_match. The SDK and reducer see
 // only that tagged result and opaque target IDs. Clarify names a manifest
-// prompt ID, not a cache key. Targets returned as matched are already
-// authorized to act; there is no separate authorize op.
+// prompt ID, not a cache key. The platform then RequirePrompt that ID against
+// the frozen manifest; an unknown ID fails with prompt_unavailable, the
+// session ends, and no say is emitted. Targets returned as matched are
+// already authorized to act; there is no separate authorize op.
+//
+// Match is a synchronous request the host may retry. A repeated
+// connections delivery Event-ID must be answered again with the same tagged
+// result (idempotent store or deterministic recompute). Receivers must not
+// reject a retried Event-ID as a duplicate.
 //
 // # Authentication
 //
 // Platform-to-app match calls reuse agents/connections delivery signatures:
-// SignDelivery / VerifyDelivery and the X-GoBeyond-Event-* headers. Receivers
-// still deduplicate Event-ID after verification. This package does not add a
+// connections.SignDelivery, connections.VerifyDelivery, and the
+// connections X-GoBeyond-Event-* headers. This package does not add a
 // second HMAC, timestamp, or nonce scheme.
 package callback

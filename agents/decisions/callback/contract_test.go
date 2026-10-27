@@ -1,17 +1,19 @@
 package callback
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Origens-Dev/gobeyond/agents/connections"
 	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
 	"github.com/Origens-Dev/gobeyond/agents/decisions"
-	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 )
 
 type compileHost struct{}
@@ -28,24 +30,68 @@ func (compileEffects) Say(context.Context, SayEffect) (PlaybackReceipt, error) {
 func (compileEffects) Listen(context.Context, ListenEffect) error { return nil }
 func (compileEffects) Act(context.Context, ActEffect) error       { return nil }
 
+type stickyHost struct{}
+
+func (stickyHost) Match(_ context.Context, request MatchRequest) (MatchResponse, error) {
+	if request.Utterance == "call sam" {
+		return MatchResponse{Result: MatchMatched, TargetID: "target-1"}, nil
+	}
+	return MatchResponse{Result: MatchNoMatch}, nil
+}
+
 var (
 	_ HostCallback          = compileHost{}
+	_ HostCallback          = stickyHost{}
 	_ DecisionEffectAdapter = compileEffects{}
-	_ DecisionAdapter       = (httpruntime.DecisionAdapter)(nil)
 	_                       = decisions.EffectSay
 	_                       = decisions.EffectListen
 	_                       = decisions.EffectDispatchIntent
 	_                       = decisions.EffectRunDecision
-	_                       = connections.SignDelivery
-	_                       = connections.VerifyDelivery
 )
 
-func TestReuseExistingDeliverySignature(t *testing.T) {
-	if DeliveryIDHeader != "X-GoBeyond-Event-ID" || DeliveryTimestamp != "X-GoBeyond-Event-Timestamp" || DeliverySignature != "X-GoBeyond-Event-Signature" {
-		t.Fatalf("match callbacks must reuse connections delivery headers, got %q %q %q", DeliveryIDHeader, DeliveryTimestamp, DeliverySignature)
-	}
+func greetingDefinition() decisionv1.Definition {
+	return decisionv1.Definition{Graph: decisionv1.Graph{Messages: []decisionv1.MessageFamily{{
+		ID: "greeting", BaseLocale: "en", FallbackLocale: "en",
+		Variants: map[string]string{"en": "Hello."},
+	}}}}
+}
+
+func TestMatchPathUsesConnectionsDelivery(t *testing.T) {
 	if PathMatch != "/v1/decision/callbacks/match" {
 		t.Fatalf("unexpected match path %q", PathMatch)
+	}
+	if connections.DeliveryIDHeader == "" || connections.DeliveryTimestampHeader == "" || connections.DeliverySignatureHeader == "" {
+		t.Fatal("connections delivery headers are required")
+	}
+}
+
+func TestMatchRetrySameEventIDIsAnswered(t *testing.T) {
+	t.Parallel()
+	key := bytes.Repeat([]byte{7}, 32)
+	body := []byte(`{"sessionId":"session-1","utterance":"call sam","attemptCount":0}`)
+	now := time.Unix(1800000000, 0)
+	header := http.Header{}
+	if err := connections.SignDelivery(header, key, "match-1", body, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connections.VerifyDelivery(header, key, body, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connections.VerifyDelivery(header, key, body, now); err != nil {
+		t.Fatalf("retried Event-ID rejected: %v", err)
+	}
+	request, err := DecodeMatchRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var host stickyHost
+	first, err := host.Match(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := host.Match(context.Background(), request)
+	if err != nil || first != second || first.TargetID != "target-1" {
+		t.Fatalf("retry diverged: first=%#v second=%#v err=%v", first, second, err)
 	}
 }
 
@@ -71,12 +117,39 @@ func TestMatchResponseTaggedUnion(t *testing.T) {
 		`{"result":"clarify","promptId":"greeting","targetId":"target-1"}`,
 		`{"result":"no_match","targetId":"target-1"}`,
 		`{"result":"authorize"}`,
-		`{"result":"matched","targetId":"target-1","directory":{}}`,
+		`{"result":"matched","targetId":"target-1","extra":{}}`,
 	}
 	for _, body := range rejected {
 		if _, err := DecodeMatchResponse([]byte(body)); err == nil {
 			t.Fatalf("accepted extra or invalid match body %s", body)
 		}
+	}
+}
+
+func TestClarifyUnknownPromptIDFailsClosed(t *testing.T) {
+	t.Parallel()
+	definition := greetingDefinition()
+	known, err := DecodeMatchResponse([]byte(`{"result":"clarify","promptId":"greeting"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := known.ValidateFor(definition); err != nil {
+		t.Fatalf("known clarify prompt rejected: %v", err)
+	}
+	unknown, err := DecodeMatchResponse([]byte(`{"result":"clarify","promptId":"missing"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = unknown.ValidateFor(definition)
+	if !errors.Is(err, decisionv1.ErrPromptUnavailable) {
+		t.Fatalf("unknown clarify prompt: %v", err)
+	}
+	matched, err := DecodeMatchResponse([]byte(`{"result":"matched","targetId":"target-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := matched.ValidateFor(definition); err != nil {
+		t.Fatalf("matched result: %v", err)
 	}
 }
 

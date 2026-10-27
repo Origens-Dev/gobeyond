@@ -369,6 +369,9 @@ type LocalePolicy struct {
 	QualificationGateID  string   `json:"qualificationGateId"`
 }
 
+// MessageFamily is one compiled prompt identity. Locale is carried on every
+// variant key in Variants and on BaseLocale/FallbackLocale. Definition.Prompts
+// projects each variant to {id, locale, text} for a static deploy-time read.
 type MessageFamily struct {
 	ID             string            `json:"id"`
 	BaseLocale     string            `json:"baseLocale"`

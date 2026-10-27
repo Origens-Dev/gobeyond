@@ -5,41 +5,28 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Origens-Dev/gobeyond/agents/connections"
 	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
-	"github.com/Origens-Dev/gobeyond/agents/httpruntime"
 )
 
 const (
-	// PathMatch is the product-owned match callback. Authenticate it with the
-	// existing connections delivery signature; do not invent a second scheme.
+	// PathMatch is the product-owned match callback. Authenticate it with
+	// connections.SignDelivery / connections.VerifyDelivery.
 	PathMatch = "/v1/decision/callbacks/match"
 	Method    = "POST"
 )
 
-// Compile-time: reuse the existing platform-to-app delivery signature.
-var (
-	_                 = connections.SignDelivery
-	_                 = connections.VerifyDelivery
-	DeliveryIDHeader  = connections.DeliveryIDHeader
-	DeliveryTimestamp = connections.DeliveryTimestampHeader
-	DeliverySignature = connections.DeliverySignatureHeader
-	MaxDeliveryAge    = connections.MaxDeliveryAge
-	MaxDeliverySkew   = connections.MaxDeliveryFutureSkew
-)
-
-// DecisionAdapter is the existing session seam. This alias keeps the host
-// contract next to that type without a second runtime.
-type DecisionAdapter = httpruntime.DecisionAdapter
-
 // HostCallback is the product-owned match seam. One op: the app returns only
 // targets the caller may act on.
+//
+// Match is synchronous. The host may retry the same signed Event-ID;
+// implementations must return the same tagged result (idempotent store or
+// deterministic recompute). A repeated Event-ID is not a failure.
 type HostCallback interface {
 	Match(context.Context, MatchRequest) (MatchResponse, error)
 }
 
-// MatchKind is the tagged match result. The SDK never receives directory rows
-// or a separate authorize step.
+// MatchKind is the tagged match result. The SDK never receives a separate
+// authorize step.
 type MatchKind string
 
 const (
@@ -106,6 +93,22 @@ func (response MatchResponse) Validate() error {
 	}
 }
 
+// ValidateFor binds a structurally valid match result to the frozen
+// definition. Clarify prompt IDs must be in that manifest; otherwise the
+// session fails closed with prompt_unavailable and no say is emitted.
+func (response MatchResponse) ValidateFor(definition decisionv1.Definition) error {
+	if err := response.Validate(); err != nil {
+		return err
+	}
+	if response.Result != MatchClarify {
+		return nil
+	}
+	if err := definition.RequirePrompt(response.PromptID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // DecodeMatchRequest rejects unknown fields so extra product data cannot enter
 // the SDK.
 func DecodeMatchRequest(data []byte) (MatchRequest, error) {
@@ -120,7 +123,8 @@ func DecodeMatchRequest(data []byte) (MatchRequest, error) {
 }
 
 // DecodeMatchResponse rejects unknown fields. The SDK only accepts the tagged
-// match result.
+// match result. Call ValidateFor with the frozen definition before acting on
+// a clarify prompt ID.
 func DecodeMatchResponse(data []byte) (MatchResponse, error) {
 	var response MatchResponse
 	if err := decodeJSON(data, &response); err != nil {
