@@ -42,22 +42,11 @@ func (g *liveControlGate) write(fn func() error) error {
 func (g *liveControlGate) emit(ctx context.Context, out chan<- voice.AudioFrame, f voice.AudioFrame) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.terminal.Load() {
+	if g.pending || g.terminal.Load() {
 		return nil
 	}
-	// Flush/Ack must stay on the pcmOut sequence even while a control tool
-	// has pending set (that flag only suppresses model speech). Turn budget
-	// likewise does not apply to drain markers.
-	if !f.Flush && !f.Ack {
-		if g.pending {
-			return nil
-		}
-		if g.maxTurns > 0 && g.turns >= g.maxTurns {
-			return errors.New("voice assistant turn budget exhausted")
-		}
-	}
-	if out == nil {
-		return nil
+	if g.maxTurns > 0 && g.turns >= g.maxTurns {
+		return errors.New("voice assistant turn budget exhausted")
 	}
 	select {
 	case out <- f:
@@ -260,26 +249,17 @@ func sessionCanceled(err error) bool {
 	return err != nil && errors.Is(err, context.Canceled)
 }
 
-// drainPlayoutBarrier sequences a Flush on pcmOut then waits for the host drain
-// callback. Flush must ride the same queue as spoken audio; a side-path wait
-// can observe an empty telephone buffer and never ack. Barrier timeout or
-// other non-cancel errors are logged and ignored so the tool result is still
-// delivered. Context cancel means the session is torn down: skip the send.
-func drainPlayoutBarrier(ctx context.Context, emit func(context.Context, voice.AudioFrame) error, barrier func(context.Context, uint64) error, seq *atomic.Uint64, toolName string) error {
-	if seq == nil {
-		return nil
-	}
-	barrierID := seq.Add(1)
-	if emit != nil {
-		if err := emit(ctx, voice.AudioFrame{Flush: true, BarrierID: barrierID}); err != nil {
-			log.Printf("voice playout flush name=%s err=%v", toolName, err)
-			if sessionCanceled(err) {
-				return err
-			}
-		}
-	}
+// awaitHostPlayoutBarrier waits for the host drain callback. gbhost emits the
+// v3 Flush on pcmOut itself; this SDK must not send a second Flush with the
+// same ID. Timeout and other non-cancel errors are logged so the tool result
+// is still delivered. Context cancel means the session is torn down: skip the send.
+func awaitHostPlayoutBarrier(ctx context.Context, barrier func(context.Context, uint64) error, seq *atomic.Uint64, toolName string) error {
 	if barrier == nil {
 		return nil
+	}
+	var barrierID uint64
+	if seq != nil {
+		barrierID = seq.Add(1)
 	}
 	if err := barrier(ctx, barrierID); err != nil {
 		log.Printf("voice playout barrier name=%s err=%v", toolName, err)
@@ -294,16 +274,12 @@ func (handle *geminiLiveHandle) waitPlayoutBarrier(ctx context.Context, toolName
 	if handle == nil {
 		return nil
 	}
-	return drainPlayoutBarrier(ctx, func(ctx context.Context, frame voice.AudioFrame) error {
-		return handle.control.emit(ctx, handle.pcmOut, frame)
-	}, handle.cfg.OnPlayoutBarrier, &handle.barrierSeq, toolName)
+	return awaitHostPlayoutBarrier(ctx, handle.cfg.OnPlayoutBarrier, &handle.barrierSeq, toolName)
 }
 
 func (h *grokLiveHandle) waitPlayoutBarrier(ctx context.Context, toolName string) error {
 	if h == nil {
 		return nil
 	}
-	return drainPlayoutBarrier(ctx, func(ctx context.Context, frame voice.AudioFrame) error {
-		return h.control.emit(ctx, h.audioOut, frame)
-	}, h.cfg.OnPlayoutBarrier, &h.barrier, toolName)
+	return awaitHostPlayoutBarrier(ctx, h.cfg.OnPlayoutBarrier, &h.barrier, toolName)
 }

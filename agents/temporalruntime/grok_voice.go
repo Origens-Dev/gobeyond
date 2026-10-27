@@ -401,7 +401,7 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 	// Deadline/cancel must still deliver function_call_output. Returning early
 	// leaves the model waiting forever (same Gemini Live hang class).
 	timedOut := toolCtx.Err() != nil || ctx.Err() != nil
-	if !timedOut && !remoteReads {
+	if !timedOut && h.cfg.OnPlayoutBarrier != nil {
 		names := make([]string, 0, len(calls))
 		for _, call := range calls {
 			name := strings.TrimSpace(call.Name)
