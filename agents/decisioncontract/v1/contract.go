@@ -369,12 +369,25 @@ type LocalePolicy struct {
 	QualificationGateID  string   `json:"qualificationGateId"`
 }
 
+// MessageFamily is one compiled prompt identity. Locale is carried on every
+// variant key in Variants and on BaseLocale/FallbackLocale. Definition.Prompts
+// projects each variant to {id, locale, text} for a static deploy-time read.
 type MessageFamily struct {
 	ID             string            `json:"id"`
 	BaseLocale     string            `json:"baseLocale"`
 	FallbackLocale string            `json:"fallbackLocale"`
 	Arguments      []MessageArgument `json:"arguments,omitempty"`
 	Variants       map[string]string `json:"variants"`
+}
+
+// Prompt is one compiled exact-text prompt declaration. ID is the manifest
+// identity a say effect names (for example "greeting"). Locale and Text are
+// the frozen variant. This is not a cache key, voice id, or model id; the
+// host maps ID to a preloaded artifact.
+type Prompt struct {
+	ID     string `json:"id"`
+	Locale string `json:"locale"`
+	Text   string `json:"text"`
 }
 
 type MessageArgument struct {

@@ -805,3 +805,68 @@ func qualifyDefinitionForTest(t *testing.T, definition *Definition) {
 	definition.Graph.Locale.EnabledLocales = []string{"en"}
 	refreshDefinitionDigestsForTest(t, definition)
 }
+
+func TestPromptDeclarationsAreIdLocaleText(t *testing.T) {
+	definition := Definition{Graph: Graph{Messages: []MessageFamily{{
+		ID: "greeting", BaseLocale: "en", FallbackLocale: "en",
+		Variants: map[string]string{"en": "Hello.", "es": "Hola."},
+	}}}}
+	prompts := definition.Prompts()
+	if len(prompts) != 2 || prompts[0] != (Prompt{ID: "greeting", Locale: "en", Text: "Hello."}) || prompts[1] != (Prompt{ID: "greeting", Locale: "es", Text: "Hola."}) {
+		t.Fatalf("prompts = %#v", prompts)
+	}
+	if err := definition.RequirePrompt("greeting"); err != nil {
+		t.Fatal(err)
+	}
+	if err := definition.RequirePrompt("missing"); err == nil || !strings.Contains(err.Error(), "prompt_unavailable") {
+		t.Fatalf("missing prompt: %v", err)
+	}
+	encoded, err := json.Marshal(Prompt{ID: "greeting", Locale: "en", Text: "Hello."})
+	if err != nil || string(encoded) != `{"id":"greeting","locale":"en","text":"Hello."}` {
+		t.Fatalf("prompt json = %s err=%v", encoded, err)
+	}
+}
+
+func TestPromptsReadsFrozenManifestWithoutRunningAnAgent(t *testing.T) {
+	definition := loadReviewDefinition(t)
+	if len(definition.Graph.Messages) == 0 {
+		t.Fatal("frozen manifest has no Graph.Messages")
+	}
+	for index, family := range definition.Graph.Messages {
+		if family.ID == "" {
+			t.Fatalf("messages[%d] missing id", index)
+		}
+		if family.BaseLocale == "" || !isLocale(family.BaseLocale) {
+			t.Fatalf("messages[%d] missing locale", index)
+		}
+		if len(family.Variants) == 0 {
+			t.Fatalf("messages[%d] has no localized text", index)
+		}
+		for locale, text := range family.Variants {
+			if locale == "" || !isLocale(locale) || strings.TrimSpace(text) == "" {
+				t.Fatalf("messages[%d] variant missing locale or text", index)
+			}
+		}
+	}
+	prompts := definition.Prompts()
+	if len(prompts) == 0 {
+		t.Fatal("Prompts() returned nothing from the frozen manifest")
+	}
+	seen := map[string]bool{}
+	for _, prompt := range prompts {
+		if prompt.ID == "" || prompt.Locale == "" || prompt.Text == "" {
+			t.Fatalf("prompt missing id/locale/text: %#v", prompt)
+		}
+		if !isLocale(prompt.Locale) {
+			t.Fatalf("prompt locale %q is not a locale", prompt.Locale)
+		}
+		seen[prompt.ID+"\x00"+prompt.Locale] = true
+	}
+	for _, family := range definition.Graph.Messages {
+		for locale := range family.Variants {
+			if !seen[family.ID+"\x00"+locale] {
+				t.Fatalf("Prompts() omitted frozen %s/%s", family.ID, locale)
+			}
+		}
+	}
+}
