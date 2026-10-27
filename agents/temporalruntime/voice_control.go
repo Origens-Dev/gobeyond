@@ -3,6 +3,7 @@ package temporalruntime
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -242,4 +243,43 @@ func controlTurnLimit(cfg voice.StartConfig) int {
 		return 0
 	}
 	return cfg.CallControl.MaxAssistantTurns
+}
+
+func sessionCanceled(err error) bool {
+	return err != nil && errors.Is(err, context.Canceled)
+}
+
+// awaitHostPlayoutBarrier waits for the host drain callback. gbhost emits the
+// v3 Flush on pcmOut itself; this SDK must not send a second Flush with the
+// same ID. Timeout and other non-cancel errors are logged so the tool result
+// is still delivered. Context cancel means the session is torn down: skip the send.
+func awaitHostPlayoutBarrier(ctx context.Context, barrier func(context.Context, uint64) error, seq *atomic.Uint64, toolName string) error {
+	if barrier == nil {
+		return nil
+	}
+	var barrierID uint64
+	if seq != nil {
+		barrierID = seq.Add(1)
+	}
+	if err := barrier(ctx, barrierID); err != nil {
+		log.Printf("voice playout barrier name=%s err=%v", toolName, err)
+		if sessionCanceled(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (handle *geminiLiveHandle) waitPlayoutBarrier(ctx context.Context, toolName string) error {
+	if handle == nil {
+		return nil
+	}
+	return awaitHostPlayoutBarrier(ctx, handle.cfg.OnPlayoutBarrier, &handle.barrierSeq, toolName)
+}
+
+func (h *grokLiveHandle) waitPlayoutBarrier(ctx context.Context, toolName string) error {
+	if h == nil {
+		return nil
+	}
+	return awaitHostPlayoutBarrier(ctx, h.cfg.OnPlayoutBarrier, &h.barrier, toolName)
 }

@@ -542,9 +542,7 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		timedOut := callCtx.Err() != nil
 		// Remote-read tools (directory search) are not announcement barriers.
 		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !remoteReads {
-			barrierID := handle.barrierSeq.Add(1)
-			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
-				handle.reportAsyncError(err)
+			if sessionCanceled(handle.waitPlayoutBarrier(callCtx, strings.Join(names, ","))) {
 				return
 			}
 		}

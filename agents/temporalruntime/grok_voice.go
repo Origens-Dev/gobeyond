@@ -402,7 +402,15 @@ func (h *grokLiveHandle) completeFunctionCalls(ctx context.Context, calls []grok
 	// leaves the model waiting forever (same Gemini Live hang class).
 	timedOut := toolCtx.Err() != nil || ctx.Err() != nil
 	if !timedOut && h.cfg.OnPlayoutBarrier != nil {
-		if err := h.cfg.OnPlayoutBarrier(ctx, h.barrier.Add(1)); err != nil {
+		names := make([]string, 0, len(calls))
+		for _, call := range calls {
+			name := strings.TrimSpace(call.Name)
+			if name == "" {
+				name = "(unnamed)"
+			}
+			names = append(names, name)
+		}
+		if err := h.waitPlayoutBarrier(ctx, strings.Join(names, ",")); sessionCanceled(err) {
 			return err
 		}
 	}
