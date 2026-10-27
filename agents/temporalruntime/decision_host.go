@@ -16,11 +16,11 @@ import (
 // (default-off). Implementations reuse DecisionSessionWorkflow and the
 // decisions reducer; they must not start a second runtime.
 //
-// MatchClient, when non-nil, is the host-side signed POST and calls
-// connections.SignDelivery directly. A nil client may fall back to an
-// in-process callback.HostCallback. Either path must ValidateFor the frozen
-// definition before BindDecisionMatch; unknown clarify prompt IDs fail closed
-// and must not emit say.
+// DecisionMatchClient is the only host match path. It must be non-nil and
+// posts through callback.MatchClient, which signs with connections.SignDelivery
+// and runs ValidateFor once. A nil client fails closed; there is no
+// in-process callback.HostCallback fallback. Unknown clarify prompt IDs fail
+// closed and must not emit say.
 type DecisionMatchAdapter interface {
 	httpruntime.DecisionAdapter
 	PrepareDecisionMatch(context.Context, httpruntime.RespondCall, DecisionSessionIdentity, decisions.Effect) (callback.MatchRequest, error)
@@ -112,15 +112,15 @@ func (dispatcher *Dispatcher) dispatchHostRunDecision(ctx context.Context, adapt
 	if err != nil {
 		return fmt.Errorf("prepare decision match: %w", err)
 	}
-	definition := matchAdapter.DecisionDefinition()
-	response, invoked, err := invokeDecisionMatch(ctx, adapter, matchAdapter, definition, request)
+	if request.SessionID != call.Session.ID || request.RunID != call.Run.ID {
+		return errors.New("match request does not match the active session run")
+	}
+	client := matchAdapter.DecisionMatchClient()
+	if client == nil {
+		return errors.New("decision match client is required")
+	}
+	response, err := client.Match(ctx, matchAdapter.DecisionDefinition(), request)
 	if err != nil {
-		return err
-	}
-	if !invoked {
-		return nil
-	}
-	if err := response.ValidateFor(definition); err != nil {
 		return err
 	}
 	update, err := matchAdapter.BindDecisionMatch(response, call, result.Snapshot.Identity, effect)
@@ -178,33 +178,10 @@ func (dispatcher *Dispatcher) dispatchHostRunDecision(ctx context.Context, adapt
 	return nil
 }
 
-func invokeDecisionMatch(ctx context.Context, adapter httpruntime.Adapter, matchAdapter DecisionMatchAdapter, definition decisionv1.Definition, request callback.MatchRequest) (callback.MatchResponse, bool, error) {
-	if client := matchAdapter.DecisionMatchClient(); client != nil {
-		response, err := client.Match(ctx, definition, request)
-		return response, true, err
-	}
-	host, ok := adapter.(callback.HostCallback)
-	if !ok {
-		return callback.MatchResponse{}, false, nil
-	}
-	response, err := host.Match(ctx, request)
-	if err != nil {
-		return callback.MatchResponse{}, true, err
-	}
-	if err := response.ValidateFor(definition); err != nil {
-		return callback.MatchResponse{}, true, err
-	}
-	return response, true, nil
-}
-
 func decisionDefinitionOf(adapter httpruntime.Adapter) (decisionv1.Definition, bool) {
 	decision, ok := adapter.(httpruntime.DecisionAdapter)
-	if !ok || isNilDecisionAdapter(decision) {
+	if !ok {
 		return decisionv1.Definition{}, false
 	}
 	return decision.DecisionDefinition(), true
-}
-
-func isNilDecisionAdapter(adapter httpruntime.DecisionAdapter) bool {
-	return adapter == nil
 }

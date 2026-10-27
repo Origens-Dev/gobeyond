@@ -43,22 +43,23 @@
 // # Match
 //
 // Product-owned matching is one signed callback. The request is session id,
-// final utterance, and attempt count. The response is exactly one of
+// run id, final utterance, and attempt count. The response is exactly one of
 // matched{targetId}, clarify{promptId}, or no_match. The SDK and reducer see
 // only that tagged result and opaque target IDs. Clarify names a manifest
-// prompt ID, not a cache key. The platform then RequirePrompt that ID against
-// the frozen manifest; an unknown ID fails with prompt_unavailable, the
-// session ends, and no say is emitted. Targets returned as matched are
+// prompt ID, not a cache key. MatchClient.Match is the only host path: it
+// signs with connections.SignDelivery and runs ValidateFor once against the
+// frozen manifest. An unknown clarify ID fails with prompt_unavailable; the
+// session ends and no say is emitted. Targets returned as matched are
 // already authorized to act; there is no separate authorize op.
 //
-// Match is a synchronous request the host may retry. MatchClient calls
-// connections.SignDelivery directly and derives a stable Event-ID from
-// session id plus attempt count, so a retry of the same request reuses that
-// Event-ID. Receivers must answer the retried Event-ID with the same tagged
-// result (idempotent store or deterministic recompute); they must not reject
-// it as a duplicate. The host runs MatchResponse.ValidateFor(definition)
-// before acting. Clarify with an unknown prompt ID fails closed
-// (prompt_unavailable) and must not emit say.
+// Match is a synchronous request the host may retry. Event-ID is
+// match/{sessionId}/{runId}/{attemptCount}. A session can have more than one
+// run (resume after a terminal result); run id is minted once per execution
+// and does not change on retry, so a retried attempt reuses that Event-ID.
+// Receivers must answer the retried Event-ID with the same tagged result
+// (idempotent store or deterministic recompute); they must not reject it as
+// a duplicate. There is no in-process HostCallback fallback on the host
+// side: a missing MatchClient fails closed.
 //
 // # Authentication
 //

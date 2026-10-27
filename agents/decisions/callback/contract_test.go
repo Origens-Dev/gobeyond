@@ -68,7 +68,7 @@ func TestMatchPathUsesConnectionsDelivery(t *testing.T) {
 func TestMatchRetrySameEventIDIsAnswered(t *testing.T) {
 	t.Parallel()
 	key := bytes.Repeat([]byte{7}, 32)
-	body := []byte(`{"sessionId":"session-1","utterance":"call sam","attemptCount":0}`)
+	body := []byte(`{"sessionId":"session-1","runId":"run-1","utterance":"call sam","attemptCount":0}`)
 	now := time.Unix(1800000000, 0)
 	header := http.Header{}
 	if err := connections.SignDelivery(header, key, "match-1", body, now); err != nil {
@@ -230,7 +230,7 @@ func TestEffectMappingUsesReducerTypes(t *testing.T) {
 
 func TestMatchJSONRoundTrip(t *testing.T) {
 	t.Parallel()
-	request := MatchRequest{SessionID: "session-1", Utterance: "call sam", AttemptCount: 1}
+	request := MatchRequest{SessionID: "session-1", RunID: "run-1", Utterance: "call sam", AttemptCount: 1}
 	raw, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)

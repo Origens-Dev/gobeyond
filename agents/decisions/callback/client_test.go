@@ -49,7 +49,7 @@ func TestMatchClientSignsDeliveryAndRetriesSameEventID(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := &MatchClient{BaseURL: server.URL, Key: key, Now: func() time.Time { return now }, HTTPClient: server.Client()}
-	request := MatchRequest{SessionID: "session-1", Utterance: "call sam", AttemptCount: 2}
+	request := MatchRequest{SessionID: "session-1", RunID: "run-1", Utterance: "call sam", AttemptCount: 2}
 	first, err := client.Match(context.Background(), definition, request)
 	if err != nil || first.Result != MatchMatched || first.TargetID != "target-1" {
 		t.Fatalf("first match = %#v err=%v", first, err)
@@ -58,8 +58,8 @@ func TestMatchClientSignsDeliveryAndRetriesSameEventID(t *testing.T) {
 	if err != nil || second != first {
 		t.Fatalf("retry diverged: first=%#v second=%#v err=%v", first, second, err)
 	}
-	wantID := MatchEventID(request.SessionID, request.AttemptCount)
-	if wantID != "match/session-1/2" {
+	wantID := MatchEventID(request.SessionID, request.RunID, request.AttemptCount)
+	if wantID != "match/session-1/run-1/2" {
 		t.Fatalf("event id = %q", wantID)
 	}
 	if len(eventIDs) != 2 || eventIDs[0] != wantID || eventIDs[1] != wantID {
@@ -78,7 +78,7 @@ func TestMatchClientClarifyUnknownPromptFailsClosed(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := &MatchClient{BaseURL: server.URL, Key: key, Now: func() time.Time { return now }, HTTPClient: server.Client()}
 	_, err := client.Match(context.Background(), greetingDefinition(), MatchRequest{
-		SessionID: "session-1", Utterance: "who", AttemptCount: 0,
+		SessionID: "session-1", RunID: "run-1", Utterance: "who", AttemptCount: 0,
 	})
 	if !errors.Is(err, decisionv1.ErrPromptUnavailable) {
 		t.Fatalf("unknown clarify: %v", err)
@@ -96,7 +96,7 @@ func TestMatchClientKnownClarifyPassesValidateFor(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := &MatchClient{BaseURL: server.URL, Key: key, Now: func() time.Time { return now }, HTTPClient: server.Client()}
 	got, err := client.Match(context.Background(), greetingDefinition(), MatchRequest{
-		SessionID: "session-1", Utterance: "who", AttemptCount: 1,
+		SessionID: "session-1", RunID: "run-1", Utterance: "who", AttemptCount: 1,
 	})
 	if err != nil || got.Result != MatchClarify || got.PromptID != "greeting" {
 		t.Fatalf("known clarify = %#v err=%v", got, err)
@@ -105,13 +105,33 @@ func TestMatchClientKnownClarifyPassesValidateFor(t *testing.T) {
 
 func TestMatchEventIDIsStableForSameAttempt(t *testing.T) {
 	t.Parallel()
-	first := MatchEventID("session-1", 0)
-	second := MatchEventID("session-1", 0)
-	if first == "" || first != second || first == MatchEventID("session-1", 1) {
+	first := MatchEventID("session-1", "run-1", 0)
+	second := MatchEventID("session-1", "run-1", 0)
+	if first == "" || first != second || first == MatchEventID("session-1", "run-1", 1) {
 		t.Fatalf("stable event id failed: %q %q", first, second)
 	}
-	raw, _ := json.Marshal(MatchRequest{SessionID: "session-1", Utterance: "call sam", AttemptCount: 0})
-	if !bytes.Contains(raw, []byte("session-1")) {
-		t.Fatal("request lost session id")
+	raw, _ := json.Marshal(MatchRequest{SessionID: "session-1", RunID: "run-1", Utterance: "call sam", AttemptCount: 0})
+	if !bytes.Contains(raw, []byte("session-1")) || !bytes.Contains(raw, []byte("run-1")) {
+		t.Fatal("request lost session or run id")
+	}
+}
+
+func TestMatchEventIDIncludesRunIDForResumedSession(t *testing.T) {
+	t.Parallel()
+	// httpruntime.Runtime.createRun appends a new run to an existing session
+	// after a terminal result (resume). Two runs on one session must not share
+	// Event-IDs when attempt counts restart at zero. The run ID is minted once
+	// per execution and is reused when the same attempt is retried.
+	firstRun := MatchEventID("session-1", "run-1", 0)
+	secondRun := MatchEventID("session-1", "run-2", 0)
+	retry := MatchEventID("session-1", "run-1", 0)
+	if firstRun == secondRun {
+		t.Fatalf("resumed run reused Event-ID %q", firstRun)
+	}
+	if firstRun != retry {
+		t.Fatalf("retry changed Event-ID: %q vs %q", firstRun, retry)
+	}
+	if firstRun != "match/session-1/run-1/0" || secondRun != "match/session-1/run-2/0" {
+		t.Fatalf("event ids = %q %q", firstRun, secondRun)
 	}
 }

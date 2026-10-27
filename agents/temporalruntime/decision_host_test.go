@@ -27,7 +27,6 @@ type hostCallbackAdapter struct {
 	sayErr      error
 	listenHints []string
 	matchClient *callback.MatchClient
-	matchHost   callback.HostCallback
 	bind        DecisionSessionUpdate
 	bindCalls   int
 }
@@ -52,7 +51,10 @@ func (adapter *hostCallbackAdapter) PrepareListen(effect decisions.Effect) (call
 }
 
 func (adapter *hostCallbackAdapter) PrepareDecisionMatch(_ context.Context, _ httpruntime.RespondCall, _ DecisionSessionIdentity, _ decisions.Effect) (callback.MatchRequest, error) {
-	request := callback.MatchRequest{SessionID: adapter.input.Admission.SessionID, Utterance: "call sam", AttemptCount: 1}
+	request := callback.MatchRequest{
+		SessionID: adapter.input.Admission.SessionID, RunID: adapter.input.RunID,
+		Utterance: "call sam", AttemptCount: 1,
+	}
 	adapter.matches = append(adapter.matches, request)
 	return request, nil
 }
@@ -66,17 +68,9 @@ func (adapter *hostCallbackAdapter) BindDecisionMatch(callback.MatchResponse, ht
 	return adapter.bind, nil
 }
 
-func (adapter *hostCallbackAdapter) Match(ctx context.Context, request callback.MatchRequest) (callback.MatchResponse, error) {
-	if adapter.matchHost != nil {
-		return adapter.matchHost.Match(ctx, request)
-	}
-	return callback.MatchResponse{Result: callback.MatchNoMatch}, nil
-}
-
 var (
 	_ callback.DecisionEffectAdapter = (*hostCallbackAdapter)(nil)
 	_ callback.ListenPolicy          = (*hostCallbackAdapter)(nil)
-	_ callback.HostCallback          = (*hostCallbackAdapter)(nil)
 	_ DecisionMatchAdapter           = (*hostCallbackAdapter)(nil)
 )
 
@@ -227,13 +221,30 @@ func TestRunDecisionMatchClientSignsAndAdvancesReducer(t *testing.T) {
 	if adapter.bindCalls != 1 || fake.updateCalls != 1 {
 		t.Fatalf("bind=%d updates=%d", adapter.bindCalls, fake.updateCalls)
 	}
-	wantID := callback.MatchEventID(input.Admission.SessionID, 1)
+	wantID := callback.MatchEventID(input.Admission.SessionID, input.RunID, 1)
 	if len(eventIDs) != 1 || eventIDs[0] != wantID {
 		t.Fatalf("signed Event-ID = %v want %q", eventIDs, wantID)
 	}
 	_, retryErr := adapter.matchClient.Match(context.Background(), input.Definition, adapter.matches[0])
 	if retryErr != nil || len(eventIDs) != 2 || eventIDs[1] != wantID {
 		t.Fatalf("retry Event-ID = %v err=%v", eventIDs, retryErr)
+	}
+}
+
+func TestRunDecisionNilMatchClientFailsClosed(t *testing.T) {
+	input := decisionSessionInputFixture(t, "ses_host_nil_client", 207)
+	adapter := &hostCallbackAdapter{decisionSessionAdapterFake: &decisionSessionAdapterFake{
+		config: agents.Config{Durable: true, TaskQueue: "decision"}, definition: input.Definition, input: input,
+	}}
+	fake := &fakeClient{}
+	dispatcher := newDecisionEffectTestDispatcher(t, fake)
+	err := dispatcher.dispatchOptionalHostEffects(context.Background(), adapter, decisionEffectTestCall(input), DecisionSessionAdvanceResult{
+		Accepted: true,
+		Snapshot: DecisionSessionSnapshot{Identity: decisionSessionIdentity(input), Status: DecisionSessionRunning},
+		Effects:  []decisions.Effect{{Kind: decisions.EffectRunDecision, RouteEntryID: "entry_1"}},
+	}, nil)
+	if err == nil || adapter.bindCalls != 0 || fake.updateCalls != 0 {
+		t.Fatalf("nil match client err=%v bind=%d updates=%d", err, adapter.bindCalls, fake.updateCalls)
 	}
 }
 

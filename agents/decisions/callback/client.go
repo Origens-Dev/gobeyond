@@ -20,8 +20,10 @@ const maxMatchResponseBytes = 64 << 10
 // connections.SignDelivery directly. There is no second HMAC, timestamp, or
 // nonce scheme.
 //
-// Event-ID is derived from session id and attempt count, so a retry of the
-// same request reuses the same Event-ID and is safe to answer again.
+// Event-ID is derived from session id, run id, and attempt count, so a retry
+// of the same request reuses the same Event-ID and is safe to answer again.
+// A session can have more than one run (resume after a terminal result);
+// run id is minted once per execution and does not change on retry.
 type MatchClient struct {
 	BaseURL    string
 	Key        []byte
@@ -31,9 +33,13 @@ type MatchClient struct {
 }
 
 // MatchEventID is the stable connections delivery Event-ID for one match
-// attempt. Retries must reuse this value.
-func MatchEventID(sessionID string, attemptCount uint64) string {
-	return fmt.Sprintf("match/%s/%d", sessionID, attemptCount)
+// attempt. It includes the run ID because httpruntime.Runtime.createRun
+// appends a new execution to an existing session after a terminal result
+// (POST .../sessions/{sessionID}/resume). WorkflowID is likewise
+// sessionID/runID. Run ID is minted once per execution and does not change
+// when the same attempt is retried, so retries keep this value.
+func MatchEventID(sessionID, runID string, attemptCount uint64) string {
+	return fmt.Sprintf("match/%s/%s/%d", sessionID, runID, attemptCount)
 }
 
 // Match signs the request with connections.SignDelivery, POSTs it, and
@@ -51,7 +57,7 @@ func (client *MatchClient) Match(ctx context.Context, definition decisionv1.Defi
 	if err != nil {
 		return MatchResponse{}, fmt.Errorf("encode match request: %w", err)
 	}
-	eventID := MatchEventID(request.SessionID, request.AttemptCount)
+	eventID := MatchEventID(request.SessionID, request.RunID, request.AttemptCount)
 	now := time.Now().UTC()
 	if client.Now != nil {
 		now = client.Now().UTC()
