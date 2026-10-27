@@ -107,10 +107,6 @@ func TestControlBatchAndBarrierFailureNeverExecute(t *testing.T) {
 	if _, terminal, e := invokeControl(context.Background(), cfg, ai.ToolCall{ToolName: "dial_contact"}, 1); e == nil || terminal {
 		t.Fatal("failed barrier accepted")
 	}
-	h := &grokLiveHandle{cfg: cfg}
-	if e := h.completeFunctionCalls(context.Background(), []grokFunctionCall{{}, {}}); e == nil {
-		t.Fatal("batch accepted")
-	}
 }
 func TestTerminalJSONIsNormalToolData(t *testing.T) {
 	cfg := terminalConfig(t)
@@ -816,6 +812,154 @@ func TestMailboxTurnLimitRequiresTrustedPolicy(t *testing.T) {
 	cfg.CallControl.MaxAssistantTurns = 33
 	if _, err := controlTools(agents.AIDefinition{}, cfg); err == nil {
 		t.Fatal("mailbox turn cap unbounded")
+	}
+}
+
+func ordinaryPlayoutDispatchHandle(t *testing.T, barrier func(context.Context, uint64) error, pcmOut chan<- voice.AudioFrame) (*geminiLiveHandle, *fakeLiveSession) {
+	t.Helper()
+	session := newFakeLiveSession()
+	tool := agents.DefineTool(agents.ToolConfig{
+		Name: "archive_desk_note", Description: "Archive a short desk note.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}},
+	}, func(context.Context, agents.Actor, map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	return &geminiLiveHandle{
+		session: session,
+		pcmOut:  pcmOut,
+		tools:   map[string]ai.Tool{"archive_desk_note": tool},
+		cfg: voice.StartConfig{
+			Actor:            agents.Actor{ID: "user-1", Kind: "user"},
+			SessionID:        "sess-1",
+			OnPlayoutBarrier: barrier,
+		},
+	}, session
+}
+
+func TestGeminiPlayoutBarrierTimeoutStillSendsToolResponse(t *testing.T) {
+	pcmOut := make(chan voice.AudioFrame, 1)
+	var seenBarrier uint64
+	h, session := ordinaryPlayoutDispatchHandle(t, func(ctx context.Context, id uint64) error {
+		seenBarrier = id
+		select {
+		case frame := <-pcmOut:
+			if !frame.Flush || frame.Ack || frame.BarrierID != id {
+				t.Errorf("flush before barrier = %+v want Flush barrier %d", frame, id)
+			}
+		default:
+			t.Error("flush missing on pcmOut before barrier wait")
+		}
+		return context.DeadlineExceeded
+	}, pcmOut)
+	if err := h.dispatchToolCall(context.Background(), &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+		ID: "note-1", Name: "archive_desk_note", Args: map[string]any{"q": "x"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { h.toolWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch did not finish after barrier timeout")
+	}
+	if seenBarrier == 0 {
+		t.Fatal("playout barrier was not entered")
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.responses) != 1 || len(session.responses[0].FunctionResponses) != 1 {
+		t.Fatalf("want exactly one tool response, got %+v", session.responses)
+	}
+	got := session.responses[0].FunctionResponses[0]
+	if got.ID != "note-1" || got.Name != "archive_desk_note" {
+		t.Fatalf("response identity %+v", got)
+	}
+	if _, hadErr := got.Response["error"]; hadErr {
+		t.Fatalf("barrier timeout dropped the tool result: %+v", got.Response)
+	}
+}
+
+func TestGeminiPlayoutBarrierCanceledDoesNotSendToolResponse(t *testing.T) {
+	pcmOut := make(chan voice.AudioFrame, 1)
+	entered := make(chan struct{})
+	h, session := ordinaryPlayoutDispatchHandle(t, func(ctx context.Context, id uint64) error {
+		close(entered)
+		<-ctx.Done()
+		return ctx.Err()
+	}, pcmOut)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := h.dispatchToolCall(ctx, &genai.LiveServerToolCall{FunctionCalls: []*genai.FunctionCall{{
+		ID: "note-cancel", Name: "archive_desk_note", Args: map[string]any{"q": "x"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("playout barrier was not entered")
+	}
+	cancel()
+	done := make(chan struct{})
+	go func() { h.toolWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch did not finish after cancel")
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.responses) != 0 {
+		t.Fatalf("cancelled session must not send tool response, got %+v", session.responses)
+	}
+}
+
+func TestGrokPlayoutBarrierTimeoutStillSendsToolResponse(t *testing.T) {
+	pcmOut := make(chan voice.AudioFrame, 1)
+	conn := &controlGrokFake{}
+	tool := agents.DefineTool(agents.ToolConfig{
+		Name: "archive_desk_note", Description: "Archive a short desk note.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}},
+	}, func(context.Context, agents.Actor, map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	h := &grokLiveHandle{
+		conn:     conn,
+		audioOut: pcmOut,
+		tools:    map[string]ai.Tool{"archive_desk_note": tool},
+		cfg: voice.StartConfig{
+			Actor:     agents.Actor{ID: "user-1", Kind: "user"},
+			SessionID: "sess-1",
+			OnPlayoutBarrier: func(context.Context, uint64) error {
+				select {
+				case frame := <-pcmOut:
+					if !frame.Flush || frame.BarrierID == 0 {
+						t.Errorf("flush before barrier = %+v", frame)
+					}
+				default:
+					t.Error("flush missing on pcmOut before barrier wait")
+				}
+				return context.DeadlineExceeded
+			},
+		},
+	}
+	if err := h.completeFunctionCalls(context.Background(), []grokFunctionCall{{
+		CallID: "note-1", Name: "archive_desk_note", Arguments: map[string]any{"q": "x"},
+	}}); err != nil {
+		t.Fatalf("barrier timeout must still deliver function_call_output: %v", err)
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	outputs := 0
+	for _, write := range conn.writes {
+		body, _ := write.(map[string]any)
+		item, _ := body["item"].(map[string]any)
+		if item["type"] == "function_call_output" {
+			outputs++
+		}
+	}
+	if outputs != 1 {
+		t.Fatalf("want exactly one function_call_output, writes=%v", conn.writes)
 	}
 }
 

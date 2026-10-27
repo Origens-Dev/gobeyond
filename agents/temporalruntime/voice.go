@@ -541,10 +541,8 @@ func (handle *geminiLiveHandle) dispatchToolCall(ctx context.Context, call *gena
 		// path; not proven as the Oct 8 softphone smoke root cause.
 		timedOut := callCtx.Err() != nil
 		// Remote-read tools (directory search) are not announcement barriers.
-		if !timedOut && handle.cfg.OnPlayoutBarrier != nil && !remoteReads {
-			barrierID := handle.barrierSeq.Add(1)
-			if err := handle.cfg.OnPlayoutBarrier(callCtx, barrierID); err != nil {
-				handle.reportAsyncError(err)
+		if !timedOut && !remoteReads {
+			if sessionCanceled(handle.waitPlayoutBarrier(callCtx, strings.Join(names, ","))) {
 				return
 			}
 		}

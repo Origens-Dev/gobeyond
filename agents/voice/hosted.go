@@ -143,9 +143,9 @@ func (spec PCMEndpointSpec) Validate() error {
 
 // EncodeAudioFrame encodes one v2 output frame. The first payload byte is
 // flags: bit 0 is interruption and bit 1 is turn completion. v3-only Flush
-// frames must use EncodeAudioFrameV3.
+// and Ack frames must use EncodeAudioFrameV3.
 func EncodeAudioFrame(frame AudioFrame) ([]byte, error) {
-	if frame.Flush || frame.BarrierID != 0 {
+	if frame.Flush || frame.Ack || frame.BarrierID != 0 {
 		return nil, fmt.Errorf("flush barriers require v3 voice framing")
 	}
 	if len(frame.Data)+1 > MaxFrameBytes {
@@ -167,11 +167,12 @@ func EncodeAudioFrame(frame AudioFrame) ([]byte, error) {
 	return out, nil
 }
 
-// EncodeAudioFrameV3 encodes one output frame. v3 adds bit 2 (Flush) and an
-// eight-byte little-endian BarrierID after the flags byte for Flush frames.
+// EncodeAudioFrameV3 encodes one output frame. v3 adds bit 2 (Flush), bit 7
+// (Ack), and an eight-byte little-endian BarrierID after the flags byte for
+// Flush or Ack frames.
 func EncodeAudioFrameV3(frame AudioFrame) ([]byte, error) {
 	extra := 0
-	if frame.Flush {
+	if frame.Flush || frame.Ack {
 		extra = 8
 	}
 	if len(frame.Data)+1+extra > MaxFrameBytes {
@@ -187,9 +188,12 @@ func EncodeAudioFrameV3(frame AudioFrame) ([]byte, error) {
 	if frame.Flush {
 		flags |= 4
 	}
+	if frame.Ack {
+		flags |= 0x80
+	}
 	payload := make([]byte, 1+extra+len(frame.Data))
 	payload[0] = flags
-	if frame.Flush {
+	if extra == 8 {
 		binary.LittleEndian.PutUint64(payload[1:9], frame.BarrierID)
 	}
 	copy(payload[1+extra:], frame.Data)
@@ -238,9 +242,10 @@ func DecodeAudioFrameV3(r io.Reader) (AudioFrame, error) {
 		Interrupted:  payload[0]&1 != 0,
 		TurnComplete: payload[0]&2 != 0,
 		Flush:        payload[0]&4 != 0,
+		Ack:          payload[0]&0x80 != 0,
 	}
 	dataOffset := 1
-	if frame.Flush {
+	if frame.Flush || frame.Ack {
 		if len(payload) < 9 {
 			return AudioFrame{}, fmt.Errorf("voice flush frame is missing barrier id")
 		}

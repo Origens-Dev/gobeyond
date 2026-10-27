@@ -90,8 +90,11 @@ type StartConfig struct {
 	// policy is negotiated by the media bridge and must not be placed here.
 	AudioPreferences AudioPreferences
 	// OnPlayoutBarrier is called before a tool result is released back to a
-	// realtime provider. Hosted media bridges use it to flush and drain queued
-	// telephone audio; local adapters may leave it nil.
+	// realtime provider. Live adapters emit a Flush frame with the same
+	// BarrierID on pcmOut first so the marker is sequenced after spoken
+	// audio. Hosted media bridges wait for the matching uplink Ack; local
+	// adapters may leave this nil. A timeout or empty-queue miss must not
+	// drop the tool result; only a cancelled session skips the send.
 	OnPlayoutBarrier func(context.Context, uint64) error
 	// OnUsage, when set, is invoked for each Live UsageMetadata the adapter
 	// observes. The callback must not block the audio path for long.
@@ -160,9 +163,13 @@ type AudioFrame struct {
 	TurnComplete bool
 	// Flush is a non-semantic control marker used by hosted media bridges.
 	// BarrierID identifies the provider response whose telephone playout must
-	// drain before its continuation is released.
+	// drain before its continuation is released. Hosts must acknowledge a
+	// Flush even when no audio is queued; an empty queue is already drained.
 	Flush     bool
 	BarrierID uint64
+	// Ack is the v3 uplink acknowledgement that telephone playout of BarrierID
+	// has drained. It is encoded with flag bit 7 (0x80), not the Flush bit.
+	Ack bool
 }
 
 // Adapter opens a Live voice session bound to PCM channels.

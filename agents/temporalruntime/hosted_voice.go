@@ -2,7 +2,6 @@ package temporalruntime
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -227,15 +226,11 @@ func (stream *HostedPCMStream) WritePlayoutAck(barrierID uint64) error {
 	if stream.frame != voice.FrameLengthPrefixedLEV3 {
 		return errors.New("playout acknowledgements require v3 voice framing")
 	}
-	payload := make([]byte, 9)
-	payload[0] = 0x80
-	binary.LittleEndian.PutUint64(payload[1:], barrierID)
-	var header [4]byte
-	binary.LittleEndian.PutUint32(header[:], uint32(len(payload)))
-	if _, err := stream.pipeWriter.Write(header[:]); err != nil {
+	frame, err := voice.EncodeAudioFrameV3(voice.AudioFrame{Ack: true, BarrierID: barrierID})
+	if err != nil {
 		return err
 	}
-	_, err := stream.pipeWriter.Write(payload)
+	_, err = stream.pipeWriter.Write(frame)
 	return err
 }
 

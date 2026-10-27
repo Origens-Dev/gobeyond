@@ -3,6 +3,7 @@ package temporalruntime
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,11 +42,22 @@ func (g *liveControlGate) write(fn func() error) error {
 func (g *liveControlGate) emit(ctx context.Context, out chan<- voice.AudioFrame, f voice.AudioFrame) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.pending || g.terminal.Load() {
+	if g.terminal.Load() {
 		return nil
 	}
-	if g.maxTurns > 0 && g.turns >= g.maxTurns {
-		return errors.New("voice assistant turn budget exhausted")
+	// Flush/Ack must stay on the pcmOut sequence even while a control tool
+	// has pending set (that flag only suppresses model speech). Turn budget
+	// likewise does not apply to drain markers.
+	if !f.Flush && !f.Ack {
+		if g.pending {
+			return nil
+		}
+		if g.maxTurns > 0 && g.turns >= g.maxTurns {
+			return errors.New("voice assistant turn budget exhausted")
+		}
+	}
+	if out == nil {
+		return nil
 	}
 	select {
 	case out <- f:
@@ -242,4 +254,56 @@ func controlTurnLimit(cfg voice.StartConfig) int {
 		return 0
 	}
 	return cfg.CallControl.MaxAssistantTurns
+}
+
+func sessionCanceled(err error) bool {
+	return err != nil && errors.Is(err, context.Canceled)
+}
+
+// drainPlayoutBarrier sequences a Flush on pcmOut then waits for the host drain
+// callback. Flush must ride the same queue as spoken audio; a side-path wait
+// can observe an empty telephone buffer and never ack. Barrier timeout or
+// other non-cancel errors are logged and ignored so the tool result is still
+// delivered. Context cancel means the session is torn down: skip the send.
+func drainPlayoutBarrier(ctx context.Context, emit func(context.Context, voice.AudioFrame) error, barrier func(context.Context, uint64) error, seq *atomic.Uint64, toolName string) error {
+	if seq == nil {
+		return nil
+	}
+	barrierID := seq.Add(1)
+	if emit != nil {
+		if err := emit(ctx, voice.AudioFrame{Flush: true, BarrierID: barrierID}); err != nil {
+			log.Printf("voice playout flush name=%s err=%v", toolName, err)
+			if sessionCanceled(err) {
+				return err
+			}
+		}
+	}
+	if barrier == nil {
+		return nil
+	}
+	if err := barrier(ctx, barrierID); err != nil {
+		log.Printf("voice playout barrier name=%s err=%v", toolName, err)
+		if sessionCanceled(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (handle *geminiLiveHandle) waitPlayoutBarrier(ctx context.Context, toolName string) error {
+	if handle == nil {
+		return nil
+	}
+	return drainPlayoutBarrier(ctx, func(ctx context.Context, frame voice.AudioFrame) error {
+		return handle.control.emit(ctx, handle.pcmOut, frame)
+	}, handle.cfg.OnPlayoutBarrier, &handle.barrierSeq, toolName)
+}
+
+func (h *grokLiveHandle) waitPlayoutBarrier(ctx context.Context, toolName string) error {
+	if h == nil {
+		return nil
+	}
+	return drainPlayoutBarrier(ctx, func(ctx context.Context, frame voice.AudioFrame) error {
+		return h.control.emit(ctx, h.audioOut, frame)
+	}, h.cfg.OnPlayoutBarrier, &h.barrier, toolName)
 }

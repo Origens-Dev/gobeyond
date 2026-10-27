@@ -39,14 +39,32 @@ func TestEncodeDecodeAudioFrameV3RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got.Data, want.Data) || !got.Flush || got.BarrierID != want.BarrierID {
+	if !bytes.Equal(got.Data, want.Data) || !got.Flush || got.Ack || got.BarrierID != want.BarrierID {
 		t.Fatalf("frame = %+v, want %+v", got, want)
+	}
+}
+
+func TestEncodeDecodeAudioFrameV3AckRoundTrip(t *testing.T) {
+	want := voice.AudioFrame{Ack: true, BarrierID: 1}
+	encoded, err := voice.EncodeAudioFrameV3(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := voice.DecodeAudioFrameV3(bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Ack || got.Flush || got.BarrierID != 1 || len(got.Data) != 0 {
+		t.Fatalf("ack frame = %+v, want Ack barrier 1", got)
 	}
 }
 
 func TestEncodeAudioFrameRejectsV3ControlOnV2(t *testing.T) {
 	if _, err := voice.EncodeAudioFrame(voice.AudioFrame{Flush: true, BarrierID: 1}); err == nil {
 		t.Fatal("expected v2 flush barrier error")
+	}
+	if _, err := voice.EncodeAudioFrame(voice.AudioFrame{Ack: true, BarrierID: 1}); err == nil {
+		t.Fatal("expected v2 ack barrier error")
 	}
 }
 
