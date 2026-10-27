@@ -147,13 +147,16 @@ test('local workspace integration generates contracts and type-checks the starte
   // the local module cache without touching the network; the later
   // `go mod tidy` prunes it back down to what the starter actually uses.
   await copyFile(join(workspaceRoot, 'go.sum'), join(destination, 'go.sum'))
-  await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'generate'], destination)
+  // The published starter pins its released SDK. A local replacement can
+  // require a newer Go language/dependency graph before the CLI can launch;
+  // allow this bootstrap command to reconcile that test-only replacement.
+  await run('go', ['run', '-mod=mod', join(workspaceRoot, 'cmd/gobeyond'), 'generate'], destination)
   await run('go', ['mod', 'tidy'], destination)
   await run(join(nodeModules, '.bin', 'tsc'), ['-p', 'tsconfig.json', '--noEmit'], destination)
   await run('go', ['test', './...'], destination)
   // One build resolves metadata under the serving deployment origin.
   const serveOrigin = 'http://localhost:18887'
-  await run('go', ['run', join(workspaceRoot, 'cmd/gobeyond'), 'build'], destination, {
+  await run('go', ['run', '-mod=mod', join(workspaceRoot, 'cmd/gobeyond'), 'build'], destination, {
     GOBEYOND_PUBLIC_ORIGIN: serveOrigin,
   })
 
