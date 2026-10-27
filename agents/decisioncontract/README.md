@@ -88,8 +88,8 @@ The compiler checks decision tool IDs and input-schema digests against their
 existing static `DefineTool` declarations and checks that presence of an
 approval digest agrees with `ToolConfig.RequiresApproval`. It does not verify
 the approval digest's provenance. Service, binding, and budget claims remain
-author snapshots behind unresolved Jev-service, caller-authority, and budget
-gates. The session-adapter gate must also remain unresolved, and manifest load
+author snapshots behind unresolved caller-authority and budget gates.
+The session-adapter gate must also remain unresolved, and manifest load
 rejects a decision definition that qualifies these snapshots or assigns
 numeric budget values. This keeps the draft reviewable and activation-blocked
 until an adapter can verify the exact parent authority. A missing route
@@ -224,12 +224,9 @@ activation-ready:
 - Acceptable wrong-recipient and clarification rates.
 - Which locale and exact speech profile qualify for V0, plus a compatible
   voice-capability fallback.
-- Jev's TypeSafe direct versus Gateway path and the supported result revision
-  and usage fields.
 - Route-file authoring/discovery, graph registration, the stateful
   `Start/Respond/Cancel` adapter mapping, and ICU loader/rendering parity.
 - Caller verification and authority for relationship data.
-- DTMF negotiation for the first voice cohort.
 - Prompt retention and revocation policy, plus bounded prompt-preparation and
   cache behavior.
 
