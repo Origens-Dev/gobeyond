@@ -805,3 +805,34 @@ func qualifyDefinitionForTest(t *testing.T, definition *Definition) {
 	definition.Graph.Locale.EnabledLocales = []string{"en"}
 	refreshDefinitionDigestsForTest(t, definition)
 }
+
+func TestPromptDeclarationsAreIdLocaleText(t *testing.T) {
+	definition := Definition{Graph: Graph{Messages: []MessageFamily{{
+		ID: "greeting", BaseLocale: "en", FallbackLocale: "en",
+		Variants: map[string]string{"en": "Hello.", "es": "Hola."},
+	}}}}
+	prompts := definition.Prompts()
+	if len(prompts) != 2 || prompts[0] != (Prompt{ID: "greeting", Locale: "en", Text: "Hello."}) || prompts[1] != (Prompt{ID: "greeting", Locale: "es", Text: "Hola."}) {
+		t.Fatalf("prompts = %#v", prompts)
+	}
+	got, ok := definition.Prompt("greeting", "en")
+	if !ok || got.ID != "greeting" || got.Locale != "en" || got.Text != "Hello." {
+		t.Fatalf("prompt = %#v ok=%t", got, ok)
+	}
+	if !definition.HasPrompt("greeting") {
+		t.Fatal("missing compiled prompt id")
+	}
+	if err := definition.RequirePrompt("greeting"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := definition.Prompt("missing", "en"); ok {
+		t.Fatal("unknown prompt id resolved")
+	}
+	if err := definition.RequirePrompt("missing"); err == nil || !strings.Contains(err.Error(), "prompt_unavailable") {
+		t.Fatalf("missing prompt: %v", err)
+	}
+	encoded, err := json.Marshal(Prompt{ID: "greeting", Locale: "en", Text: "Hello."})
+	if err != nil || string(encoded) != `{"id":"greeting","locale":"en","text":"Hello."}` {
+		t.Fatalf("prompt json = %s err=%v", encoded, err)
+	}
+}

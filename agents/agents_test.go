@@ -3,6 +3,8 @@ package agents
 import (
 	"context"
 	"testing"
+
+	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
 )
 
 func TestConfigDefaultsToDirect(t *testing.T) {
@@ -65,5 +67,23 @@ func TestResolveInstructionsAndVoiceName(t *testing.T) {
 	}
 	if got := ResolveVoiceName("Kore", nil); got != "Kore" {
 		t.Fatalf("ResolveVoiceName default = %q", got)
+	}
+}
+
+func TestDecisionDefinitionExposesManifestPrompts(t *testing.T) {
+	definition := DecisionDefinition{Decision: DecisionConfig{Definition: decisionv1.Definition{
+		Graph: decisionv1.Graph{Messages: []decisionv1.MessageFamily{{
+			ID: "greeting", Variants: map[string]string{"en": "Hello."},
+		}}},
+	}}}
+	if !definition.HasPrompt("greeting") {
+		t.Fatal("compiled prompt id missing")
+	}
+	prompt, ok := definition.Prompt("greeting", "en")
+	if !ok || prompt != (decisionv1.Prompt{ID: "greeting", Locale: "en", Text: "Hello."}) {
+		t.Fatalf("prompt = %#v ok=%t", prompt, ok)
+	}
+	if definition.HasPrompt("missing") {
+		t.Fatal("unknown prompt id present")
 	}
 }

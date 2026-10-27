@@ -377,6 +377,16 @@ type MessageFamily struct {
 	Variants       map[string]string `json:"variants"`
 }
 
+// Prompt is one compiled exact-text prompt declaration. ID is the manifest
+// identity a say effect names (for example "greeting"). Locale and Text are
+// the frozen variant. This is not a cache key, voice id, or model id; the
+// host maps ID to a preloaded artifact.
+type Prompt struct {
+	ID     string `json:"id"`
+	Locale string `json:"locale"`
+	Text   string `json:"text"`
+}
+
 type MessageArgument struct {
 	Name string       `json:"name"`
 	Type ArgumentType `json:"type"`

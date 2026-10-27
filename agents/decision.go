@@ -30,6 +30,18 @@ type DecisionDefinition struct {
 	Slots    Slots
 }
 
+// Prompt returns one compiled id/locale/text declaration from the frozen
+// decision manifest. Missing IDs are not found; callers must fail closed
+// rather than substituting free text.
+func (definition DecisionDefinition) Prompt(id, locale string) (decisionv1.Prompt, bool) {
+	return definition.Decision.Definition.Prompt(id, locale)
+}
+
+// HasPrompt reports whether id is in the compiled agent manifest prompt set.
+func (definition DecisionDefinition) HasPrompt(id string) bool {
+	return definition.Decision.Definition.HasPrompt(id)
+}
+
 // DefineDecision declares a compiler-visible decision graph. The compiler
 // reads this literal and the route-local files without executing it.
 func DefineDecision(config DecisionConfig, slots ...Slots) DecisionDefinition {
