@@ -146,9 +146,7 @@ const (
 	GateLocaleProfile        GateKind = "qualified_locale_profile"
 	GateVoiceProfile         GateKind = "qualified_voice_profile"
 	GateVoiceFallback        GateKind = "voice_capability_fallback"
-	GateJevServicePath       GateKind = "jev_service_path_and_usage"
 	GateCallerAuthority      GateKind = "caller_and_relationship_authority"
-	GateDTMFNegotiation      GateKind = "dtmf_negotiation"
 	GatePromptRetention      GateKind = "prompt_retention_and_revocation"
 	GatePromptPreparation    GateKind = "prompt_preparation_policy"
 	GateRouteAuthoring       GateKind = "route_authoring_and_graph_discovery"
@@ -162,9 +160,7 @@ var RequiredNonBudgetGateKinds = []GateKind{
 	GateLocaleProfile,
 	GateVoiceProfile,
 	GateVoiceFallback,
-	GateJevServicePath,
 	GateCallerAuthority,
-	GateDTMFNegotiation,
 	GatePromptRetention,
 	GatePromptPreparation,
 	GateRouteAuthoring,

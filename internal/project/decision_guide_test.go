@@ -116,7 +116,7 @@ func TestDecisionAgentsExampleCompilesTwoDistinctOperators(t *testing.T) {
 			t.Fatalf("retry bound = %#v, want an unresolved gate and no invented numeric value", bound)
 		}
 	}
-	for _, gateID := range []string{"g-caller-authority", "g-jev-path", "g-locale-profile", "g-voice-profile", "g-session-adapter"} {
+	for _, gateID := range []string{"g-caller-authority", "g-locale-profile", "g-voice-profile", "g-session-adapter"} {
 		if !decisionGuideGateUnresolved(operator.Decision, gateID) {
 			t.Errorf("qualification gate %q is not explicitly unresolved", gateID)
 		}

@@ -338,7 +338,7 @@ artifacts. A changed route, grant, locale, or prompt byte changes the frozen
 identity. This is source/build validation, not a live session pin or a
 traffic-selection procedure.
 
-This page does not qualify caller authority, Jev service path, retry ceilings,
+This page does not qualify caller authority, retry ceilings,
 voice/locale, or prompt policy. The compiled definition stays blocked by those
 unresolved gates even when source tests pass. The example cannot show a real
 directory or Jev result, a `DefineDecision` session lifecycle, provider

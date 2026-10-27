@@ -405,7 +405,6 @@ func validateDecisionDefinition(definition decisionv1.Definition, tools []AgentT
 // until a future adapter consumes and verifies the exact parent authority.
 func validateDecisionCompilerAuthoritySnapshots(definition decisionv1.Definition) error {
 	for _, kind := range []decisionv1.GateKind{
-		decisionv1.GateJevServicePath,
 		decisionv1.GateCallerAuthority,
 		decisionv1.GateSessionAdapter,
 	} {

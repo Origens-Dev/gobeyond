@@ -137,7 +137,6 @@ func TestRegisterDecisionRejectsUnresolvedAuthorityBeforeFactory(t *testing.T) {
 	}
 	for _, gate := range []decisionv1.GateKind{
 		decisionv1.GateCallerAuthority,
-		decisionv1.GateJevServicePath,
 		decisionv1.GateSessionAdapter,
 		decisionv1.GatePromptRuntimeParity,
 	} {
