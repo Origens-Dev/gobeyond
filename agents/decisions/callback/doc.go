@@ -29,7 +29,11 @@
 // The listen no-input timer starts when that receipt is observed for the
 // same turn.
 //
-// Listen is {turnId, noInputTimeoutMillis, maxUtteranceDurationMillis}.
+// Listen is {turnId, noInputTimeoutMillis, maxUtteranceDurationMillis} plus
+// optional hints []string. Hints are app-filled and provider-neutral; each
+// provider maps them onto its own vocabulary or speech-context features. At
+// most 100 entries are accepted, and each entry must be 1–50 characters after
+// trim. Crossing either cap is a validation error; the SDK does not truncate.
 // Events back are final_transcript{turnId, text}, no_input{turnId},
 // cancelled{turnId}, and dtmf_unsupported{turnId}. Partial transcripts never
 // cross this seam.
@@ -47,10 +51,14 @@
 // session ends, and no say is emitted. Targets returned as matched are
 // already authorized to act; there is no separate authorize op.
 //
-// Match is a synchronous request the host may retry. A repeated
-// connections delivery Event-ID must be answered again with the same tagged
-// result (idempotent store or deterministic recompute). Receivers must not
-// reject a retried Event-ID as a duplicate.
+// Match is a synchronous request the host may retry. MatchClient calls
+// connections.SignDelivery directly and derives a stable Event-ID from
+// session id plus attempt count, so a retry of the same request reuses that
+// Event-ID. Receivers must answer the retried Event-ID with the same tagged
+// result (idempotent store or deterministic recompute); they must not reject
+// it as a duplicate. The host runs MatchResponse.ValidateFor(definition)
+// before acting. Clarify with an unknown prompt ID fails closed
+// (prompt_unavailable) and must not emit say.
 //
 // # Authentication
 //

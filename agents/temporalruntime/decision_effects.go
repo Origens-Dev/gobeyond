@@ -275,6 +275,9 @@ func (dispatcher *Dispatcher) dispatchDecisionTransition(ctx context.Context, au
 			}
 		}
 	}
+	if authority != nil {
+		return dispatcher.dispatchOptionalHostEffects(ctx, authority, call, result, emit)
+	}
 	return nil
 }
 

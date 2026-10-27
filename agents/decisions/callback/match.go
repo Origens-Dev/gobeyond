@@ -147,6 +147,17 @@ func DecodeSayEffect(data []byte) (SayEffect, error) {
 	return effect, nil
 }
 
+func DecodeListenEffect(data []byte) (ListenEffect, error) {
+	var effect ListenEffect
+	if err := decodeJSON(data, &effect); err != nil {
+		return ListenEffect{}, fmt.Errorf("decode listen effect: %w", err)
+	}
+	if err := effect.Validate(); err != nil {
+		return ListenEffect{}, err
+	}
+	return effect, nil
+}
+
 func DecodePlaybackReceipt(data []byte) (PlaybackReceipt, error) {
 	var receipt PlaybackReceipt
 	if err := decodeJSON(data, &receipt); err != nil {

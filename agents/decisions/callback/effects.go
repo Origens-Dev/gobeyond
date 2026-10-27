@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	decisionv1 "github.com/Origens-Dev/gobeyond/agents/decisioncontract/v1"
 	"github.com/Origens-Dev/gobeyond/agents/decisions"
@@ -39,12 +40,31 @@ type PlaybackReceipt struct {
 	Status PlaybackStatus `json:"status"`
 }
 
+const (
+	// MaxListenHints is the inclusive cap on listen vocabulary hints. The
+	// host rejects a request that exceeds it; it does not truncate.
+	MaxListenHints = 100
+	// MaxListenHintChars is the inclusive per-hint length after trim.
+	MaxListenHintChars = 50
+)
+
 // ListenEffect arms host capture for one turn. Endpointing and timers are
 // host-owned. Timeouts are milliseconds.
+//
+// Hints is an optional, app-filled, provider-neutral list of vocabulary cues.
+// Providers map each hint onto their own speech or vocabulary features; the
+// SDK does not interpret, rewrite, or truncate them.
 type ListenEffect struct {
-	TurnID                     TurnID `json:"turnId"`
-	NoInputTimeoutMillis       int64  `json:"noInputTimeoutMillis"`
-	MaxUtteranceDurationMillis int64  `json:"maxUtteranceDurationMillis"`
+	TurnID                     TurnID   `json:"turnId"`
+	NoInputTimeoutMillis       int64    `json:"noInputTimeoutMillis"`
+	MaxUtteranceDurationMillis int64    `json:"maxUtteranceDurationMillis"`
+	Hints                      []string `json:"hints,omitempty"`
+}
+
+// ListenPolicy is an optional host extension that fills listen timers and
+// hints from preloaded policy. The reducer effect does not carry them.
+type ListenPolicy interface {
+	PrepareListen(decisions.Effect) (ListenEffect, error)
 }
 
 // ListenEventKind is a host-to-reducer listen outcome. There is no partial kind.
@@ -116,9 +136,11 @@ func SayEffectFrom(effect decisions.Effect) (SayEffect, error) {
 	return SayEffect{TurnID: turnID, PromptID: promptID}, nil
 }
 
-// ListenEffectFrom maps a reducer listen onto the host seam. Timeouts are
-// supplied by the host from its preloaded policy; they are not inferred here.
-func ListenEffectFrom(effect decisions.Effect, noInputTimeoutMillis, maxUtteranceDurationMillis int64) (ListenEffect, error) {
+// ListenEffectFrom maps a reducer listen onto the host seam. Timeouts and
+// hints are supplied by the host from its preloaded policy; they are not
+// inferred here. hints may be nil. More than MaxListenHints entries is a
+// validation error; the list is never truncated.
+func ListenEffectFrom(effect decisions.Effect, noInputTimeoutMillis, maxUtteranceDurationMillis int64, hints []string) (ListenEffect, error) {
 	if effect.Kind != decisions.EffectListen {
 		return ListenEffect{}, fmt.Errorf("effect kind %q is not listen", effect.Kind)
 	}
@@ -130,6 +152,7 @@ func ListenEffectFrom(effect decisions.Effect, noInputTimeoutMillis, maxUtteranc
 		TurnID:                     turnID,
 		NoInputTimeoutMillis:       noInputTimeoutMillis,
 		MaxUtteranceDurationMillis: maxUtteranceDurationMillis,
+		Hints:                      append([]string(nil), hints...),
 	}
 	if err := listen.Validate(); err != nil {
 		return ListenEffect{}, err
@@ -185,6 +208,9 @@ func (effect ListenEffect) Validate() error {
 	if effect.NoInputTimeoutMillis <= 0 || effect.MaxUtteranceDurationMillis <= 0 {
 		return fmt.Errorf("listen timeouts must be positive")
 	}
+	if err := validateListenHints(effect.Hints); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -224,6 +250,22 @@ func (effect ActEffect) Validate() error {
 func validateTurnID(id TurnID) error {
 	if err := decisionv1.ValidateIdentifier(string(id)); err != nil {
 		return fmt.Errorf("turn id: %w", err)
+	}
+	return nil
+}
+
+func validateListenHints(hints []string) error {
+	if len(hints) > MaxListenHints {
+		return fmt.Errorf("listen hints exceed %d entries", MaxListenHints)
+	}
+	for index, hint := range hints {
+		trimmed := strings.TrimSpace(hint)
+		if trimmed == "" {
+			return fmt.Errorf("listen hint %d must be 1–%d characters after trim", index, MaxListenHintChars)
+		}
+		if utf8.RuneCountInString(trimmed) > MaxListenHintChars {
+			return fmt.Errorf("listen hint %d must be 1–%d characters after trim", index, MaxListenHintChars)
+		}
 	}
 	return nil
 }

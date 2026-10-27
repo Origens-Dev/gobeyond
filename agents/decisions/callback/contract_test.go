@@ -215,7 +215,7 @@ func TestEffectMappingUsesReducerTypes(t *testing.T) {
 	if _, err := SayEffectFrom(decisions.Effect{Kind: decisions.EffectSay, RouteEntryID: "entry-1"}); !errors.Is(err, decisionv1.ErrPromptUnavailable) {
 		t.Fatalf("empty say families: %v", err)
 	}
-	listen, err := ListenEffectFrom(decisions.Effect{Kind: decisions.EffectListen, RouteEntryID: "entry-1"}, 4000, 15000)
+	listen, err := ListenEffectFrom(decisions.Effect{Kind: decisions.EffectListen, RouteEntryID: "entry-1"}, 4000, 15000, nil)
 	if err != nil || listen.NoInputTimeoutMillis != 4000 || listen.TurnID != "entry-1" {
 		t.Fatalf("listen mapping = %#v err=%v", listen, err)
 	}
@@ -238,5 +238,36 @@ func TestMatchJSONRoundTrip(t *testing.T) {
 	got, err := DecodeMatchRequest(raw)
 	if err != nil || got != request {
 		t.Fatalf("request = %#v err=%v", got, err)
+	}
+}
+
+func TestListenHintsCapsRejectWithoutTruncation(t *testing.T) {
+	t.Parallel()
+	okHints := make([]string, MaxListenHints)
+	for i := range okHints {
+		okHints[i] = "hint"
+	}
+	ok, err := ListenEffectFrom(decisions.Effect{Kind: decisions.EffectListen, RouteEntryID: "entry-1"}, 4000, 15000, okHints)
+	if err != nil || len(ok.Hints) != MaxListenHints {
+		t.Fatalf("max hints rejected: %#v err=%v", ok, err)
+	}
+	fifty := strings.Repeat("a", MaxListenHintChars)
+	okFifty, err := DecodeListenEffect([]byte(`{"turnId":"entry-1","noInputTimeoutMillis":4000,"maxUtteranceDurationMillis":15000,"hints":["` + fifty + `"]}`))
+	if err != nil || len(okFifty.Hints) != 1 || okFifty.Hints[0] != fifty {
+		t.Fatalf("50-char hint rejected: %#v err=%v", okFifty, err)
+	}
+	overCount := append(append([]string{}, okHints...), "one-more")
+	if _, err := ListenEffectFrom(decisions.Effect{Kind: decisions.EffectListen, RouteEntryID: "entry-1"}, 4000, 15000, overCount); err == nil {
+		t.Fatal("101 hints were truncated or accepted")
+	}
+	overLen := strings.Repeat("a", MaxListenHintChars+1)
+	if _, err := DecodeListenEffect([]byte(`{"turnId":"entry-1","noInputTimeoutMillis":4000,"maxUtteranceDurationMillis":15000,"hints":["` + overLen + `"]}`)); err == nil {
+		t.Fatal("51-char hint was truncated or accepted")
+	}
+	if _, err := DecodeListenEffect([]byte(`{"turnId":"entry-1","noInputTimeoutMillis":4000,"maxUtteranceDurationMillis":15000,"hints":["   "]}`)); err == nil {
+		t.Fatal("whitespace-only hint accepted")
+	}
+	if _, err := DecodeListenEffect([]byte(`{"turnId":"entry-1","noInputTimeoutMillis":4000,"maxUtteranceDurationMillis":15000}`)); err != nil {
+		t.Fatalf("omitted hints: %v", err)
 	}
 }
