@@ -107,6 +107,10 @@ func (e *MetricsExporter) Aggregation(kind sdkmetric.InstrumentKind) sdkmetric.A
 	return sdkmetric.DefaultAggregationSelector(kind)
 }
 func (e *MetricsExporter) Export(ctx context.Context, data *metricdata.ResourceMetrics) error {
+	// Grant refresh, queued recovery, and the newly collected body share one
+	// finite caller/export budget; draining cannot buy a second RPC timeout.
+	ctx, cancel := context.WithTimeout(ctx, e.config.RPCTimeout)
+	defer cancel()
 	if err := e.lockExport(ctx); err != nil {
 		return err
 	}
@@ -175,14 +179,27 @@ func (e *MetricsExporter) Export(ctx context.Context, data *metricdata.ResourceM
 		return err
 	}
 	var added uint64
+	intrinsicallyFull := len(bodies) > e.config.MaxPendingRPCs
 	for _, body := range bodies {
 		if uint64(len(body)) > e.config.MaxRetainedBytes-added {
-			return ErrMetricBufferFull
+			intrinsicallyFull = true
+			break
 		}
 		added += uint64(len(body))
 	}
 	e.mu.Lock()
-	if added > e.config.MaxRetainedBytes-e.retained || len(bodies) > e.config.MaxPendingRPCs-len(e.queue) {
+	blocked := intrinsicallyFull || added > e.config.MaxRetainedBytes-e.retained || len(bodies) > e.config.MaxPendingRPCs-len(e.queue)
+	havePending := len(e.queue) > 0
+	e.mu.Unlock()
+	if blocked && havePending {
+		// A full queue must still retry its original immutable bodies when periodic
+		// collection remains nonempty. Otherwise recovery would require manual Flush.
+		if err := e.flush(ctx); err != nil {
+			return errors.Join(ErrMetricBufferFull, err)
+		}
+	}
+	e.mu.Lock()
+	if intrinsicallyFull || added > e.config.MaxRetainedBytes-e.retained || len(bodies) > e.config.MaxPendingRPCs-len(e.queue) {
 		e.mu.Unlock()
 		return ErrMetricBufferFull
 	}

@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -659,5 +660,71 @@ func TestMetricDenseSequenceHardCapDoesNotWrapOrPartiallyAssign(t *testing.T) {
 	e.nextSequence = MetricMaxPointsPerEpoch + 1
 	if err := e.Export(context.Background(), metricDataFixture(time.Now())); !errors.Is(err, ErrMetricSequenceExhausted) {
 		t.Fatalf("overflow err=%v", err)
+	}
+}
+
+func TestMetricExporterFullQueueRecoversOnNextNonemptyCollection(t *testing.T) {
+	e, g, client := exporterFixture(t)
+	e.config.MaxPendingRPCs = 1
+	client.err = status.Error(codes.InvalidArgument, "synthetic initial failure")
+	if err := e.Export(context.Background(), metricDataFixture(g.now)); err == nil {
+		t.Fatal("fixture did not retain failed work")
+	}
+	frozen := append([]byte(nil), e.queue[0].body...)
+	first := proto.Clone(client.requests[0])
+	client.err = nil
+	if err := e.Export(context.Background(), metricDataFixture(g.now.Add(time.Second))); err != nil {
+		t.Fatal("full retry queue did not recover automatically", err)
+	}
+	if n, b := e.PendingMetrics(); n != 0 || b != 0 {
+		t.Fatal("recovery left queue pending", n, b)
+	}
+	if len(client.requests) != 3 || !proto.Equal(first, client.requests[1]) || proto.Equal(first, client.requests[2]) {
+		t.Fatal("recovery did not export exact old body followed by new collection")
+	}
+	actual, err := proto.MarshalOptions{Deterministic: true}.Marshal(client.requests[1])
+	if err != nil || !bytes.Equal(frozen, actual) {
+		t.Fatal("recovery mutated original RPC", err)
+	}
+}
+
+type metricSharedBudgetClient struct {
+	fail      bool
+	deadlines []time.Time
+}
+
+func (c *metricSharedBudgetClient) Export(ctx context.Context, _ *collectormetric.ExportMetricsServiceRequest, _ ...grpc.CallOption) (*collectormetric.ExportMetricsServiceResponse, error) {
+	if c.fail {
+		return nil, status.Error(codes.InvalidArgument, "synthetic retain")
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, errors.New("unbounded recovery RPC")
+	}
+	c.deadlines = append(c.deadlines, deadline)
+	if len(c.deadlines) == 1 {
+		return &collectormetric.ExportMetricsServiceResponse{}, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func TestMetricExporterRecoveryAndNewBodyShareOneDeadline(t *testing.T) {
+	e, g, _ := exporterFixture(t)
+	c := &metricSharedBudgetClient{fail: true}
+	e.config.Client = c
+	e.config.MaxPendingRPCs = 1
+	e.config.RPCTimeout = 25 * time.Millisecond
+	if err := e.Export(context.Background(), metricDataFixture(g.now)); err == nil {
+		t.Fatal("fixture did not retain old RPC")
+	}
+	c.fail = false
+	if err := e.Export(context.Background(), metricDataFixture(g.now.Add(time.Second))); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	if len(c.deadlines) != 2 || !c.deadlines[0].Equal(c.deadlines[1]) {
+		t.Fatal("recovery and new body received independent timeout budgets", c.deadlines)
+	}
+	if n, _ := e.PendingMetrics(); n != 1 {
+		t.Fatal("timed-out new body discarded", n)
 	}
 }
