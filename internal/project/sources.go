@@ -432,6 +432,10 @@ func authorPath(root, file string) string {
 }
 
 func routeModule(moduleRoot, modulePath, websiteImport, goVersion, routeDir, key string) ([]byte, error) {
+	goVersion, err := runtimeModuleGoVersion(goVersion)
+	if err != nil {
+		return nil, err
+	}
 	replacement, err := filepath.Rel(routeDir, moduleRoot)
 	if err != nil {
 		return nil, err
