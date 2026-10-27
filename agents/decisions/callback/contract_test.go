@@ -68,7 +68,7 @@ func TestMatchPathUsesConnectionsDelivery(t *testing.T) {
 func TestMatchRetrySameEventIDIsAnswered(t *testing.T) {
 	t.Parallel()
 	key := bytes.Repeat([]byte{7}, 32)
-	body := []byte(`{"sessionId":"session-1","utterance":"call sam","attemptCount":0}`)
+	body := []byte(`{"sessionId":"session-1","runId":"run-1","utterance":"call sam","attemptCount":0}`)
 	now := time.Unix(1800000000, 0)
 	header := http.Header{}
 	if err := connections.SignDelivery(header, key, "match-1", body, now); err != nil {
@@ -215,7 +215,7 @@ func TestEffectMappingUsesReducerTypes(t *testing.T) {
 	if _, err := SayEffectFrom(decisions.Effect{Kind: decisions.EffectSay, RouteEntryID: "entry-1"}); !errors.Is(err, decisionv1.ErrPromptUnavailable) {
 		t.Fatalf("empty say families: %v", err)
 	}
-	listen, err := ListenEffectFrom(decisions.Effect{Kind: decisions.EffectListen, RouteEntryID: "entry-1"}, 4000, 15000)
+	listen, err := ListenEffectFrom(decisions.Effect{Kind: decisions.EffectListen, RouteEntryID: "entry-1"}, 4000, 15000, nil)
 	if err != nil || listen.NoInputTimeoutMillis != 4000 || listen.TurnID != "entry-1" {
 		t.Fatalf("listen mapping = %#v err=%v", listen, err)
 	}
@@ -230,7 +230,7 @@ func TestEffectMappingUsesReducerTypes(t *testing.T) {
 
 func TestMatchJSONRoundTrip(t *testing.T) {
 	t.Parallel()
-	request := MatchRequest{SessionID: "session-1", Utterance: "call sam", AttemptCount: 1}
+	request := MatchRequest{SessionID: "session-1", RunID: "run-1", Utterance: "call sam", AttemptCount: 1}
 	raw, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
@@ -238,5 +238,36 @@ func TestMatchJSONRoundTrip(t *testing.T) {
 	got, err := DecodeMatchRequest(raw)
 	if err != nil || got != request {
 		t.Fatalf("request = %#v err=%v", got, err)
+	}
+}
+
+func TestListenHintsCapsRejectWithoutTruncation(t *testing.T) {
+	t.Parallel()
+	okHints := make([]string, MaxListenHints)
+	for i := range okHints {
+		okHints[i] = "hint"
+	}
+	ok, err := ListenEffectFrom(decisions.Effect{Kind: decisions.EffectListen, RouteEntryID: "entry-1"}, 4000, 15000, okHints)
+	if err != nil || len(ok.Hints) != MaxListenHints {
+		t.Fatalf("max hints rejected: %#v err=%v", ok, err)
+	}
+	fifty := strings.Repeat("a", MaxListenHintChars)
+	okFifty, err := DecodeListenEffect([]byte(`{"turnId":"entry-1","noInputTimeoutMillis":4000,"maxUtteranceDurationMillis":15000,"hints":["` + fifty + `"]}`))
+	if err != nil || len(okFifty.Hints) != 1 || okFifty.Hints[0] != fifty {
+		t.Fatalf("50-char hint rejected: %#v err=%v", okFifty, err)
+	}
+	overCount := append(append([]string{}, okHints...), "one-more")
+	if _, err := ListenEffectFrom(decisions.Effect{Kind: decisions.EffectListen, RouteEntryID: "entry-1"}, 4000, 15000, overCount); err == nil {
+		t.Fatal("101 hints were truncated or accepted")
+	}
+	overLen := strings.Repeat("a", MaxListenHintChars+1)
+	if _, err := DecodeListenEffect([]byte(`{"turnId":"entry-1","noInputTimeoutMillis":4000,"maxUtteranceDurationMillis":15000,"hints":["` + overLen + `"]}`)); err == nil {
+		t.Fatal("51-char hint was truncated or accepted")
+	}
+	if _, err := DecodeListenEffect([]byte(`{"turnId":"entry-1","noInputTimeoutMillis":4000,"maxUtteranceDurationMillis":15000,"hints":["   "]}`)); err == nil {
+		t.Fatal("whitespace-only hint accepted")
+	}
+	if _, err := DecodeListenEffect([]byte(`{"turnId":"entry-1","noInputTimeoutMillis":4000,"maxUtteranceDurationMillis":15000}`)); err != nil {
+		t.Fatalf("omitted hints: %v", err)
 	}
 }

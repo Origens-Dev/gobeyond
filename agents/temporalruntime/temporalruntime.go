@@ -685,10 +685,14 @@ func (dispatcher *Dispatcher) startDecisionSession(ctx context.Context, adapter 
 		if err := dispatcher.emitDecisionTransition(ctx, emit, transition); err != nil {
 			return fmt.Errorf("emit initial decision session transition: %w", err)
 		}
+		respond := httpruntime.RespondCall{Session: call.Session, Run: call.Run, Actor: call.Actor}
 		if hasDecisionEffectWork(transition.Effects) {
-			respond := httpruntime.RespondCall{Session: call.Session, Run: call.Run, Actor: call.Actor}
 			if err := dispatcher.dispatchDecisionTransition(ctx, effectAuthority, respond, transition, emit); err != nil {
 				return fmt.Errorf("dispatch initial decision effects: %w", err)
+			}
+		} else if hasOptionalHostEffectWork(transition.Effects) {
+			if err := dispatcher.dispatchOptionalHostEffects(ctx, adapter, respond, transition, emit); err != nil {
+				return fmt.Errorf("dispatch initial decision host effects: %w", err)
 			}
 		}
 	}
@@ -1089,6 +1093,10 @@ func (dispatcher *Dispatcher) respondDecisionSession(ctx context.Context, adapte
 		if hasDecisionEffectWork(result.Effects) {
 			if err := dispatcher.dispatchDecisionTransition(ctx, effectAuthority, call, result, emit); err != nil {
 				return fmt.Errorf("dispatch decision effects: %w", err)
+			}
+		} else if hasOptionalHostEffectWork(result.Effects) {
+			if err := dispatcher.dispatchOptionalHostEffects(ctx, adapter, call, result, emit); err != nil {
+				return fmt.Errorf("dispatch decision host effects: %w", err)
 			}
 		}
 	}

@@ -38,6 +38,7 @@ const (
 // MatchRequest is the signed match callback body.
 type MatchRequest struct {
 	SessionID    string `json:"sessionId"`
+	RunID        string `json:"runId"`
 	Utterance    string `json:"utterance"`
 	AttemptCount uint64 `json:"attemptCount"`
 }
@@ -55,6 +56,9 @@ const maxUtteranceBytes = 8 << 10
 func (request MatchRequest) Validate() error {
 	if err := decisionv1.ValidateIdentifier(request.SessionID); err != nil {
 		return fmt.Errorf("match session id: %w", err)
+	}
+	if err := decisionv1.ValidateIdentifier(request.RunID); err != nil {
+		return fmt.Errorf("match run id: %w", err)
 	}
 	if request.Utterance == "" || strings.TrimSpace(request.Utterance) != request.Utterance {
 		return fmt.Errorf("match utterance is required")
@@ -123,8 +127,8 @@ func DecodeMatchRequest(data []byte) (MatchRequest, error) {
 }
 
 // DecodeMatchResponse rejects unknown fields. The SDK only accepts the tagged
-// match result. Call ValidateFor with the frozen definition before acting on
-// a clarify prompt ID.
+// match result. MatchClient.Match is the host path and runs ValidateFor once
+// against the frozen definition before returning.
 func DecodeMatchResponse(data []byte) (MatchResponse, error) {
 	var response MatchResponse
 	if err := decodeJSON(data, &response); err != nil {
@@ -143,6 +147,17 @@ func DecodeSayEffect(data []byte) (SayEffect, error) {
 	}
 	if err := effect.Validate(); err != nil {
 		return SayEffect{}, err
+	}
+	return effect, nil
+}
+
+func DecodeListenEffect(data []byte) (ListenEffect, error) {
+	var effect ListenEffect
+	if err := decodeJSON(data, &effect); err != nil {
+		return ListenEffect{}, fmt.Errorf("decode listen effect: %w", err)
+	}
+	if err := effect.Validate(); err != nil {
+		return ListenEffect{}, err
 	}
 	return effect, nil
 }
