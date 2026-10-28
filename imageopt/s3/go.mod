@@ -4,7 +4,7 @@
 // resolve the required github.com/Origens-Dev/gobeyond version instead.
 module github.com/Origens-Dev/gobeyond/imageopt/s3
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/Origens-Dev/gobeyond v0.1.0-alpha.130

@@ -17,10 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Read qualified Go toolchain
+        id: go_toolchain
+        run: |
+          version=$(awk '$1 == "toolchain" { sub(/^go/, "", $2); print $2 }' go.mod)
+          [[ -n "$version" ]] || { echo "Committed Go toolchain is required" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24.x"
-          check-latest: true
+          go-version: ${{ steps.go_toolchain.outputs.version }}
+          check-latest: false
       - uses: pnpm/action-setup@v4
       - run: go run ./cmd/gobeyond generate --go-only
       # The durable example imports its ignored, compiler-owned workflow and
@@ -44,6 +50,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Read qualified Go toolchain
+        id: go_toolchain
+        run: |
+          version=$(awk '$1 == "toolchain" { sub(/^go/, "", $2); print $2 }' go.mod)
+          [[ -n "$version" ]] || { echo "Committed Go toolchain is required" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.go_toolchain.outputs.version }}
+          check-latest: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -68,10 +84,16 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Read qualified Go toolchain
+        id: go_toolchain
+        run: |
+          version=$(awk '$1 == "toolchain" { sub(/^go/, "", $2); print $2 }' go.mod)
+          [[ -n "$version" ]] || { echo "Committed Go toolchain is required" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24.x"
-          check-latest: true
+          go-version: ${{ steps.go_toolchain.outputs.version }}
+          check-latest: false
       - run: pnpm install --frozen-lockfile
       # The seo-site build type-checks against the workspace packages'
       # emitted declarations, so build those first.

@@ -22,6 +22,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -67,11 +68,15 @@ func installFromEnv() func() {
 	}
 	setupCtx, cancel := context.WithTimeout(context.Background(), exporterSetupTimeout)
 	defer cancel()
+	authorization := &refreshableTelemetryCredentials{token: token, endpoint: endpoint, initialToken: token}
+	activeTelemetryCredentials.Store(authorization)
 	exporter, err := otlptracegrpc.New(
 		setupCtx,
 		otlptracegrpc.WithEndpoint(endpoint),
 		otlptracegrpc.WithInsecure(),
-		otlptracegrpc.WithHeaders(map[string]string{tokenHeader: token}),
+		// Override generic OTEL header env; authentication is per RPC only.
+		otlptracegrpc.WithHeaders(map[string]string{}),
+		otlptracegrpc.WithDialOption(grpc.WithPerRPCCredentials(authorization)),
 	)
 	if err != nil {
 		log.Warn("OpenTelemetry trace export disabled", "error", err)
@@ -96,6 +101,7 @@ func installFromEnv() func() {
 		sdktrace.WithSpanProcessor(requestIDProcessor{}),
 		sdktrace.WithBatcher(exporter, sdktrace.WithBatchTimeout(exportBatchTimeout)),
 	)
+	metricShutdown := installMetricsFromEnv(endpoint, token, res, log, authorization.update)
 	otel.SetTracerProvider(provider)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{}, propagation.Baggage{},
@@ -104,6 +110,7 @@ func installFromEnv() func() {
 		log.Warn("OpenTelemetry trace export failed", "error", err)
 	}))
 	return func() {
+		metricShutdown()
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := errors.Join(provider.ForceFlush(ctx), provider.Shutdown(ctx)); err != nil {

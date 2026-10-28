@@ -101,7 +101,7 @@ rather than a different application contract.
 
 ## Try the repository
 
-Requirements: Go 1.24+, Node 22+, and pnpm 10.33.0.
+Requirements: Go 1.26+ (qualified toolchain pinned in `go.mod`), Node 22+, and pnpm 10.33.0.
 
 ```bash
 pnpm install
